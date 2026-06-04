@@ -1,6 +1,19 @@
 # Краткий итог работ
 
-Дата фиксации: 2026-06-03.
+Дата фиксации: 2026-06-04.
+
+## Актуальное состояние
+
+- Локальная папка проекта: `/home/w0w/owrt_installer`.
+- GitHub repository: `https://github.com/woffko/openwrt-installer`.
+- Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
+- Основная ветка: `main`.
+- Текущий commit: `d2d1382 Update ISO build checksums`.
+- Последняя функциональная правка: `62890af Improve WAN IPv6 wizard`.
+- Текущий release: `v1.0-alpha.1`.
+- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.1`.
+- Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
+- Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 
 ## Что сделано
 
@@ -108,7 +121,9 @@ a8ffa95bd1d7bec0a25a1cfbda0ae662236b43588da6a0f77d8243922a5343ce  openwrt-x86-64
 
 ## Как пользоваться
 
-Записать ISO на USB через Rufus, balenaEtcher, Ventoy или `dd`, загрузиться и выполнить:
+Записать ISO на USB через Rufus, balenaEtcher, Ventoy или `dd` и загрузиться с него. На локальной консоли `tty1` установщик стартует автоматически.
+
+Если автозапуск не сработал или нужен ручной запуск, выполнить:
 
 ```sh
 owrt-install
