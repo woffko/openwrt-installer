@@ -35,6 +35,7 @@ DRY_RUN=0
 SKIP_NETWORK=0
 TARGET_MOUNTED=0
 TTY_STATE=""
+MENU_NOTE=""
 
 C_RESET=""
 C_BOLD=""
@@ -130,6 +131,11 @@ can_arrow_menu() {
 
 menu_reset() {
 	: > "$MENU_LIST"
+	MENU_NOTE=""
+}
+
+menu_note() {
+	MENU_NOTE="$1"
 }
 
 menu_add() {
@@ -151,6 +157,9 @@ menu_label_at() {
 }
 
 render_numbered_menu() {
+	if [ -n "$MENU_NOTE" ]; then
+		printf '%s\n\n' "$MENU_NOTE"
+	fi
 	number=0
 	while IFS='|' read -r value label; do
 		[ -n "$value" ] || continue
@@ -164,6 +173,9 @@ render_arrow_menu() {
 	selected="$2"
 	clear_screen
 	section "$title"
+	if [ -n "$MENU_NOTE" ]; then
+		printf '%s\n\n' "$MENU_NOTE"
+	fi
 	number=0
 	while IFS='|' read -r value label; do
 		[ -n "$value" ] || continue
@@ -218,6 +230,7 @@ select_from_menu() {
 					stty "$TTY_STATE" 2>/dev/null || true
 					TTY_STATE=""
 					SELECTED_VALUE="$(menu_value_at "$selected")"
+					MENU_NOTE=""
 					clear_screen
 					return 0
 					;;
@@ -234,6 +247,7 @@ select_from_menu() {
 esac
 SELECTED_VALUE="$(menu_value_at "$choice")"
 [ -n "$SELECTED_VALUE" ] || die "Invalid $prompt selection"
+MENU_NOTE=""
 }
 
 prompt_default() {
@@ -652,10 +666,26 @@ select_wan_mode() {
 
 select_wan6_mode() {
 	menu_reset
-	menu_add "dhcpv6" "Enable DHCPv6 client"
-	menu_add "disabled" "Disable WAN IPv6"
-	select_from_menu "WAN IPv6" "WAN IPv6 mode"
+	case "$WAN_PROTO" in
+		pppoe)
+			menu_note "IPv6 is configured separately from IPv4. For IPv6 over PPPoE, choose DHCPv6 / Prefix Delegation; OpenWrt will attach WAN6 to the PPPoE session."
+			;;
+		*)
+			menu_note "IPv6 is configured separately from the IPv4 WAN mode. Choose DHCPv6 / Prefix Delegation for typical ISP IPv6, or None to leave WAN IPv6 disabled."
+			;;
+	esac
+	menu_add "dhcpv6" "DHCPv6 / Prefix Delegation"
+	menu_add "disabled" "None / IPv6 disabled"
+	select_from_menu "Select WAN IPv6 configuration type" "WAN IPv6 mode"
 	WAN6_PROTO="$SELECTED_VALUE"
+}
+
+wan6_label() {
+	case "$1" in
+		dhcpv6) printf '%s\n' "DHCPv6 / Prefix Delegation" ;;
+		disabled) printf '%s\n' "disabled" ;;
+		*) printf '%s\n' "$1" ;;
+	esac
 }
 
 select_wan_settings() {
@@ -920,7 +950,7 @@ show_summary() {
 			static) printf '  WAN:         static %s/%s gateway=%s\n' "$WAN_IPADDR" "$WAN_CIDR" "${WAN_GATEWAY:-none}" ;;
 			disabled) printf '  WAN:         disabled\n' ;;
 		esac
-		printf '  WAN6:        %s\n' "$WAN6_PROTO"
+		printf '  WAN6:        %s\n' "$(wan6_label "$WAN6_PROTO")"
 		[ "$WAN_PROTO" = "disabled" ] || printf '  NAT:         enabled\n'
 	fi
 	printf '\nALL DATA ON %s WILL BE ERASED.\n\n' "$TARGET"

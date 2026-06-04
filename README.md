@@ -124,6 +124,9 @@ WAN modes supported by the wizard are DHCP, PPPoE, static IPv4, and disabled.
 For PPPoE use `--wan-proto pppoe --pppoe-username USER --pppoe-password PASS`.
 For static WAN use `--wan-proto static --wan-ip 198.51.100.2/24
 --wan-gateway 198.51.100.1 --wan-dns "1.1.1.1 8.8.8.8"`.
+WAN IPv6 is configured as a separate type: DHCPv6 / Prefix Delegation or None.
+For IPv6 over PPPoE, keep IPv4 WAN as PPPoE and choose DHCPv6 / Prefix
+Delegation for WAN IPv6.
 
 Use `--skip-network-wizard` to keep default OpenWrt network configuration.
 Use `--dry-run` to validate a selection without writing to disk.
@@ -144,6 +147,11 @@ firewall LAN -> WAN forwarding with NAT when WAN is enabled
 ```
 
 The installed system also contains `/etc/openwrt-installer-release`.
+
+## Future Work
+
+- Add an OpenWrt configuration import step after target disk selection: choose
+  between a clean install or importing configs/backups from a USB drive.
 
 ## Checks
 
@@ -173,5 +181,5 @@ See `tests/qemu/README.md` for the guest workflow.
 ## MVP limits
 
 The MVP intentionally does not implement a web installer, package selection,
-PPPoE credential prompts, VLANs, multiple LAN ports, Wi-Fi setup, backup
-imports, encrypted installation, Secure Boot, or non-ext4 target filesystems.
+VLANs, multiple LAN ports, Wi-Fi setup, backup/config imports, encrypted
+installation, Secure Boot, or non-ext4 target filesystems.
