@@ -5,6 +5,7 @@
 ## Что сделано
 
 - Создан новый проект OpenWrt installer в `/home/w0w/owrt_installer`.
+- GitHub repository: `https://github.com/woffko/openwrt-installer`.
 - База сборки: официальный OpenWrt ImageBuilder `25.12.4` для `x86_64`.
 - Собран target-образ OpenWrt для установки на диск.
 - Собран live installer-образ с командой `owrt-install`.
@@ -85,9 +86,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-83cdf18a9c70615d83ee89a6e13f683387a823e26abf4edcaf19edb00c997746  openwrt-x86-64-installer.img.gz
-392f82d462c23e09d68a853aeb5334bbda6ce4995ff1b68c5f6fe927a5b69753  openwrt-x86-64-installer-hybrid.iso
-6551f90b59f2afae2506b9c4d3a31d0f8183a002479c837a0b17d848169eaae8  manifest.json
+485af37694f032028e70de132d54a3238a95cd56f017c5c9ef836f379ca18e6b  openwrt-x86-64-installer.img.gz
+8aa1d7b748dd8cccc32947e7296d8986395e5f45f4c5d3566754bb3364722d07  openwrt-x86-64-installer-hybrid.iso
+63270a0e8046c28a54b25b2c395d899551dfaf9498c2cae681b57a007232d151  manifest.json
 ```
 
 ## Проверки

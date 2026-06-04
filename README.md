@@ -5,6 +5,8 @@ OpenWrt `25.12.4` live USB image containing a prebuilt target image. The
 `owrt-install` wizard writes that payload to an SSD, NVMe, SATA, or virtual
 disk and expands its ext4 root filesystem.
 
+Repository: <https://github.com/woffko/openwrt-installer>
+
 This is an MVP. It supports one LAN interface, one WAN interface, DHCP on LAN,
 DHCP/DHCPv6 clients on WAN, firewall forwarding from LAN to WAN, NAT, SSH, and
 LuCI. Interface selection is saved by MAC address so installed-system device
