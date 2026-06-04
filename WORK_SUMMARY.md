@@ -86,9 +86,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-485af37694f032028e70de132d54a3238a95cd56f017c5c9ef836f379ca18e6b  openwrt-x86-64-installer.img.gz
-8aa1d7b748dd8cccc32947e7296d8986395e5f45f4c5d3566754bb3364722d07  openwrt-x86-64-installer-hybrid.iso
-63270a0e8046c28a54b25b2c395d899551dfaf9498c2cae681b57a007232d151  manifest.json
+b95fcf8a4b133fe20cf80f65b9572019828580beec08341f2306a47686ef8e9f  openwrt-x86-64-installer.img.gz
+a8ffa95bd1d7bec0a25a1cfbda0ae662236b43588da6a0f77d8243922a5343ce  openwrt-x86-64-installer-hybrid.iso
+72852efd749c61b1ae85b4d0af977ce2d3952e22d7e43aca193226fbf85da9db  manifest.json
 ```
 
 ## Проверки
