@@ -1,0 +1,91 @@
+#!/bin/sh
+
+set_console_defaults() {
+	if [ -z "${TERM:-}" ] || [ "${TERM:-}" = "dumb" ]; then
+		TERM=linux
+		export TERM
+	fi
+}
+
+clear_console() {
+	[ -t 1 ] && printf '\033[2J\033[H'
+}
+
+quiet_kernel_console() {
+	if [ -w /proc/sys/kernel/printk ]; then
+		printf '4 4 1 7\n' > /proc/sys/kernel/printk
+	elif command -v dmesg >/dev/null 2>&1; then
+		dmesg -n 4 >/dev/null 2>&1 || true
+	fi
+}
+
+device_snapshot() {
+	snapshot=
+	for path in /sys/block/*; do
+		[ -e "$path" ] || continue
+		name="${path##*/}"
+		case "$name" in
+			loop*|ram*) continue ;;
+		esac
+		snapshot="${snapshot}block:${name} "
+	done
+
+	for path in /sys/class/net/*; do
+		[ -e "$path" ] || continue
+		name="${path##*/}"
+		[ "$name" = "lo" ] && continue
+		snapshot="${snapshot}net:${name} "
+	done
+
+	printf '%s' "$snapshot"
+}
+
+wait_for_devices_to_settle() {
+	timeout="${OWRT_INSTALL_AUTOSTART_SETTLE_TIMEOUT:-12}"
+	case "$timeout" in
+		''|*[!0-9]*) timeout=12 ;;
+	esac
+	elapsed=0
+	previous=
+	stable=0
+
+	while [ "$elapsed" -lt "$timeout" ]; do
+		current="$(device_snapshot)"
+		if [ -n "$current" ] && [ "$current" = "$previous" ]; then
+			stable=$((stable + 1))
+			[ "$stable" -ge 2 ] && return 0
+		else
+			stable=0
+		fi
+
+		previous="$current"
+		sleep 1
+		elapsed=$((elapsed + 1))
+	done
+}
+
+prepare_for_installer() {
+	delay="${OWRT_INSTALL_AUTOSTART_DELAY:-2}"
+	case "$delay" in
+		''|*[!0-9]*) delay=2 ;;
+	esac
+
+	set_console_defaults
+	quiet_kernel_console
+	clear_console
+	printf 'Waiting for boot messages and device discovery to finish...\n'
+	wait_for_devices_to_settle
+	sleep "$delay"
+	clear_console
+}
+
+if [ "${OWRT_INSTALL_NO_AUTOSTART:-0}" = "1" ]; then
+	exec /usr/libexec/login.sh
+fi
+
+if mkdir /tmp/owrt-installer-autostart.lock 2>/dev/null; then
+	prepare_for_installer
+	exec /usr/sbin/owrt-install --autostart
+fi
+
+exec /usr/libexec/login.sh

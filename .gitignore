@@ -1,0 +1,5 @@
+/build/
+/output/
+/files-installer/usr/share/owrt-installer/manifest.json
+/files-installer/usr/share/owrt-installer/target.img.gz
+

@@ -1,0 +1,1120 @@
+#!/bin/sh
+
+set -eu
+
+INSTALLER_VERSION="0.1.0"
+PAYLOAD="/usr/share/owrt-installer/target.img.gz"
+MANIFEST="/usr/share/owrt-installer/manifest.json"
+TARGET_MOUNT="/mnt/target"
+DISK_LIST="/tmp/owrt-installer-disks.$$"
+NIC_LIST="/tmp/owrt-installer-nics.$$"
+NIC_CHOICE_LIST="/tmp/owrt-installer-nic-choices.$$"
+MENU_LIST="/tmp/owrt-installer-menu.$$"
+
+TARGET=""
+LAN_MAC=""
+WAN_MAC=""
+LAN_DEV=""
+WAN_DEV=""
+LAN_IP="192.168.1.1"
+LAN_CIDR="24"
+LAN_NETMASK="255.255.255.0"
+WAN_PROTO="dhcp"
+WAN6_PROTO="dhcpv6"
+WAN_PPP_USERNAME=""
+WAN_PPP_PASSWORD=""
+WAN_IPADDR=""
+WAN_CIDR="24"
+WAN_NETMASK=""
+WAN_GATEWAY=""
+WAN_DNS=""
+ALLOW_REMOVABLE=0
+ASSUME_YES=0
+AUTO_STARTED=0
+DRY_RUN=0
+SKIP_NETWORK=0
+TARGET_MOUNTED=0
+TTY_STATE=""
+
+C_RESET=""
+C_BOLD=""
+C_DIM=""
+C_RED=""
+C_GREEN=""
+C_YELLOW=""
+C_BLUE=""
+C_REVERSE=""
+
+log() {
+	printf '%s[owrt-installer]%s %s\n' "${C_GREEN:-}" "${C_RESET:-}" "$*"
+	if command -v logger >/dev/null 2>&1; then
+		logger -t owrt-installer "$*" 2>/dev/null || true
+	fi
+}
+
+warn() {
+	printf '%s[owrt-installer] WARNING:%s %s\n' "${C_YELLOW:-}" "${C_RESET:-}" "$*" >&2
+	if command -v logger >/dev/null 2>&1; then
+		logger -t owrt-installer "WARNING: $*" 2>/dev/null || true
+	fi
+}
+
+die() {
+	printf '%s[owrt-installer] ERROR:%s %s\n' "${C_RED:-}" "${C_RESET:-}" "$*" >&2
+	if command -v logger >/dev/null 2>&1; then
+		logger -t owrt-installer "ERROR: $*" 2>/dev/null || true
+	fi
+	exit 1
+}
+
+cleanup() {
+	if [ -n "$TTY_STATE" ]; then
+		stty "$TTY_STATE" 2>/dev/null || true
+	fi
+	if [ "$TARGET_MOUNTED" = "1" ]; then
+		umount "$TARGET_MOUNT" >/dev/null 2>&1 || true
+	fi
+	rm -f "$DISK_LIST" "$NIC_LIST" "$NIC_CHOICE_LIST" "$MENU_LIST"
+}
+
+trap cleanup EXIT INT TERM
+
+usage() {
+	cat <<'EOF'
+Usage:
+  owrt-install
+  owrt-install --help
+  owrt-install --list-disks
+  owrt-install --list-nics
+  owrt-install --target /dev/nvme0n1
+  owrt-install --target /dev/nvme0n1 --lan-mac MAC --wan-mac MAC
+  owrt-install --target /dev/nvme0n1 --skip-network-wizard
+  owrt-install --target /dev/nvme0n1 --lan-ip 192.168.1.1/24 --wan-proto dhcp
+  owrt-install --target /dev/nvme0n1 --wan-proto pppoe --pppoe-username USER --pppoe-password PASS
+  owrt-install --target /dev/nvme0n1 --allow-removable
+  owrt-install --target /dev/nvme0n1 --yes-i-know-this-will-erase-data
+  owrt-install --dry-run
+
+The selected target disk will be erased completely.
+Removable disks and the detected live boot disk are blocked by default.
+EOF
+}
+
+setup_ui() {
+	if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+		C_RESET="$(printf '\033[0m')"
+		C_BOLD="$(printf '\033[1m')"
+		C_DIM="$(printf '\033[2m')"
+		C_RED="$(printf '\033[31m')"
+		C_GREEN="$(printf '\033[32m')"
+		C_YELLOW="$(printf '\033[33m')"
+		C_BLUE="$(printf '\033[34m')"
+		C_REVERSE="$(printf '\033[7m')"
+	fi
+}
+
+clear_screen() {
+	if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+		printf '\033[2J\033[H'
+	fi
+}
+
+section() {
+	printf '\n%s%s%s%s\n' "$C_BLUE" "$C_BOLD" "$1" "$C_RESET"
+	printf '%s\n' "------------------------------------------------------------"
+}
+
+can_arrow_menu() {
+	[ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] && command -v stty >/dev/null 2>&1
+}
+
+menu_reset() {
+	: > "$MENU_LIST"
+}
+
+menu_add() {
+	value="$1"
+	label="$2"
+	printf '%s|%s\n' "$value" "$label" >> "$MENU_LIST"
+}
+
+menu_count() {
+	wc -l < "$MENU_LIST" | tr -d ' '
+}
+
+menu_value_at() {
+	sed -n "${1}s/|.*//p" "$MENU_LIST"
+}
+
+menu_label_at() {
+	sed -n "${1}s/^[^|]*|//p" "$MENU_LIST"
+}
+
+render_numbered_menu() {
+	number=0
+	while IFS='|' read -r value label; do
+		[ -n "$value" ] || continue
+		number=$((number + 1))
+		printf '[%s] %s\n' "$number" "$label"
+	done < "$MENU_LIST"
+}
+
+render_arrow_menu() {
+	title="$1"
+	selected="$2"
+	clear_screen
+	section "$title"
+	number=0
+	while IFS='|' read -r value label; do
+		[ -n "$value" ] || continue
+		number=$((number + 1))
+		if [ "$number" -eq "$selected" ]; then
+			printf '%s> %s%s\n' "$C_REVERSE" "$label" "$C_RESET"
+		else
+			printf '  %s\n' "$label"
+		fi
+	done < "$MENU_LIST"
+	printf '\n%sUp/Down: move  Enter: select  q: cancel%s\n' "$C_DIM" "$C_RESET"
+}
+
+read_one_key() {
+	dd bs=1 count=1 2>/dev/null || true
+}
+
+select_from_menu() {
+	title="$1"
+	prompt="$2"
+	count="$(menu_count)"
+	[ "$count" -gt 0 ] || die "No choices available for $prompt"
+
+	if can_arrow_menu; then
+		selected=1
+		esc="$(printf '\033')"
+		TTY_STATE="$(stty -g)"
+		stty -icanon -echo min 1 time 0
+		while :; do
+			render_arrow_menu "$title" "$selected"
+			key="$(read_one_key)"
+			if [ "$key" = "$esc" ]; then
+				key2="$(read_one_key)"
+				key3="$(read_one_key)"
+				case "$key2$key3" in
+					"[A")
+						[ "$selected" -gt 1 ] && selected=$((selected - 1))
+						;;
+					"[B")
+						[ "$selected" -lt "$count" ] && selected=$((selected + 1))
+						;;
+				esac
+				continue
+			fi
+			case "$key" in
+				q|Q)
+					stty "$TTY_STATE" 2>/dev/null || true
+					TTY_STATE=""
+					die "Selection cancelled"
+					;;
+				"")
+					stty "$TTY_STATE" 2>/dev/null || true
+					TTY_STATE=""
+					SELECTED_VALUE="$(menu_value_at "$selected")"
+					clear_screen
+					return 0
+					;;
+			esac
+		done
+	fi
+
+	section "$title"
+	render_numbered_menu
+	printf '\nEnter %s number: ' "$prompt"
+	IFS= read -r choice
+	case "$choice" in
+		*[!0-9]*|"") die "Invalid $prompt selection" ;;
+esac
+SELECTED_VALUE="$(menu_value_at "$choice")"
+[ -n "$SELECTED_VALUE" ] || die "Invalid $prompt selection"
+}
+
+prompt_default() {
+	label="$1"
+	default="$2"
+	printf '%s [%s]: ' "$label" "$default"
+	IFS= read -r answer
+	SELECTED_INPUT="${answer:-$default}"
+}
+
+prompt_secret() {
+	label="$1"
+	printf '%s: ' "$label"
+	if [ -t 0 ] && command -v stty >/dev/null 2>&1; then
+		TTY_STATE="$(stty -g)"
+		stty -echo
+		IFS= read -r SELECTED_INPUT
+		stty "$TTY_STATE" 2>/dev/null || true
+		TTY_STATE=""
+		printf '\n'
+	else
+		IFS= read -r SELECTED_INPUT
+	fi
+}
+
+shell_quote() {
+	printf "'"
+	printf '%s' "$1" | sed "s/'/'\\\\''/g"
+	printf "'"
+}
+
+lower() {
+	printf '%s' "$1" | tr 'A-F' 'a-f'
+}
+
+is_ipv4() {
+	printf '%s\n' "$1" |
+		awk -F. '
+			NF != 4 { exit 1 }
+			{
+				for (i = 1; i <= 4; i++) {
+					if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) {
+						exit 1
+					}
+				}
+				exit 0
+			}
+		'
+}
+
+is_cidr() {
+	case "$1" in
+		""|*[!0-9]*) return 1 ;;
+	esac
+	[ "$1" -ge 0 ] && [ "$1" -le 32 ]
+}
+
+cidr_to_netmask() {
+	case "$1" in
+		0) printf '%s\n' "0.0.0.0" ;;
+		1) printf '%s\n' "128.0.0.0" ;;
+		2) printf '%s\n' "192.0.0.0" ;;
+		3) printf '%s\n' "224.0.0.0" ;;
+		4) printf '%s\n' "240.0.0.0" ;;
+		5) printf '%s\n' "248.0.0.0" ;;
+		6) printf '%s\n' "252.0.0.0" ;;
+		7) printf '%s\n' "254.0.0.0" ;;
+		8) printf '%s\n' "255.0.0.0" ;;
+		9) printf '%s\n' "255.128.0.0" ;;
+		10) printf '%s\n' "255.192.0.0" ;;
+		11) printf '%s\n' "255.224.0.0" ;;
+		12) printf '%s\n' "255.240.0.0" ;;
+		13) printf '%s\n' "255.248.0.0" ;;
+		14) printf '%s\n' "255.252.0.0" ;;
+		15) printf '%s\n' "255.254.0.0" ;;
+		16) printf '%s\n' "255.255.0.0" ;;
+		17) printf '%s\n' "255.255.128.0" ;;
+		18) printf '%s\n' "255.255.192.0" ;;
+		19) printf '%s\n' "255.255.224.0" ;;
+		20) printf '%s\n' "255.255.240.0" ;;
+		21) printf '%s\n' "255.255.248.0" ;;
+		22) printf '%s\n' "255.255.252.0" ;;
+		23) printf '%s\n' "255.255.254.0" ;;
+		24) printf '%s\n' "255.255.255.0" ;;
+		25) printf '%s\n' "255.255.255.128" ;;
+		26) printf '%s\n' "255.255.255.192" ;;
+		27) printf '%s\n' "255.255.255.224" ;;
+		28) printf '%s\n' "255.255.255.240" ;;
+		29) printf '%s\n' "255.255.255.248" ;;
+		30) printf '%s\n' "255.255.255.252" ;;
+		31) printf '%s\n' "255.255.255.254" ;;
+		32) printf '%s\n' "255.255.255.255" ;;
+		*) return 1 ;;
+	esac
+}
+
+parse_cidr_address() {
+	value="$1"
+	default_cidr="$2"
+	case "$value" in
+		*/*)
+			PARSED_IP="${value%/*}"
+			PARSED_CIDR="${value#*/}"
+			;;
+		*)
+			PARSED_IP="$value"
+			PARSED_CIDR="$default_cidr"
+			;;
+	esac
+	is_ipv4 "$PARSED_IP" || return 1
+	is_cidr "$PARSED_CIDR" || return 1
+	PARSED_NETMASK="$(cidr_to_netmask "$PARSED_CIDR")"
+}
+
+trim_file() {
+	file="$1"
+	if [ -r "$file" ]; then
+		tr '\n' ' ' < "$file" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//'
+	else
+		printf '%s' "unknown"
+	fi
+}
+
+json_value() {
+	key="$1"
+	if command -v jsonfilter >/dev/null 2>&1; then
+		jsonfilter -i "$MANIFEST" -e "@.$key"
+	else
+		sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$MANIFEST" |
+			head -n 1
+	fi
+}
+
+verify_payload() {
+	[ -s "$PAYLOAD" ] || die "Payload image is missing: $PAYLOAD"
+	[ -s "$MANIFEST" ] || die "Payload manifest is missing: $MANIFEST"
+	command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
+	command -v gzip >/dev/null 2>&1 || die "gzip is required"
+
+	expected="$(json_value payload_sha256)"
+	[ -n "$expected" ] || die "payload_sha256 is missing from $MANIFEST"
+	actual="$(sha256sum "$PAYLOAD" | awk '{ print $1 }')"
+	[ "$actual" = "$expected" ] || die "Payload SHA-256 mismatch"
+	gzip -t "$PAYLOAD" || die "Payload gzip stream is invalid"
+
+	PAYLOAD_SHA256="$actual"
+	export PAYLOAD_SHA256
+	log "Payload SHA-256 verified"
+}
+
+disk_name_from_path() {
+	printf '%s\n' "${1#/dev/}"
+}
+
+is_supported_disk_name() {
+	case "$1" in
+		sd[a-z]|vd[a-z]|xvd[a-z]|nvme[0-9]*n[0-9]*|mmcblk[0-9]*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+parent_disk() {
+	dev="$1"
+	resolved="$(readlink -f "$dev" 2>/dev/null || true)"
+	case "$resolved" in
+		/dev/*) dev="$resolved" ;;
+	esac
+	case "$dev" in
+		/dev/nvme[0-9]*n[0-9]*p[0-9]*|/dev/mmcblk[0-9]*p[0-9]*)
+			printf '%s\n' "${dev%p[0-9]*}"
+			;;
+		/dev/sd[a-z][0-9]*|/dev/vd[a-z][0-9]*|/dev/xvd[a-z][0-9]*)
+			printf '%s\n' "${dev%%[0-9]*}"
+			;;
+		*)
+			printf '%s\n' "$dev"
+			;;
+	esac
+}
+
+root_device_from_cmdline() {
+	cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
+	for arg in $cmdline; do
+		case "$arg" in
+			root=/dev/*)
+				printf '%s\n' "${arg#root=}"
+				return 0
+				;;
+			root=PARTUUID=*|root=UUID=*)
+				query="${arg#root=}"
+				device="$(blkid -t "$query" -o device 2>/dev/null | head -n 1)"
+				if [ -n "$device" ]; then
+					printf '%s\n' "$device"
+					return 0
+				fi
+				;;
+		esac
+	done
+	return 1
+}
+
+is_live_boot_disk() {
+	disk="$1"
+	root_device="$(root_device_from_cmdline || true)"
+	if [ -n "$root_device" ] && [ "$(parent_disk "$root_device")" = "$disk" ]; then
+		return 0
+	fi
+	while read -r source mountpoint rest; do
+		case "$source" in
+			/dev/*)
+				[ "$(parent_disk "$source")" = "$disk" ] && return 0
+				;;
+		esac
+	done < /proc/mounts
+	return 1
+}
+
+disk_size() {
+	name="$1"
+	sectors="$(cat "/sys/block/$name/size" 2>/dev/null || printf 0)"
+	bytes=$((sectors * 512))
+	if [ "$bytes" -ge 1099511627776 ]; then
+		printf '%sT' "$((bytes / 1099511627776))"
+	elif [ "$bytes" -ge 1073741824 ]; then
+		printf '%sG' "$((bytes / 1073741824))"
+	elif [ "$bytes" -ge 1048576 ]; then
+		printf '%sM' "$((bytes / 1048576))"
+	else
+		printf '%sK' "$((bytes / 1024))"
+	fi
+}
+
+refresh_disks() {
+	: > "$DISK_LIST"
+	for sysdev in /sys/block/*; do
+		[ -e "$sysdev" ] || continue
+		name="$(basename "$sysdev")"
+		is_supported_disk_name "$name" || continue
+		[ -b "/dev/$name" ] || continue
+		printf '%s\n' "/dev/$name" >> "$DISK_LIST"
+	done
+}
+
+disk_label() {
+	disk="$1"
+	name="$(disk_name_from_path "$disk")"
+	model="$(trim_file "/sys/block/$name/device/model")"
+	serial="$(trim_file "/sys/block/$name/device/serial")"
+	removable="$(cat "/sys/block/$name/removable" 2>/dev/null || printf '?')"
+	rotational="$(cat "/sys/block/$name/queue/rotational" 2>/dev/null || printf '?')"
+	transport="$(basename "$(readlink -f "/sys/block/$name/device" 2>/dev/null)" 2>/dev/null || printf unknown)"
+	boot=""
+	is_live_boot_disk "$disk" && boot=" live-boot-disk=1"
+	printf '%-18s %-6s model=%s serial=%s removable=%s rotational=%s transport=%s%s' \
+		"$disk" "$(disk_size "$name")" "$model" "$serial" \
+		"$removable" "$rotational" "$transport" "$boot"
+}
+
+build_disk_menu() {
+	refresh_disks
+	menu_reset
+	while IFS= read -r disk; do
+		[ -n "$disk" ] || continue
+		menu_add "$disk" "$(disk_label "$disk")"
+	done < "$DISK_LIST"
+}
+
+show_disks() {
+	build_disk_menu
+	section "Available target disks"
+	if [ "$(menu_count)" -eq 0 ]; then
+		printf 'No supported target disks found.\n'
+	else
+		render_numbered_menu
+	fi
+}
+
+validate_target_disk() {
+	disk="$1"
+	name="$(disk_name_from_path "$disk")"
+
+	[ "$disk" = "/dev/$name" ] || die "Target disk must be an absolute /dev path"
+	is_supported_disk_name "$name" || die "Unsupported target disk: $disk"
+	[ -b "$disk" ] || die "Target is not a block device: $disk"
+	[ -d "/sys/block/$name" ] || die "Target is a partition or unknown disk: $disk"
+
+	removable="$(cat "/sys/block/$name/removable" 2>/dev/null || printf 0)"
+	if [ "$removable" = "1" ] && [ "$ALLOW_REMOVABLE" != "1" ]; then
+		die "Refusing removable target $disk. Use --allow-removable only if intentional."
+	fi
+	if is_live_boot_disk "$disk"; then
+		die "Refusing detected live boot disk: $disk"
+	fi
+}
+
+select_target_disk() {
+	build_disk_menu
+	select_from_menu "Select target disk" "target disk"
+	TARGET="$SELECTED_VALUE"
+}
+
+is_ignored_nic() {
+	case "$1" in
+		lo|br-*|docker*|veth*|tun*|tap*|wg*|ppp*|ifb*|gre*|erspan*|ip6tnl*|sit*)
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+get_nic_mac() {
+	lower "$(cat "/sys/class/net/$1/address" 2>/dev/null || true)"
+}
+
+get_nic_driver() {
+	basename "$(readlink -f "/sys/class/net/$1/device/driver" 2>/dev/null)" 2>/dev/null ||
+		printf '%s' "unknown"
+}
+
+get_nic_speed() {
+	cat "/sys/class/net/$1/speed" 2>/dev/null || printf '%s' "unknown"
+}
+
+get_nic_link() {
+	carrier="$(cat "/sys/class/net/$1/carrier" 2>/dev/null || printf 0)"
+	[ "$carrier" = "1" ] && printf '%s' "up" || printf '%s' "down"
+}
+
+refresh_nics() {
+	: > "$NIC_LIST"
+	for devpath in /sys/class/net/*; do
+		[ -e "$devpath" ] || continue
+		name="$(basename "$devpath")"
+		is_ignored_nic "$name" && continue
+		mac="$(get_nic_mac "$name")"
+		[ -n "$mac" ] || continue
+		printf '%s|%s\n' "$name" "$mac" >> "$NIC_LIST"
+	done
+}
+
+nic_label() {
+	name="$1"
+	mac="$2"
+	pci_path="$(readlink -f "/sys/class/net/$name/device" 2>/dev/null || printf unknown)"
+	printf '%-12s %s driver=%s link=%s speed=%s pci=%s' \
+		"$name" "$mac" "$(get_nic_driver "$name")" \
+		"$(get_nic_link "$name")" "$(get_nic_speed "$name")" "$pci_path"
+}
+
+build_nic_menu() {
+	excluded_dev="${1:-}"
+	menu_reset
+	while IFS='|' read -r name mac; do
+		[ -n "$name" ] || continue
+		[ "$name" = "$excluded_dev" ] && continue
+		menu_add "$name,$mac" "$(nic_label "$name" "$mac")"
+	done < "$NIC_LIST"
+}
+
+show_nics() {
+	refresh_nics
+	build_nic_menu
+	section "Available network interfaces"
+	if [ "$(menu_count)" -eq 0 ]; then
+		printf 'No usable network interfaces found.\n'
+	else
+		render_numbered_menu
+	fi
+}
+
+select_nic() {
+	role="$1"
+	excluded_dev="${2:-}"
+	build_nic_menu "$excluded_dev"
+	select_from_menu "Select $role interface" "$role interface"
+	SELECTED_NIC="$SELECTED_VALUE"
+}
+
+is_valid_mac() {
+	printf '%s\n' "$1" | grep -Eq '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
+}
+
+validate_network_selection() {
+	LAN_MAC="$(lower "$LAN_MAC")"
+	WAN_MAC="$(lower "$WAN_MAC")"
+	is_valid_mac "$LAN_MAC" || die "Invalid or empty LAN MAC address: $LAN_MAC"
+	is_valid_mac "$WAN_MAC" || die "Invalid or empty WAN MAC address: $WAN_MAC"
+	[ "$LAN_MAC" != "$WAN_MAC" ] || die "LAN and WAN cannot use the same MAC address"
+}
+
+select_lan_settings() {
+	section "LAN settings"
+	while :; do
+		prompt_default "LAN IPv4 address/CIDR" "$LAN_IP/$LAN_CIDR"
+		if parse_cidr_address "$SELECTED_INPUT" "$LAN_CIDR"; then
+			LAN_IP="$PARSED_IP"
+			LAN_CIDR="$PARSED_CIDR"
+			LAN_NETMASK="$PARSED_NETMASK"
+			return 0
+		fi
+		warn "Invalid LAN address. Example: 192.168.1.1/24"
+	done
+}
+
+select_wan_mode() {
+	menu_reset
+	menu_add "dhcp" "DHCP client"
+	menu_add "pppoe" "PPPoE"
+	menu_add "static" "Static IPv4"
+	menu_add "disabled" "Disabled / LAN-only"
+	select_from_menu "Select WAN mode" "WAN mode"
+	WAN_PROTO="$SELECTED_VALUE"
+}
+
+select_wan6_mode() {
+	menu_reset
+	menu_add "dhcpv6" "Enable DHCPv6 client"
+	menu_add "disabled" "Disable WAN IPv6"
+	select_from_menu "WAN IPv6" "WAN IPv6 mode"
+	WAN6_PROTO="$SELECTED_VALUE"
+}
+
+select_wan_settings() {
+	select_wan_mode
+	WAN_PPP_USERNAME=""
+	WAN_PPP_PASSWORD=""
+	WAN_IPADDR=""
+	WAN_NETMASK=""
+	WAN_GATEWAY=""
+	WAN_DNS=""
+
+	case "$WAN_PROTO" in
+		dhcp)
+			select_wan6_mode
+			;;
+		pppoe)
+			section "PPPoE settings"
+			while [ -z "$WAN_PPP_USERNAME" ]; do
+				prompt_default "PPPoE username" "$WAN_PPP_USERNAME"
+				WAN_PPP_USERNAME="$SELECTED_INPUT"
+				[ -n "$WAN_PPP_USERNAME" ] || warn "PPPoE username is required"
+			done
+			prompt_secret "PPPoE password"
+			WAN_PPP_PASSWORD="$SELECTED_INPUT"
+			select_wan6_mode
+			;;
+		static)
+			section "Static WAN settings"
+			while :; do
+				prompt_default "WAN IPv4 address/CIDR" "${WAN_IPADDR:-192.0.2.2}/$WAN_CIDR"
+				if parse_cidr_address "$SELECTED_INPUT" "$WAN_CIDR"; then
+					WAN_IPADDR="$PARSED_IP"
+					WAN_CIDR="$PARSED_CIDR"
+					WAN_NETMASK="$PARSED_NETMASK"
+					break
+				fi
+				warn "Invalid WAN address. Example: 192.0.2.2/24"
+			done
+			while :; do
+				prompt_default "WAN gateway" "$WAN_GATEWAY"
+				WAN_GATEWAY="$SELECTED_INPUT"
+				[ -z "$WAN_GATEWAY" ] && break
+				is_ipv4 "$WAN_GATEWAY" && break
+				warn "Invalid gateway IPv4 address"
+			done
+			prompt_default "WAN DNS servers, space separated" "$WAN_DNS"
+			WAN_DNS="$SELECTED_INPUT"
+			select_wan6_mode
+			;;
+		disabled)
+			WAN6_PROTO="disabled"
+			;;
+		*)
+			die "Unsupported WAN mode: $WAN_PROTO"
+			;;
+	esac
+}
+
+select_network_settings() {
+	select_lan_settings
+	select_wan_settings
+}
+
+validate_network_settings() {
+	is_ipv4 "$LAN_IP" || die "Invalid LAN IPv4 address: $LAN_IP"
+	is_cidr "$LAN_CIDR" || die "Invalid LAN CIDR: $LAN_CIDR"
+	LAN_NETMASK="$(cidr_to_netmask "$LAN_CIDR")"
+	case "$WAN_PROTO" in
+		dhcp)
+			;;
+		pppoe)
+			[ -n "$WAN_PPP_USERNAME" ] || die "PPPoE username is required"
+			;;
+		static)
+			is_ipv4 "$WAN_IPADDR" || die "Static WAN IPv4 address is required"
+			is_cidr "$WAN_CIDR" || die "Invalid WAN CIDR: $WAN_CIDR"
+			WAN_NETMASK="$(cidr_to_netmask "$WAN_CIDR")"
+			if [ -n "$WAN_GATEWAY" ]; then
+				is_ipv4 "$WAN_GATEWAY" || die "Invalid WAN gateway: $WAN_GATEWAY"
+			fi
+			;;
+		disabled)
+			WAN6_PROTO="disabled"
+			;;
+		*)
+			die "Unsupported WAN mode: $WAN_PROTO"
+			;;
+	esac
+	case "$WAN6_PROTO" in
+		dhcpv6|disabled) ;;
+		*) die "Unsupported WAN6 mode: $WAN6_PROTO" ;;
+	esac
+}
+
+select_network() {
+	refresh_nics
+	nic_count="$(wc -l < "$NIC_LIST")"
+	[ "$nic_count" -ge 2 ] ||
+		die "At least two network interfaces are required. Use --skip-network-wizard to keep defaults."
+
+	select_nic LAN
+	entry="$SELECTED_NIC"
+	LAN_DEV="${entry%%,*}"
+	LAN_MAC="${entry#*,}"
+
+	if [ "$nic_count" -eq 2 ]; then
+		while IFS='|' read -r name mac; do
+			[ "$name" = "$LAN_DEV" ] && continue
+			WAN_DEV="$name"
+			WAN_MAC="$mac"
+			break
+		done < "$NIC_LIST"
+		printf '\nWAN interface selected automatically: %s %s\n' "$WAN_DEV" "$WAN_MAC"
+	else
+		select_nic WAN "$LAN_DEV"
+		entry="$SELECTED_NIC"
+		WAN_DEV="${entry%%,*}"
+		WAN_MAC="${entry#*,}"
+	fi
+	validate_network_selection
+	select_network_settings
+	validate_network_settings
+}
+
+get_partition_path() {
+	disk="$1"
+	number="$2"
+	case "$disk" in
+		*[0-9]) printf '%sp%s\n' "$disk" "$number" ;;
+		*) printf '%s%s\n' "$disk" "$number" ;;
+	esac
+}
+
+unmount_target_partitions() {
+	target="$1"
+	awk '{ print $2, $1 }' /proc/mounts |
+		sort -r |
+		while read -r mountpoint source; do
+			case "$source" in
+				"$target"[0-9]*|"$target"p[0-9]*)
+					log "Unmounting $source from $mountpoint"
+					umount "$mountpoint" || die "Could not unmount $mountpoint"
+					;;
+			esac
+		done
+}
+
+reread_partition_table() {
+	target="$1"
+	if command -v blockdev >/dev/null 2>&1; then
+		blockdev --rereadpt "$target" || true
+	fi
+	if command -v partprobe >/dev/null 2>&1; then
+		partprobe "$target" || true
+	fi
+	sleep 2
+}
+
+write_payload() {
+	target="$1"
+	log "Writing payload to $target"
+	if dd --help 2>&1 | grep -q 'status='; then
+		gzip -dc "$PAYLOAD" | dd of="$target" bs=16M conv=fsync status=progress
+	else
+		gzip -dc "$PAYLOAD" | dd of="$target" bs=16M conv=fsync
+	fi
+	sync
+	reread_partition_table "$target"
+}
+
+check_ext4() {
+	rootpart="$1"
+	status=0
+	e2fsck -f -y "$rootpart" || status=$?
+	[ "$status" -le 1 ] || die "e2fsck failed for $rootpart with status $status"
+}
+
+resize_rootfs() {
+	target="$1"
+	rootpart="$2"
+	command -v parted >/dev/null 2>&1 || die "parted is required"
+	command -v blkid >/dev/null 2>&1 || die "blkid is required"
+	command -v e2fsck >/dev/null 2>&1 || die "e2fsck is required"
+	command -v resize2fs >/dev/null 2>&1 || die "resize2fs is required"
+
+	log "Growing partition 2 to fill $target"
+	parted -s -f "$target" resizepart 2 100%
+	reread_partition_table "$target"
+	[ -b "$rootpart" ] || die "Root partition did not appear: $rootpart"
+
+	fstype="$(blkid -o value -s TYPE "$rootpart" 2>/dev/null || true)"
+	[ "$fstype" = "ext4" ] || die "Expected ext4 root partition at $rootpart, found: ${fstype:-unknown}"
+
+	log "Checking and growing ext4 filesystem"
+	check_ext4 "$rootpart"
+	resize2fs "$rootpart"
+	check_ext4 "$rootpart"
+	sync
+}
+
+write_installed_config() {
+	rootpart="$1"
+	target="$2"
+	install_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+	mkdir -p "$TARGET_MOUNT"
+	mount "$rootpart" "$TARGET_MOUNT"
+	TARGET_MOUNTED=1
+
+	mkdir -p "$TARGET_MOUNT/etc/owrt-installer"
+	if [ "$SKIP_NETWORK" != "1" ]; then
+		{
+			printf 'LAN_MAC=%s\n' "$(shell_quote "$LAN_MAC")"
+			printf 'WAN_MAC=%s\n' "$(shell_quote "$WAN_MAC")"
+			printf 'LAN_IP=%s\n' "$(shell_quote "$LAN_IP")"
+			printf 'LAN_CIDR=%s\n' "$(shell_quote "$LAN_CIDR")"
+			printf 'LAN_NETMASK=%s\n' "$(shell_quote "$LAN_NETMASK")"
+			printf 'WAN_PROTO=%s\n' "$(shell_quote "$WAN_PROTO")"
+			printf 'WAN6_PROTO=%s\n' "$(shell_quote "$WAN6_PROTO")"
+			printf 'WAN_PPP_USERNAME=%s\n' "$(shell_quote "$WAN_PPP_USERNAME")"
+			printf 'WAN_PPP_PASSWORD=%s\n' "$(shell_quote "$WAN_PPP_PASSWORD")"
+			printf 'WAN_IPADDR=%s\n' "$(shell_quote "$WAN_IPADDR")"
+			printf 'WAN_CIDR=%s\n' "$(shell_quote "$WAN_CIDR")"
+			printf 'WAN_NETMASK=%s\n' "$(shell_quote "$WAN_NETMASK")"
+			printf 'WAN_GATEWAY=%s\n' "$(shell_quote "$WAN_GATEWAY")"
+			printf 'WAN_DNS=%s\n' "$(shell_quote "$WAN_DNS")"
+		} > "$TARGET_MOUNT/etc/owrt-installer/interface-map"
+	fi
+
+	cat > "$TARGET_MOUNT/etc/openwrt-installer-release" <<EOF
+installed_by=openwrt-x86-installer
+installer_version=$INSTALLER_VERSION
+install_date=$install_date
+target_disk=$target
+payload_sha256=$PAYLOAD_SHA256
+image_type=ext4-combined-efi
+lan_mac=$LAN_MAC
+wan_mac=$WAN_MAC
+lan_ip=$LAN_IP
+lan_cidr=$LAN_CIDR
+wan_proto=$WAN_PROTO
+wan6_proto=$WAN6_PROTO
+EOF
+
+	umount "$TARGET_MOUNT"
+	TARGET_MOUNTED=0
+	sync
+}
+
+show_summary() {
+	printf '\nInstallation summary:\n\n'
+	printf '  Target disk: %s\n' "$TARGET"
+	if [ "$SKIP_NETWORK" = "1" ]; then
+		printf '  Network:     keep OpenWrt defaults\n'
+	else
+		printf '  LAN:         %s %s\n' "${LAN_DEV:-selected-by-mac}" "$LAN_MAC"
+		printf '  WAN:         %s %s\n' "${WAN_DEV:-selected-by-mac}" "$WAN_MAC"
+		printf '  LAN address: %s/%s\n' "$LAN_IP" "$LAN_CIDR"
+		case "$WAN_PROTO" in
+			dhcp) printf '  WAN:         DHCP client\n' ;;
+			pppoe) printf '  WAN:         PPPoE user=%s\n' "$WAN_PPP_USERNAME" ;;
+			static) printf '  WAN:         static %s/%s gateway=%s\n' "$WAN_IPADDR" "$WAN_CIDR" "${WAN_GATEWAY:-none}" ;;
+			disabled) printf '  WAN:         disabled\n' ;;
+		esac
+		printf '  WAN6:        %s\n' "$WAN6_PROTO"
+		[ "$WAN_PROTO" = "disabled" ] || printf '  NAT:         enabled\n'
+	fi
+	printf '\nALL DATA ON %s WILL BE ERASED.\n\n' "$TARGET"
+}
+
+confirm_erase() {
+	[ "$ASSUME_YES" = "1" ] && return 0
+	expected="ERASE $TARGET"
+	printf 'Type exactly "%s" to continue: ' "$expected"
+	IFS= read -r answer
+	[ "$answer" = "$expected" ] || die "Confirmation did not match; installation cancelled"
+}
+
+post_install_menu() {
+	printf '\nInstallation completed successfully.\n\n'
+	printf '[1] Reboot now\n'
+	printf '[2] Shutdown\n'
+	printf '[3] Return to shell\n\n'
+	printf 'Select action [3]: '
+	IFS= read -r choice || choice=3
+	case "${choice:-3}" in
+		1) reboot ;;
+		2) poweroff ;;
+		*) return 0 ;;
+	esac
+}
+
+run_install() {
+	setup_ui
+	clear_screen
+	printf '\nOpenWrt x86 Installer %s\n\n' "$INSTALLER_VERSION"
+	[ "$AUTO_STARTED" = "1" ] && printf 'Autostart mode: installer launched from boot console.\n\n'
+	printf 'This installer writes a prebuilt OpenWrt image to a disk.\n'
+	printf 'The selected disk will be erased completely.\n\n'
+
+	verify_payload
+	if [ -z "$TARGET" ]; then
+		select_target_disk
+	fi
+	validate_target_disk "$TARGET"
+
+	if [ "$SKIP_NETWORK" != "1" ]; then
+		if [ -n "$LAN_MAC" ] || [ -n "$WAN_MAC" ]; then
+			if [ -z "$LAN_MAC" ] || [ -z "$WAN_MAC" ]; then
+				die "Specify both --lan-mac and --wan-mac, or neither"
+			fi
+			validate_network_selection
+			validate_network_settings
+		else
+			select_network
+		fi
+	fi
+
+	show_summary
+	confirm_erase
+
+	if [ "$DRY_RUN" = "1" ]; then
+		log "Dry run complete; no changes were made"
+		return 0
+	fi
+
+	swapoff -a || true
+	unmount_target_partitions "$TARGET"
+	write_payload "$TARGET"
+
+	rootpart="$(get_partition_path "$TARGET" 2)"
+	resize_rootfs "$TARGET" "$rootpart"
+	write_installed_config "$rootpart" "$TARGET"
+	log "Installation completed successfully"
+
+	if [ "$ASSUME_YES" != "1" ]; then
+		post_install_menu
+	fi
+}
+
+if [ "$#" -eq 0 ]; then
+	run_install
+	exit 0
+fi
+
+action=install
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--help|-h)
+			usage
+			exit 0
+			;;
+		--list-disks)
+			action=list-disks
+			shift
+			;;
+		--list-nics)
+			action=list-nics
+			shift
+			;;
+		--target)
+			[ "$#" -ge 2 ] || die "--target requires a disk path"
+			TARGET="$2"
+			shift 2
+			;;
+		--lan-mac)
+			[ "$#" -ge 2 ] || die "--lan-mac requires an address"
+			LAN_MAC="$2"
+			shift 2
+			;;
+		--wan-mac)
+			[ "$#" -ge 2 ] || die "--wan-mac requires an address"
+			WAN_MAC="$2"
+			shift 2
+			;;
+		--lan-ip)
+			[ "$#" -ge 2 ] || die "--lan-ip requires IPv4/CIDR"
+			parse_cidr_address "$2" "$LAN_CIDR" || die "Invalid --lan-ip value: $2"
+			LAN_IP="$PARSED_IP"
+			LAN_CIDR="$PARSED_CIDR"
+			LAN_NETMASK="$PARSED_NETMASK"
+			shift 2
+			;;
+		--wan-proto)
+			[ "$#" -ge 2 ] || die "--wan-proto requires dhcp, pppoe, static, or disabled"
+			case "$2" in
+				dhcp|pppoe|static|disabled) WAN_PROTO="$2" ;;
+				*) die "Invalid --wan-proto value: $2" ;;
+			esac
+			[ "$WAN_PROTO" = "disabled" ] && WAN6_PROTO="disabled"
+			shift 2
+			;;
+		--wan6-proto)
+			[ "$#" -ge 2 ] || die "--wan6-proto requires dhcpv6 or disabled"
+			case "$2" in
+				dhcpv6|disabled) WAN6_PROTO="$2" ;;
+				*) die "Invalid --wan6-proto value: $2" ;;
+			esac
+			shift 2
+			;;
+		--pppoe-username)
+			[ "$#" -ge 2 ] || die "--pppoe-username requires a value"
+			WAN_PPP_USERNAME="$2"
+			shift 2
+			;;
+		--pppoe-password)
+			[ "$#" -ge 2 ] || die "--pppoe-password requires a value"
+			WAN_PPP_PASSWORD="$2"
+			shift 2
+			;;
+		--wan-ip)
+			[ "$#" -ge 2 ] || die "--wan-ip requires IPv4/CIDR"
+			parse_cidr_address "$2" "$WAN_CIDR" || die "Invalid --wan-ip value: $2"
+			WAN_IPADDR="$PARSED_IP"
+			WAN_CIDR="$PARSED_CIDR"
+			WAN_NETMASK="$PARSED_NETMASK"
+			shift 2
+			;;
+		--wan-gateway)
+			[ "$#" -ge 2 ] || die "--wan-gateway requires an IPv4 address"
+			is_ipv4 "$2" || die "Invalid --wan-gateway value: $2"
+			WAN_GATEWAY="$2"
+			shift 2
+			;;
+		--wan-dns)
+			[ "$#" -ge 2 ] || die "--wan-dns requires a value"
+			WAN_DNS="$2"
+			shift 2
+			;;
+		--skip-network-wizard)
+			SKIP_NETWORK=1
+			shift
+			;;
+		--autostart)
+			AUTO_STARTED=1
+			shift
+			;;
+		--allow-removable)
+			ALLOW_REMOVABLE=1
+			shift
+			;;
+		--yes-i-know-this-will-erase-data)
+			ASSUME_YES=1
+			shift
+			;;
+		--dry-run)
+			DRY_RUN=1
+			shift
+			;;
+		*)
+			die "Unknown option: $1"
+			;;
+	esac
+done
+
+setup_ui
+
+case "$action" in
+	list-disks) show_disks ;;
+	list-nics) show_nics ;;
+	install) run_install ;;
+esac

@@ -1,0 +1,31 @@
+# Syntax: <scope> <package>
+# Scope is target, installer, or all.
+all kmod-e1000
+all kmod-e1000e
+all kmod-igb
+all kmod-igc
+all kmod-ixgbe
+all kmod-i40e
+all kmod-ice
+all kmod-r8169
+all kmod-tg3
+all kmod-bnx2
+all kmod-bnx2x
+all kmod-atlantic
+all ethtool
+all pciutils
+all usbutils
+all nano
+all htop
+all curl
+all wget-ssl
+target irqbalance
+installer coreutils
+installer coreutils-dd
+installer coreutils-sync
+installer smartmontools
+installer dialog
+installer bash
+installer tmux
+installer screen
+

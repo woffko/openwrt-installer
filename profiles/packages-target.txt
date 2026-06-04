@@ -1,0 +1,23 @@
+# Required packages for the installed router.
+luci
+luci-ssl
+uhttpd
+rpcd
+dropbear
+firewall4
+nftables-json
+dnsmasq
+odhcpd-ipv6only
+odhcp6c
+ppp
+ppp-mod-pppoe
+kmod-pppoe
+kmod-nft-offload
+e2fsprogs
+resize2fs
+parted
+fdisk
+lsblk
+blkid
+block-mount
+ca-bundle

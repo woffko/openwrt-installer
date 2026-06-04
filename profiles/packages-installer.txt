@@ -1,0 +1,24 @@
+# Required packages for the live installer.
+luci
+luci-ssl
+dropbear
+uhttpd
+rpcd
+firewall4
+dnsmasq
+odhcpd-ipv6only
+odhcp6c
+kmod-nvme
+kmod-ata-ahci
+kmod-usb-storage
+kmod-usb3
+kmod-scsi-core
+parted
+fdisk
+e2fsprogs
+resize2fs
+blkid
+lsblk
+block-mount
+gzip
+ca-bundle

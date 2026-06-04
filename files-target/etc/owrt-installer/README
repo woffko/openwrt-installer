@@ -1,0 +1,5 @@
+This directory is populated by the OpenWrt x86 installer.
+
+interface-map stores the LAN/WAN MAC addresses and network settings selected
+during installation.
+The first-boot uci-defaults script maps those MAC addresses to device names.

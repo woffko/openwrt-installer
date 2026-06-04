@@ -1,0 +1,8 @@
+OpenWrt x86 Installer
+
+The disk installer starts automatically on the system console.
+Manual command:
+
+  owrt-install
+
+The selected target disk will be erased after explicit confirmation.
