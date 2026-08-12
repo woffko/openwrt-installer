@@ -168,6 +168,7 @@ ccce64c10bc85d3dc08115f899ec569f9813ec6542d20bee5917e96e05944f81  manifest.json
 - проверка manifest поля `payload_uncompressed_size` в `output/manifest.json` и initramfs;
 - проверка, что `dd status=progress` больше не используется в runtime installer path;
 - добавлен и пройден быстрый `make ui-smoke`: line menu/stage/failure, ANSI stage через pseudo-TTY, dialog fallback mode и terminal-size checks 80x25/100x30/79x19;
+- добавлен и пройден ANSI snapshot smoke внутри `make ui-smoke`: render menu в pseudo-TTY, strip ANSI/CR, проверка header/steps/items/footer без escape-мусора;
 - добавлен и пройден Ctrl+C cleanup smoke внутри `make ui-smoke`: ANSI menu в pseudo-TTY получает interrupt byte, выходит с кодом 130 и возвращает cursor-visible state;
 - добавлен и пройден Esc cancel smoke внутри `make ui-smoke`: одиночный Esc в ANSI menu отменяет выбор без случайного Enter/selection;
 - добавлен и пройден безопасный `make install-flow-smoke`: source-only проверка CLI parsing, `--dry-run`, `--skip-network-wizard` и запрет destructive write path;

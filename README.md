@@ -206,8 +206,8 @@ Run ShellCheck when installed:
 make shellcheck
 ```
 
-Run fast UI regression smoke tests for line, ANSI, Ctrl+C cleanup, Esc cancel,
-dialog fallback, and terminal-size behavior:
+Run fast UI regression smoke tests for line, ANSI snapshot rendering,
+Ctrl+C cleanup, Esc cancel, dialog fallback, and terminal-size behavior:
 
 ```sh
 make ui-smoke

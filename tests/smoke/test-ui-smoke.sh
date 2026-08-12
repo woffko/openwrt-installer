@@ -38,6 +38,12 @@ assert_not_contains() {
 	fi
 }
 
+strip_ansi_file() {
+	file="$1"
+	esc="$(printf '\033')"
+	sed "s/${esc}\\[[0-9;?]*[A-Za-z]//g" "$file" | tr -d '\r'
+}
+
 run_line_stage_smoke() {
 	log_file="$1"
 	out_file="$2"
@@ -107,6 +113,48 @@ run_ansi_stage_smoke() {
 	assert_contains "$out_file" "Stage: Write image"
 	assert_contains "$out_file" "Progress:"
 	assert_contains "$out_file" "Recent log:"
+}
+
+run_ansi_menu_snapshot_smoke() {
+	work_dir="$1"
+	out_file="$2"
+	clean_file="$3"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI menu snapshot smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-menu-snapshot.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'INSTALLER_VERSION=smoke'
+		printf 'MENU_LIST=%s\n' "$(shell_quote "$work_dir/menu-snapshot")"
+		printf '%s\n' 'stty rows 25 cols 80 2>/dev/null || true'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'menu_reset'
+		printf '%s\n' 'menu_note "Selected disk will be erased after final confirmation."'
+		printf '%s\n' 'menu_add "/dev/sda" "/dev/sda 119.2G SSD removable=no live=no"'
+		printf '%s\n' 'menu_add "/dev/nvme0n1" "/dev/nvme0n1 476.9G NVMe removable=no live=no"'
+		printf '%s\n' 'render_arrow_menu "Select target disk" 1'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	OWRT_UI_MODE=ansi TERM=xterm script -q -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "ANSI menu snapshot smoke failed"
+	strip_ansi_file "$out_file" > "$clean_file"
+
+	assert_contains "$clean_file" "OPENWRT HELLFORGE INSTALLER"
+	assert_contains "$clean_file" "Steps: [DISK] ->  LAN  ->  WAN  ->  REVIEW  ->  INSTALL"
+	assert_contains "$clean_file" "Select target disk"
+	assert_contains "$clean_file" "Selected disk will be erased after final confirmation."
+	assert_contains "$clean_file" "> /dev/sda 119.2G SSD removable=no live=no"
+	assert_contains "$clean_file" "  /dev/nvme0n1 476.9G NVMe removable=no live=no"
+	assert_contains "$clean_file" "Up/Down Move  Enter Select  Esc/q Cancel"
+	assert_not_contains "$clean_file" "$(printf '\033')"
 }
 
 run_ansi_menu_ctrl_c_smoke() {
@@ -294,6 +342,7 @@ EOF
 run_line_stage_smoke "$log_file" "$work_dir/line-stage.out"
 run_line_menu_smoke "$work_dir" "$work_dir/line-menu.out"
 run_ansi_stage_smoke "$work_dir" "$log_file" "$work_dir/ansi-stage.out"
+run_ansi_menu_snapshot_smoke "$work_dir" "$work_dir/ansi-menu-snapshot.out" "$work_dir/ansi-menu-snapshot.clean"
 run_ansi_menu_ctrl_c_smoke "$work_dir" "$work_dir/ansi-menu-ctrl-c.out"
 run_ansi_menu_esc_smoke "$work_dir" "$work_dir/ansi-menu-esc.out"
 run_dialog_mode_smoke "$work_dir" "$work_dir/dialog-mode.out"

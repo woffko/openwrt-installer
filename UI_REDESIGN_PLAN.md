@@ -269,7 +269,7 @@ progress без надежного счетчика вроде `pv`.
 
 Цель: не выпускать красивый, но хрупкий installer.
 
-Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Добавлен быстрый повторяемый `make ui-smoke` для line menu/stage/failure, ANSI stage, Ctrl+C cleanup, Esc cancel, dialog fallback и terminal-size checks. Добавлен `make install-flow-smoke` для `--dry-run`/`--skip-network-wizard` guards. Добавлен `make smoke` как быстрый non-ISO aggregate для syntax-check, shellcheck, ui-smoke и install-flow-smoke. Добавлен автоматический `make iso-smoke`, который bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
+Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Добавлен быстрый повторяемый `make ui-smoke` для line menu/stage/failure, ANSI stage, ANSI snapshot после strip ANSI/CR, Ctrl+C cleanup, Esc cancel, dialog fallback и terminal-size checks. Добавлен `make install-flow-smoke` для `--dry-run`/`--skip-network-wizard` guards. Добавлен `make smoke` как быстрый non-ISO aggregate для syntax-check, shellcheck, ui-smoke и install-flow-smoke. Добавлен автоматический `make iso-smoke`, который bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
 
 Минимальная матрица:
 
@@ -340,5 +340,6 @@ progress без надежного счетчика вроде `pv`.
 14. [done] Добавить Ctrl+C cleanup smoke для ANSI menu: pseudo-TTY, interrupt byte, exit 130, cursor restore.
 15. [done] Добавить быстрый `make smoke` aggregate без ISO/QEMU rebuild.
 16. [done] Добавить bare Esc cancel для ANSI menu и smoke-test: pseudo-TTY, delayed Enter на cancel screen, без случайного выбора.
-17. [pending] Добавить GitHub Actions `make smoke` gate на push/PR, когда доступный GitHub token/connection сможет записывать `.github/workflows/*` с `workflow` scope.
-18. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.
+17. [done] Добавить ANSI snapshot smoke: render menu в pseudo-TTY, strip ANSI/CR, проверить header/steps/items/footer без escape-мусора.
+18. [pending] Добавить GitHub Actions `make smoke` gate на push/PR, когда доступный GitHub token/connection сможет записывать `.github/workflows/*` с `workflow` scope.
+19. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.
