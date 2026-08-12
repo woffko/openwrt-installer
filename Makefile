@@ -1,6 +1,6 @@
 SHELLCHECK ?= $(if $(wildcard build/host-tools/usr/bin/shellcheck),build/host-tools/usr/bin/shellcheck,shellcheck)
 
-.PHONY: all download target installer iso iso-host-tools clean test ui-smoke install-flow-smoke iso-smoke shellcheck syntax-check
+.PHONY: all download target installer iso iso-host-tools clean test smoke ui-smoke install-flow-smoke iso-smoke shellcheck syntax-check
 
 all: target installer
 
@@ -22,6 +22,12 @@ iso-host-tools:
 test:
 	./scripts/test-qemu-uefi.sh
 	./scripts/test-qemu-bios.sh
+
+smoke:
+	$(MAKE) syntax-check
+	$(MAKE) shellcheck
+	$(MAKE) ui-smoke
+	$(MAKE) install-flow-smoke
 
 ui-smoke:
 	./tests/smoke/test-ui-smoke.sh

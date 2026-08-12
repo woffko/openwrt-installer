@@ -187,6 +187,12 @@ The installed system also contains `/etc/openwrt-installer-release`.
 
 ## Checks
 
+Run the fast non-ISO regression gate:
+
+```sh
+make smoke
+```
+
 Run POSIX shell syntax checks:
 
 ```sh
