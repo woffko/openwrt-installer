@@ -9,11 +9,12 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя функциональная правка: Hellforge install progress/log screen and failure screen.
+- Последняя функциональная правка: Hellforge ANSI warning/menu refinements and terminal-size fallback gates.
 - Последний опубликованный release: `v1.0-alpha.2`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.2`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
 - Старый release `v1.0-alpha.1` оставлен без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
+- Локальный ISO пересобран после последних UI/runtime изменений; release `v1.0-alpha.2` не обновлялся и его asset теперь старее локального ISO.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, optional `dialog`/mouse later).
@@ -119,9 +120,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-0c3647ffadd0bac4d224a8d538fd6aab3bf2329788d70a2b73b70307bf4b130a  openwrt-x86-64-installer.img.gz
-582ab590d05d703fe122d6caa35aad4d5245fe0818512ad083950de55d117753  openwrt-x86-64-installer-hybrid.iso
-ccce64c10bc85d3dc08115f899ec569f9813ec6542d20bee5917e96e05944f81  manifest.json
+d78a777bd96e35340ee91b494ecc0e3a1d4c32d85edc726681089cfd46ad1931  openwrt-x86-64-installer.img.gz
+a2ef9ef1fd969ed236158caaa38c6f9e473ce42f218f4efb0913aa7ec6ab2fef  openwrt-x86-64-installer-hybrid.iso
+eb689e0d7bd48c407bcd008b4703c910bd248ae2829d677f413df75dadfc7159  manifest.json
 ```
 
 ## Проверки
@@ -131,6 +132,7 @@ ccce64c10bc85d3dc08115f899ec569f9813ec6542d20bee5917e96e05944f81  manifest.json
 - `make syntax-check`;
 - `make shellcheck`;
 - проверка `sha256sums.txt`;
+- пересборка актуального hybrid ISO через `make iso` после последних UI/runtime изменений;
 - проверка ISO через `fdisk` и `xorriso`;
 - проверка, что `owrt-install` и `owrt-installer-ui` внутри ISO/initramfs совпадают с исходными файлами;
 - smoke-тест логики выбора LAN/WAN на 2 и 3 интерфейсах;

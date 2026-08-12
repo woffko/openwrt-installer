@@ -13,7 +13,8 @@
 
 - Current alpha release: `v1.0-alpha.2`.
 - Current hybrid ISO: `output/openwrt-x86-64-installer-hybrid.iso`.
-- Current ISO SHA-256: `582ab590d05d703fe122d6caa35aad4d5245fe0818512ad083950de55d117753`.
+- Current local ISO SHA-256: `a2ef9ef1fd969ed236158caaa38c6f9e473ce42f218f4efb0913aa7ec6ab2fef`.
+- Published `v1.0-alpha.2` release assets are older; do not move that tag.
 
 ## Semantic Navigation With LSP MCP
 
