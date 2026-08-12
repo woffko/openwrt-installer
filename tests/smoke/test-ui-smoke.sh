@@ -139,6 +139,54 @@ run_dialog_mode_smoke() {
 	assert_not_contains "$out_file" "mode=line"
 }
 
+run_terminal_size_smoke_case() {
+	work_dir="$1"
+	rows="$2"
+	cols="$3"
+	expected="$4"
+	out_file="$work_dir/terminal-${cols}x${rows}.out"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; terminal-size smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/terminal-${cols}x${rows}.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf 'stty rows %s cols %s 2>/dev/null || true\n' "$rows" "$cols"
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' "printf \"mode=%s width=%s height=%s\\n\" \"\$UI_MODE_ACTUAL\" \"\$UI_WIDTH\" \"\$UI_HEIGHT\""
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	OWRT_UI_MODE=auto TERM=xterm script -q -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "terminal-size smoke failed for ${cols}x${rows}"
+
+	case "$expected" in
+		line)
+			assert_contains "$out_file" "mode=line"
+			;;
+		tui)
+			assert_not_contains "$out_file" "mode=line"
+			;;
+		*)
+			fail "Unsupported terminal-size expectation: $expected"
+			;;
+	esac
+}
+
+run_terminal_size_smoke() {
+	work_dir="$1"
+
+	run_terminal_size_smoke_case "$work_dir" 25 80 tui
+	run_terminal_size_smoke_case "$work_dir" 30 100 tui
+	run_terminal_size_smoke_case "$work_dir" 19 79 line
+}
+
 [ -r "$UI_LIB" ] || fail "UI library not found: $UI_LIB"
 
 work_dir="$(mktemp -d "$TMPDIR/owrt-ui-smoke.XXXXXX")"
@@ -155,5 +203,6 @@ run_line_stage_smoke "$log_file" "$work_dir/line-stage.out"
 run_line_menu_smoke "$work_dir" "$work_dir/line-menu.out"
 run_ansi_stage_smoke "$work_dir" "$log_file" "$work_dir/ansi-stage.out"
 run_dialog_mode_smoke "$work_dir" "$work_dir/dialog-mode.out"
+run_terminal_size_smoke "$work_dir"
 
 printf 'UI smoke tests passed.\n'

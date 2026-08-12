@@ -167,7 +167,7 @@ ccce64c10bc85d3dc08115f899ec569f9813ec6542d20bee5917e96e05944f81  manifest.json
 - ANSI pseudo-TTY smoke для нового progress bar и compact log pane;
 - проверка manifest поля `payload_uncompressed_size` в `output/manifest.json` и initramfs;
 - проверка, что `dd status=progress` больше не используется в runtime installer path;
-- добавлен и пройден быстрый `make ui-smoke`: line menu/stage/failure, ANSI stage через pseudo-TTY и dialog fallback mode;
+- добавлен и пройден быстрый `make ui-smoke`: line menu/stage/failure, ANSI stage через pseudo-TTY, dialog fallback mode и terminal-size checks 80x25/100x30/79x19;
 - добавлен автоматический `make iso-smoke`: bounded QEMU BIOS/UEFI boot текущего hybrid ISO с проверкой GRUB, kernel/initramfs, OpenWrt console и marker автозапуска на `tty1`;
 - BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
 - UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
