@@ -199,6 +199,12 @@ Run ShellCheck when installed:
 make shellcheck
 ```
 
+Run fast UI regression smoke tests:
+
+```sh
+make ui-smoke
+```
+
 QEMU scripts are semi-manual smoke tests:
 
 ```sh

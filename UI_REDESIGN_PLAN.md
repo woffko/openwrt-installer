@@ -269,7 +269,7 @@ progress без надежного счетчика вроде `pv`.
 
 Цель: не выпускать красивый, но хрупкий installer.
 
-Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`.
+Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Добавлен быстрый повторяемый `make ui-smoke` для line menu/stage/failure, ANSI stage и dialog fallback checks.
 
 Минимальная матрица:
 
@@ -332,4 +332,5 @@ progress без надежного счетчика вроде `pv`.
 7. [done] Только после этого заниматься `dialog --mouse`.
 8. [done] Добавить настоящий Back/Edit flow для network forms без риска случайного destructive continue.
 9. [done] Реализовать install progress screen, `/tmp/owrt-installer.log`, failure screen и manifest `payload_uncompressed_size`.
-10. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.
+10. [done] Добавить быстрый `make ui-smoke` для повторяемой проверки line/ANSI/dialog-fallback UI.
+11. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.
