@@ -21,7 +21,7 @@ shell_quote() {
 assert_contains() {
 	file="$1"
 	pattern="$2"
-	if ! grep -F "$pattern" "$file" >/dev/null 2>&1; then
+	if ! grep -F -- "$pattern" "$file" >/dev/null 2>&1; then
 		printf '%s\n' "--- $file ---" >&2
 		sed -n '1,160p' "$file" >&2 || true
 		fail "Expected output to contain: $pattern"
@@ -31,7 +31,7 @@ assert_contains() {
 assert_not_contains() {
 	file="$1"
 	pattern="$2"
-	if grep -F "$pattern" "$file" >/dev/null 2>&1; then
+	if grep -F -- "$pattern" "$file" >/dev/null 2>&1; then
 		printf '%s\n' "--- $file ---" >&2
 		sed -n '1,160p' "$file" >&2 || true
 		fail "Output must not contain: $pattern"
@@ -61,6 +61,84 @@ run_line_stage_smoke() {
 	assert_contains "$out_file" "Log: $log_file"
 	assert_contains "$out_file" "Recent log:"
 	assert_contains "$out_file" "12:00:03 ERROR: forced"
+}
+
+run_line_progress_stream_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	OWRT_UI_MODE=line TERM=dumb sh -eu -c '
+		. "$1"
+		progress_fifo="$2/line-progress.fifo"
+		rm -f "$progress_fifo"
+		mkfifo "$progress_fifo"
+		(printf "0\n42\ninvalid\n100\n" > "$progress_fifo") &
+		writer_pid=$!
+		setup_ui
+		ui_install_progress_stream "$progress_fifo" "Write image" "Writing test image." ""
+		wait "$writer_pid"
+		rm -f "$progress_fifo"
+	' sh "$UI_LIB" "$work_dir" > "$out_file" 2>&1
+
+	assert_contains "$out_file" "write progress: 0%"
+	assert_contains "$out_file" "write progress: 42%"
+	assert_contains "$out_file" "write progress: 100%"
+	assert_not_contains "$out_file" "invalid%"
+}
+
+run_whiptail_progress_stream_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; whiptail progress smoke skipped.\n'
+		return 0
+	fi
+
+	fake_bin="$work_dir/progress-whiptail-bin"
+	mkdir -p "$fake_bin"
+	# shellcheck disable=SC2016
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' '[ "${1:-}" = "--version" ] && exit 0'
+		printf '%s\n' 'printf "%s\n" "$*" > "$WHIPTAIL_ARGS"'
+		printf '%s\n' 'cat > "$WHIPTAIL_INPUT"'
+	} > "$fake_bin/whiptail"
+	chmod +x "$fake_bin/whiptail"
+
+	harness="$work_dir/whiptail-progress.sh"
+	# shellcheck disable=SC2016
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf 'progress_fifo=%s\n' "$(shell_quote "$work_dir/whiptail-progress.fifo")"
+		printf 'marker_file=%s\n' "$(shell_quote "$work_dir/whiptail-progress.markers")"
+		printf '%s\n' 'autostart_serial_marker() { printf "%s\n" "$1" >> "$marker_file"; }'
+		printf '%s\n' 'rm -f "$progress_fifo" "$marker_file"'
+		printf '%s\n' 'mkfifo "$progress_fifo"'
+		printf '%s\n' '(printf "0\n37\n100\n" > "$progress_fifo") &'
+		printf '%s\n' 'writer_pid=$!'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'ui_install_progress_stream "$progress_fifo" "Write image" "Writing test image." ""'
+		printf '%s\n' 'wait "$writer_pid"'
+		printf '%s\n' 'rm -f "$progress_fifo"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	WHIPTAIL_ARGS="$work_dir/whiptail-progress.args" \
+	WHIPTAIL_INPUT="$work_dir/whiptail-progress.input" \
+	PATH="$fake_bin:$PATH" OWRT_UI_MODE=whiptail TERM=xterm \
+		script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "Whiptail progress stream smoke failed"
+
+	assert_contains "$work_dir/whiptail-progress.args" "--fb --backtitle OpenWrt Hellforge Installer --title Install --gauge"
+	assert_contains "$work_dir/whiptail-progress.input" "0"
+	assert_contains "$work_dir/whiptail-progress.input" "37"
+	assert_contains "$work_dir/whiptail-progress.input" "100"
+	assert_contains "$work_dir/whiptail-progress.markers" "OWRT_INSTALLER_WRITE_PROGRESS=37"
+	assert_contains "$work_dir/whiptail-progress.markers" "OWRT_INSTALLER_WRITE_PROGRESS=100"
 }
 
 run_line_menu_smoke() {
@@ -835,6 +913,8 @@ cat > "$log_file" <<'EOF'
 EOF
 
 run_line_stage_smoke "$log_file" "$work_dir/line-stage.out"
+run_line_progress_stream_smoke "$work_dir" "$work_dir/line-progress.out"
+run_whiptail_progress_stream_smoke "$work_dir" "$work_dir/whiptail-progress.out"
 run_line_menu_smoke "$work_dir" "$work_dir/line-menu.out"
 run_ansi_stage_smoke "$work_dir" "$log_file" "$work_dir/ansi-stage.out"
 run_ansi_menu_snapshot_smoke "$work_dir" "$work_dir/ansi-menu-snapshot.out" "$work_dir/ansi-menu-snapshot.clean"

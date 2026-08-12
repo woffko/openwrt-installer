@@ -155,10 +155,16 @@ Before the final destructive confirmation, the review screen offers a safe
 action menu: continue to the exact `ERASE /dev/...` prompt, edit LAN/WAN
 interfaces and network settings, or cancel back to the shell.
 
-During disk writes and filesystem resize, the installer shows stage progress
-and the last few lines from `/tmp/owrt-installer.log`. Command output is kept
-out of the TUI. If a step fails, the failure screen shows the log path and a
-short log tail before returning to the shell.
+During the payload write, the installer uses the packaged `pv` utility and the
+manifest's uncompressed size to show byte-accurate percentage progress. The
+local curses UI uses a native gauge; ANSI and line modes render the same
+numeric stream. `gzip`, `pv`, and `dd` are tracked independently so a failure
+from any stage is reported instead of being hidden by a shell pipeline. Other
+disk and filesystem operations show stage progress and the last few lines from
+`/tmp/owrt-installer.log`. If exact sizing or `pv` is unavailable, the runtime
+falls back to stage-only progress. Command output stays out of the TUI, and a
+failure screen shows the log path and a short log tail before returning to the
+shell.
 
 Unattended-style invocation still requires the explicit destructive flag:
 
@@ -203,6 +209,10 @@ The installed system also contains `/etc/openwrt-installer-release`.
 
 - Add an OpenWrt configuration import step after target disk selection: choose
   between a clean install or importing configs/backups from a USB drive.
+- Investigate local VGA mouse input as a separate helper/package. The standard
+  keyboard flow remains the supported local-console path until an evdev-based
+  implementation has a threat model, QEMU USB mouse coverage, and hardware
+  validation.
 
 ## Checks
 
@@ -238,10 +248,18 @@ Run safe install-flow smoke tests for CLI flags and dry-run guards:
 make install-flow-smoke
 ```
 
-Run automated BIOS, UEFI, and VGA hybrid ISO boot smoke tests after `make iso`:
+Run the full automated hybrid ISO gate after `make iso`. It covers BIOS, UEFI,
+the VGA curses framebuffer, a destructive install to a disposable qcow2 disk,
+and a boot of the installed OpenWrt system:
 
 ```sh
 make iso-smoke
+```
+
+Run only the automated install and installed-system boot check:
+
+```sh
+make install-smoke
 ```
 
 Run only the VGA backend/framebuffer check:

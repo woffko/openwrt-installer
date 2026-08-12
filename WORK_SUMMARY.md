@@ -9,12 +9,12 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя функциональная правка: packaged `whiptail` local-console backend, безопасная curses-абстракция, real pseudo-TTY tests, VGA framebuffer smoke и runtime version `v1.0-alpha.6`.
-- Последний опубликованный release: `v1.0-alpha.6`.
-- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.6`.
+- Последняя функциональная правка: обязательный `pv`, честный byte-percent записи payload, раздельный контроль `gzip`/`pv`/`dd`, cleanup FIFO/processes и полный QEMU install+boot smoke; runtime version `v1.0-alpha.7`.
+- Последний опубликованный release: `v1.0-alpha.7`.
+- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.7`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
-- Старые releases `v1.0-alpha.1`...`v1.0-alpha.5` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
-- Локальный ISO пересобран с обязательным `whiptail` backend и публикуется как `v1.0-alpha.6`.
+- Старые releases `v1.0-alpha.1`...`v1.0-alpha.6` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
+- Локальный ISO пересобран с обязательными `whiptail` и `pv` и публикуется как `v1.0-alpha.7`; SHA-256: `89f9e2c89df7fe27f882d1d2db7114caefff226ad840b70b92b1205458ddfa7c`.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, packaged `whiptail` на local console, ANSI SGR mouse для terminal emulators, line fallback и optional `dialog`).
@@ -27,6 +27,8 @@
 - Перед финальным destructive confirmation добавлен safe review action menu: continue к точному `ERASE /dev/...`, edit LAN/WAN interfaces and network settings или cancel.
 - Для установки на диск добавлен stage progress screen с compact log pane, `/tmp/owrt-installer.log`, тихой записью `dd` в лог и отдельным failure screen с хвостом лога.
 - `manifest.json` теперь содержит `payload_uncompressed_size`; установщик логирует распакованный размер payload перед записью.
+- `pv 1.9.31` добавлен как обязательный package. Запись payload показывает numeric percent в native curses gauge или ANSI/line renderer; `gzip`, `pv` и `dd` запускаются через отдельные FIFO и проверяются по отдельным PID/status.
+- `make iso-smoke` теперь дополнительно проходит весь wizard, пишет образ на одноразовый qcow2, проверяет progress до `100`, загружает установленную систему и читает `/etc/openwrt-installer-release`.
 
 ## Что сделано
 
@@ -185,6 +187,8 @@ fbb1376168991db821088f0265d393c7e36ac53b4a83b3d720d453c65013eaed  manifest.json
 - BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
 - UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
 - VGA QEMU smoke-test дождался target-disk menu на `tty1`, подтвердил `OWRT_INSTALLER_UI_BACKEND=whiptail` и сохранил непустой framebuffer `build/qemu-iso-smoke/vga-installer.ppm`;
+- QEMU install smoke автоматически прошел disk/LAN/WAN/WAN6/review/erase flow, увидел `OWRT_INSTALLER_WRITE_PROGRESS=100`, загрузил записанный qcow2 и подтвердил `installer_version=v1.0-alpha.7`, `installed_by=openwrt-x86-installer`, `target_disk=/dev/vda`;
+- `make smoke` и единый `make iso-smoke` прошли перед публикацией; checksum manifest, GPT, BIOS/UEFI El Torito entries, source/initramfs compare и embedded `pv 1.9.31` проверены;
 - real pseudo-TTY smoke управляет настоящим host `whiptail`: Down/Enter, input edit, Esc/Back, password hiding, theme, shell-metacharacter safety и backend precedence/fallback;
 - на serial видно, что live installer управляется `/etc/inittab` на `tty1`; serial остается fallback/login каналом.
 

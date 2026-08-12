@@ -79,6 +79,30 @@ ui_is_serial() {
 	return 1
 }
 
+ui_ready_marker() {
+	ui_ready_title="$1"
+	case "$ui_ready_title" in
+		"Select target disk") ui_ready_name="target-disk" ;;
+		"Select LAN interface") ui_ready_name="lan-interface" ;;
+		"Select WAN interface") ui_ready_name="wan-interface" ;;
+		"WAN interface") ui_ready_name="wan-interface-auto" ;;
+		"LAN IPv4 settings") ui_ready_name="lan-ip" ;;
+		"PPPoE settings") ui_ready_name="pppoe" ;;
+		"Static WAN IPv4 settings") ui_ready_name="wan-static" ;;
+		"Select WAN mode") ui_ready_name="wan-mode" ;;
+		"Select WAN IPv6 configuration type") ui_ready_name="wan6-mode" ;;
+		"Review installation") ui_ready_name="review-summary" ;;
+		"Review action") ui_ready_name="review-action" ;;
+		"Final erase confirmation") ui_ready_name="final-erase-info" ;;
+		"Installation success") ui_ready_name="installation-success" ;;
+		"Installation completed") ui_ready_name="post-install-menu" ;;
+		*) return 0 ;;
+	esac
+	if command -v autostart_serial_marker >/dev/null 2>&1; then
+		autostart_serial_marker "OWRT_INSTALLER_UI_READY=$ui_ready_name"
+	fi
+}
+
 ui_command_usable() {
 	command -v "$1" >/dev/null 2>&1 || return 1
 	"$1" --version >/dev/null 2>&1
@@ -521,6 +545,76 @@ ui_install_progress_line() {
 	ui_line "Progress: [$(ui_repeat '#' "$filled")$(ui_repeat '-' "$empty")] $index/$total"
 }
 
+ui_install_byte_progress() {
+	ui_byte_stage="$1"
+	ui_byte_detail="$2"
+	ui_byte_percent="$3"
+	ui_byte_log_file="${4:-}"
+	case "$ui_byte_percent" in
+		''|*[!0-9]*) return 0 ;;
+	esac
+	[ "$ui_byte_percent" -gt 100 ] && ui_byte_percent=100
+	ui_byte_bar_width=34
+	ui_byte_filled=$((ui_byte_percent * ui_byte_bar_width / 100))
+	ui_byte_empty=$((ui_byte_bar_width - ui_byte_filled))
+
+	if ui_ansi_active; then
+		ui_screen_begin "Install"
+		ui_line "Stage: $ui_byte_stage"
+		ui_line "Write: [$(ui_repeat '#' "$ui_byte_filled")$(ui_repeat '-' "$ui_byte_empty")] ${ui_byte_percent}%"
+		[ -n "$ui_byte_detail" ] && ui_line "$ui_byte_detail"
+		ui_blank
+		if [ -n "$ui_byte_log_file" ] && [ -r "$ui_byte_log_file" ]; then
+			ui_line "Recent log:"
+			ui_log_tail_lines "$ui_byte_log_file" 4 || true
+			ui_blank
+		fi
+		ui_line "Do not power off the machine while this step is running."
+		ui_rule
+		ui_show_cursor
+	else
+		printf '[owrt-installer] write progress: %s%%\n' "$ui_byte_percent"
+	fi
+}
+
+ui_install_progress_stream() {
+	ui_progress_fifo="$1"
+	ui_progress_stage="$2"
+	ui_progress_detail="$3"
+	ui_progress_log_file="${4:-}"
+
+	if ui_dialog_active; then
+		ui_progress_body="Stage: $ui_progress_stage
+
+$ui_progress_detail
+
+Writing the embedded image. Do not power off the machine."
+		while IFS= read -r ui_progress_percent; do
+			case "$ui_progress_percent" in
+				''|*[!0-9]*) continue ;;
+			esac
+			if command -v autostart_serial_marker >/dev/null 2>&1; then
+				autostart_serial_marker "OWRT_INSTALLER_WRITE_PROGRESS=$ui_progress_percent"
+			fi
+			printf '%s\n' "$ui_progress_percent"
+		done < "$ui_progress_fifo" |
+			ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Install" \
+				--gauge "$ui_progress_body" 12 76 0
+		return $?
+	fi
+
+	while IFS= read -r ui_progress_percent; do
+		case "$ui_progress_percent" in
+			''|*[!0-9]*) continue ;;
+		esac
+		if command -v autostart_serial_marker >/dev/null 2>&1; then
+			autostart_serial_marker "OWRT_INSTALLER_WRITE_PROGRESS=$ui_progress_percent"
+		fi
+		ui_install_byte_progress "$ui_progress_stage" "$ui_progress_detail" \
+			"$ui_progress_percent" "$ui_progress_log_file"
+	done < "$ui_progress_fifo"
+}
+
 render_numbered_menu() {
 	if [ -n "$MENU_NOTE" ]; then
 		if ui_ansi_active; then
@@ -776,6 +870,7 @@ select_from_menu() {
 	prompt="$2"
 	count="$(menu_count)"
 	[ "$count" -gt 0 ] || die "No choices available for $prompt"
+	ui_ready_marker "$title"
 
 	if ui_dialog_active; then
 		if [ "$UI_MODE_ACTUAL" = "whiptail" ]; then
@@ -887,6 +982,7 @@ prompt_default() {
 	example="${4:-}"
 	error="${5:-}"
 	details="${6:-}"
+	ui_ready_marker "$title"
 	if ui_dialog_active; then
 		body="$details"
 		[ -n "$example" ] && body="${body}${body:+
@@ -944,6 +1040,7 @@ prompt_secret() {
 	error="${3:-}"
 	details="${4:-}"
 	default="${5:-}"
+	ui_ready_marker "$title"
 	if ui_dialog_active; then
 		body="${details:-Input is hidden.}"
 		[ -n "$default" ] && body="$body
@@ -1020,6 +1117,7 @@ ui_welcome_screen() {
 ui_notice() {
 	title="$1"
 	message="$2"
+	ui_ready_marker "$title"
 	if ui_dialog_active; then
 		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "$title" --msgbox "$message" 0 0 ||
 			die "Notice cancelled"
@@ -1039,6 +1137,7 @@ ui_notice() {
 }
 
 ui_summary_screen() {
+	ui_ready_marker "Review installation"
 	if ui_dialog_active; then
 		body="Target disk: $TARGET"
 		if [ "$SKIP_NETWORK" = "1" ]; then
@@ -1098,6 +1197,7 @@ ALL DATA ON $TARGET WILL BE ERASED."
 
 ui_confirm_erase_screen() {
 	expected="$1"
+	ui_ready_marker "Final erase confirmation"
 	if ui_dialog_active; then
 		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Final erase confirmation" --msgbox "DESTRUCTIVE ACTION
 
@@ -1217,6 +1317,7 @@ Return to shell and inspect the log before retrying."
 
 ui_success_screen() {
 	message="$1"
+	ui_ready_marker "Installation success"
 	if ui_dialog_active; then
 		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Installation completed" --msgbox "$message" 0 0 ||
 			true

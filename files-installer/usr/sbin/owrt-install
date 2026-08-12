@@ -2,7 +2,7 @@
 
 set -eu
 
-INSTALLER_VERSION="v1.0-alpha.6"
+INSTALLER_VERSION="v1.0-alpha.7"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 TARGET_MOUNT="/mnt/target"
@@ -47,6 +47,12 @@ TARGET_MOUNTED=0
 TTY_STATE=""
 MENU_NOTE=""
 CLEANED_UP=0
+WRITE_GZIP_PID=""
+WRITE_PV_PID=""
+WRITE_DD_PID=""
+WRITE_SOURCE_FIFO=""
+WRITE_OUTPUT_FIFO=""
+WRITE_PROGRESS_FIFO=""
 
 C_RESET=""
 C_BOLD=""
@@ -123,6 +129,18 @@ cleanup() {
 	[ "$CLEANED_UP" = "0" ] || return 0
 	CLEANED_UP=1
 	WAN_PPP_PASSWORD=""
+	for write_pid in "$WRITE_GZIP_PID" "$WRITE_PV_PID" "$WRITE_DD_PID"; do
+		case "$write_pid" in
+			''|*[!0-9]*) ;;
+			*) kill "$write_pid" >/dev/null 2>&1 || true ;;
+		esac
+	done
+	for write_pid in "$WRITE_GZIP_PID" "$WRITE_PV_PID" "$WRITE_DD_PID"; do
+		case "$write_pid" in
+			''|*[!0-9]*) ;;
+			*) wait "$write_pid" >/dev/null 2>&1 || true ;;
+		esac
+	done
 	if command -v ui_leave >/dev/null 2>&1; then
 		ui_leave
 	fi
@@ -133,6 +151,10 @@ cleanup() {
 		umount "$TARGET_MOUNT" >/dev/null 2>&1 || true
 	fi
 	rm -f "$DISK_LIST" "$NIC_LIST" "$NIC_CHOICE_LIST" "$MENU_LIST"
+	for write_fifo in "$WRITE_SOURCE_FIFO" "$WRITE_OUTPUT_FIFO" "$WRITE_PROGRESS_FIFO"; do
+		[ -n "$write_fifo" ] && rm -f "$write_fifo"
+	done
+	return 0
 }
 
 trap 'cleanup; exit 130' INT TERM
@@ -475,7 +497,6 @@ validate_target_disk() {
 select_target_disk() {
 	build_disk_menu
 	menu_warning "WARNING: selected disk will be erased after final confirmation."
-	autostart_serial_marker "OWRT_INSTALLER_UI_READY=target-disk"
 	select_from_menu "Select target disk" "target disk"
 	TARGET="$SELECTED_VALUE"
 }
@@ -929,15 +950,69 @@ reread_partition_table() {
 	sleep 2
 }
 
+write_payload_without_percent() {
+	target="$1"
+	gzip -dc "$PAYLOAD" 2>> "$INSTALL_LOG" |
+		dd of="$target" bs=16M conv=fsync >> "$INSTALL_LOG" 2>&1 ||
+		die "Could not write payload image to $target"
+}
+
+write_payload_with_percent() {
+	target="$1"
+	WRITE_SOURCE_FIFO="$(tmp_file write-source)"
+	WRITE_OUTPUT_FIFO="$(tmp_file write-output)"
+	WRITE_PROGRESS_FIFO="$(tmp_file write-progress)"
+	rm -f "$WRITE_SOURCE_FIFO" "$WRITE_OUTPUT_FIFO" "$WRITE_PROGRESS_FIFO"
+	mkfifo "$WRITE_SOURCE_FIFO" "$WRITE_OUTPUT_FIFO" "$WRITE_PROGRESS_FIFO" ||
+		die "Could not create payload progress pipes"
+
+	gzip -dc "$PAYLOAD" > "$WRITE_SOURCE_FIFO" 2>> "$INSTALL_LOG" &
+	WRITE_GZIP_PID=$!
+	pv -f -n -s "$PAYLOAD_UNCOMPRESSED_SIZE" \
+		< "$WRITE_SOURCE_FIFO" > "$WRITE_OUTPUT_FIFO" 2> "$WRITE_PROGRESS_FIFO" &
+	WRITE_PV_PID=$!
+	dd if="$WRITE_OUTPUT_FIFO" of="$target" bs=16M conv=fsync \
+		>> "$INSTALL_LOG" 2>&1 &
+	WRITE_DD_PID=$!
+
+	ui_install_progress_stream "$WRITE_PROGRESS_FIFO" "Write image" \
+		"Writing embedded OpenWrt image to $target." "$INSTALL_LOG" ||
+		die "Payload progress display failed"
+
+	write_gzip_status=0
+	write_pv_status=0
+	write_dd_status=0
+	wait "$WRITE_GZIP_PID" || write_gzip_status=$?
+	WRITE_GZIP_PID=""
+	wait "$WRITE_PV_PID" || write_pv_status=$?
+	WRITE_PV_PID=""
+	wait "$WRITE_DD_PID" || write_dd_status=$?
+	WRITE_DD_PID=""
+
+	rm -f "$WRITE_SOURCE_FIFO" "$WRITE_OUTPUT_FIFO" "$WRITE_PROGRESS_FIFO"
+	WRITE_SOURCE_FIFO=""
+	WRITE_OUTPUT_FIFO=""
+	WRITE_PROGRESS_FIFO=""
+
+	[ "$write_dd_status" -eq 0 ] || die "Could not write payload image to $target (dd status $write_dd_status)"
+	[ "$write_gzip_status" -eq 0 ] || die "Could not decompress payload image (gzip status $write_gzip_status)"
+	[ "$write_pv_status" -eq 0 ] || die "Payload progress stream failed (pv status $write_pv_status)"
+}
+
 write_payload() {
 	target="$1"
 	log "Writing payload to $target"
 	if [ -n "${PAYLOAD_UNCOMPRESSED_SIZE:-}" ]; then
 		log "Streaming $PAYLOAD_UNCOMPRESSED_SIZE bytes after decompression"
 	fi
-	gzip -dc "$PAYLOAD" 2>> "$INSTALL_LOG" |
-		dd of="$target" bs=16M conv=fsync >> "$INSTALL_LOG" 2>&1 ||
-		die "Could not write payload image to $target"
+	if command -v pv >/dev/null 2>&1 && command -v mkfifo >/dev/null 2>&1 &&
+		[ -n "${PAYLOAD_UNCOMPRESSED_SIZE:-}" ] &&
+		[ "$PAYLOAD_UNCOMPRESSED_SIZE" -gt 0 ] 2>/dev/null; then
+		write_payload_with_percent "$target"
+	else
+		warn "Determinate write progress unavailable; using stage-only fallback"
+		write_payload_without_percent "$target"
+	fi
 
 	ui_install_stage "Sync" "Flushing image writes to stable storage." "$INSTALL_LOG"
 	log "Payload stream completed; syncing disks"
@@ -1074,6 +1149,7 @@ confirm_erase() {
 	[ "$ASSUME_YES" = "1" ] && return 0
 	expected="ERASE $TARGET"
 	ui_confirm_erase_screen "$expected"
+	autostart_serial_marker "OWRT_INSTALLER_UI_READY=exact-erase"
 	printf 'Type exactly "%s" to continue: ' "$expected"
 	IFS= read -r answer
 	[ "$answer" = "$expected" ] || die "Confirmation did not match; installation cancelled"

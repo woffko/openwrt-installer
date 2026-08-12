@@ -13,6 +13,9 @@ QEMU_ACCEL="${QEMU_ACCEL:-tcg}"
 QEMU_MEMORY="${QEMU_MEMORY:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
 QEMU_VGA_WAIT="${QEMU_VGA_WAIT:-100}"
+QEMU_INSTALL_WAIT="${QEMU_INSTALL_WAIT:-300}"
+QEMU_INSTALL_TIMEOUT="${QEMU_INSTALL_TIMEOUT:-360s}"
+QEMU_UI_SETTLE="${QEMU_UI_SETTLE:-1}"
 LOCAL_QEMU_ROOT="$BUILD_DIR/qemu-local/root"
 QEMU_ENV_PREFIX=""
 QEMU_L_ARG=""
@@ -111,6 +114,75 @@ assert_log_contains() {
 	fi
 }
 
+assert_log_not_contains() {
+	log_file="$1"
+	pattern="$2"
+	if grep -F "$pattern" "$log_file" >/dev/null 2>&1; then
+		tail -n 120 "$log_file" >&2 || true
+		die "QEMU smoke log unexpectedly contains '$pattern': $log_file"
+	fi
+}
+
+wait_for_log_marker() {
+	log_file="$1"
+	pattern="$2"
+	qemu_pid="$3"
+	max_wait="$4"
+	wait_elapsed=0
+	while [ "$wait_elapsed" -lt "$max_wait" ]; do
+		if [ -r "$log_file" ] && grep -F "$pattern" "$log_file" >/dev/null 2>&1; then
+			return 0
+		fi
+		if ! kill -0 "$qemu_pid" 2>/dev/null; then
+			wait "$qemu_pid" || true
+			tail -n 120 "$log_file" >&2 2>/dev/null || true
+			die "QEMU exited before marker '$pattern'"
+		fi
+		sleep 1
+		wait_elapsed=$((wait_elapsed + 1))
+	done
+	tail -n 120 "$log_file" >&2 2>/dev/null || true
+	die "Timed out waiting for marker '$pattern' after ${max_wait}s"
+}
+
+wait_for_ui_marker() {
+	log_file="$1"
+	pattern="$2"
+	qemu_pid="$3"
+	max_wait="$4"
+	wait_for_log_marker "$log_file" "$pattern" "$qemu_pid" "$max_wait"
+	# The serial marker is emitted immediately before whiptail takes over the TTY.
+	sleep "$QEMU_UI_SETTLE"
+}
+
+hmp_send_keys() {
+	monitor_socket="$1"
+	shift
+	{
+		for hmp_key in "$@"; do
+			printf 'sendkey %s\n' "$hmp_key"
+			sleep 0.15
+		done
+	} | nc -N -U "$monitor_socket" >/dev/null 2>&1 ||
+		die "Could not send keys through QEMU monitor"
+}
+
+hmp_command() {
+	monitor_socket="$1"
+	shift
+	printf '%s\n' "$*" | nc -N -U "$monitor_socket" >/dev/null 2>&1 ||
+		die "Could not send QEMU monitor command: $*"
+}
+
+assert_nonblank_ppm() {
+	screenshot="$1"
+	[ -s "$screenshot" ] || die "QEMU VGA screenshot was not created: $screenshot"
+	[ "$(dd if="$screenshot" bs=1 count=2 2>/dev/null)" = "P6" ] ||
+		die "QEMU VGA screenshot is not a binary PPM image"
+	pixel_values="$(dd if="$screenshot" bs=1 skip=64 2>/dev/null | od -An -tu1 | tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
+	[ "$pixel_values" -ge 4 ] || die "QEMU VGA screenshot appears blank"
+}
+
 assert_common_boot_markers() {
 	log_file="$1"
 	assert_log_contains "$log_file" "GNU GRUB"
@@ -195,14 +267,120 @@ run_vga_smoke() {
 		nc -U "$monitor_socket" > "$monitor_log" 2>&1 || true
 	wait "$qemu_pid" || true
 
-	[ -s "$screenshot" ] || die "QEMU VGA screenshot was not created: $screenshot"
-	[ "$(dd if="$screenshot" bs=1 count=2 2>/dev/null)" = "P6" ] ||
-		die "QEMU VGA screenshot is not a binary PPM image"
-	pixel_values="$(dd if="$screenshot" bs=1 skip=64 2>/dev/null | od -An -tu1 | tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
-	[ "$pixel_values" -ge 4 ] || die "QEMU VGA screenshot appears blank"
+	assert_nonblank_ppm "$screenshot"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk"
 	log "VGA curses UI smoke passed: $screenshot"
+}
+
+run_install_smoke() {
+	serial_log="$SMOKE_DIR/install-iso.log"
+	qemu_log="$SMOKE_DIR/install-qemu.log"
+	monitor_socket="$SMOKE_DIR/install-monitor.sock"
+	progress_screenshot="$SMOKE_DIR/install-progress.ppm"
+	target_disk="$SMOKE_DIR/target-install.qcow2"
+	boot_serial_log="$SMOKE_DIR/installed-boot.log"
+	boot_qemu_log="$SMOKE_DIR/installed-boot-qemu.log"
+	boot_serial_socket="$SMOKE_DIR/installed-serial.sock"
+	boot_monitor_socket="$SMOKE_DIR/installed-monitor.sock"
+
+	case "$QEMU_INSTALL_WAIT" in
+		''|*[!0-9]*) die "QEMU_INSTALL_WAIT must be an integer number of seconds" ;;
+	esac
+	rm -f "$target_disk" "$serial_log" "$qemu_log" "$monitor_socket" \
+		"$progress_screenshot" "$boot_serial_log" "$boot_qemu_log" \
+		"$boot_serial_socket" "$boot_monitor_socket"
+	ensure_qcow2 "$target_disk"
+
+	log "Starting automated VGA installation smoke test"
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$QEMU_INSTALL_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" -L "$QEMU_L_ARG" \
+			-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+			-display none -vga std -serial "file:$serial_log" \
+			-monitor "unix:$monitor_socket,server=on,wait=off" \
+			-cdrom "$ISO_IMAGE" -boot d \
+			-drive "file=$target_disk,format=qcow2,if=virtio" \
+			-nic user,model=e1000 -nic user,model=e1000 > "$qemu_log" 2>&1 &
+	else
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$QEMU_INSTALL_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" \
+			-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+			-display none -vga std -serial "file:$serial_log" \
+			-monitor "unix:$monitor_socket,server=on,wait=off" \
+			-cdrom "$ISO_IMAGE" -boot d \
+			-drive "file=$target_disk,format=qcow2,if=virtio" \
+			-nic user,model=e1000 -nic user,model=e1000 > "$qemu_log" 2>&1 &
+	fi
+	install_pid=$!
+
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-interface" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan-interface-auto" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-ip" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan-mode" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan6-mode" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-summary" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-action" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=final-erase-info" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=exact-erase" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" shift-e shift-r shift-a shift-s shift-e spc slash d e v slash v d a ret
+
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS=" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_command "$monitor_socket" "screendump $progress_screenshot"
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS=100" "$install_pid" "$QEMU_INSTALL_WAIT"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=installation-success" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=post-install-menu" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" down down ret
+	sleep 2
+	hmp_command "$monitor_socket" quit
+	wait "$install_pid" || true
+
+	assert_nonblank_ppm "$progress_screenshot"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS=100"
+	assert_log_not_contains "$serial_log" "Installation failed"
+
+	log "Booting the disk written by the installer"
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$QEMU_INSTALL_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" -L "$QEMU_L_ARG" \
+			-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+			-display none \
+			-chardev "socket,id=serial0,path=$boot_serial_socket,server=on,wait=off,logfile=$boot_serial_log" \
+			-serial chardev:serial0 -monitor "unix:$boot_monitor_socket,server=on,wait=off" \
+			-drive "file=$target_disk,format=qcow2,if=virtio" -boot c \
+			-nic user,model=e1000 -nic user,model=e1000 > "$boot_qemu_log" 2>&1 &
+	else
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$QEMU_INSTALL_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" \
+			-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+			-display none \
+			-chardev "socket,id=serial0,path=$boot_serial_socket,server=on,wait=off,logfile=$boot_serial_log" \
+			-serial chardev:serial0 -monitor "unix:$boot_monitor_socket,server=on,wait=off" \
+			-drive "file=$target_disk,format=qcow2,if=virtio" -boot c \
+			-nic user,model=e1000 -nic user,model=e1000 > "$boot_qemu_log" 2>&1 &
+	fi
+	boot_pid=$!
+	wait_for_log_marker "$boot_serial_log" "Please press Enter to activate this console." "$boot_pid" "$QEMU_INSTALL_WAIT"
+	{ printf '\r'; sleep 1; printf 'cat /etc/openwrt-installer-release\r'; } |
+		nc -N -U "$boot_serial_socket" >/dev/null 2>&1 || die "Could not query installed system console"
+	wait_for_log_marker "$boot_serial_log" "installer_version=v1.0-alpha.7" "$boot_pid" "$QEMU_INSTALL_WAIT"
+	hmp_command "$boot_monitor_socket" quit
+	wait "$boot_pid" || true
+	assert_log_contains "$boot_serial_log" "installed_by=openwrt-x86-installer"
+	assert_log_contains "$boot_serial_log" "target_disk=/dev/vda"
+	log "Automated install and installed-system boot smoke passed"
 }
 
 run_bios_smoke() {
@@ -274,8 +452,8 @@ run_uefi_smoke() {
 }
 
 case "$MODE" in
-	all|bios|uefi|vga) ;;
-	*) die "Usage: $0 [all|bios|uefi|vga]" ;;
+	all|bios|uefi|vga|install) ;;
+	*) die "Usage: $0 [all|bios|uefi|vga|install]" ;;
 esac
 
 [ -s "$ISO_IMAGE" ] || die "Hybrid ISO is missing. Run: make iso"
@@ -283,7 +461,7 @@ require_cmd timeout
 require_cmd grep
 require_cmd tail
 case "$MODE" in
-	all|vga)
+	all|vga|install)
 		require_cmd nc
 		require_cmd od
 		;;
@@ -299,6 +477,7 @@ case "$MODE" in
 		run_bios_smoke
 		run_uefi_smoke
 		run_vga_smoke
+		run_install_smoke
 		;;
 	bios)
 		run_bios_smoke
@@ -308,6 +487,9 @@ case "$MODE" in
 		;;
 	vga)
 		run_vga_smoke
+		;;
+	install)
+		run_install_smoke
 		;;
 esac
 

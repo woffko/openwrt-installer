@@ -15,7 +15,7 @@ fail() {
 assert_contains() {
 	file="$1"
 	pattern="$2"
-	if ! grep -F "$pattern" "$file" >/dev/null 2>&1; then
+	if ! grep -F -- "$pattern" "$file" >/dev/null 2>&1; then
 		printf '%s\n' "--- $file ---" >&2
 		sed -n '1,200p' "$file" >&2 || true
 		fail "Expected output to contain: $pattern"
@@ -25,11 +25,115 @@ assert_contains() {
 assert_not_contains() {
 	file="$1"
 	pattern="$2"
-	if grep -F "$pattern" "$file" >/dev/null 2>&1; then
+	if grep -F -- "$pattern" "$file" >/dev/null 2>&1; then
 		printf '%s\n' "--- $file ---" >&2
 		sed -n '1,200p' "$file" >&2 || true
 		fail "Output must not contain: $pattern"
 	fi
+}
+
+assert_no_fifo() {
+	path="$1"
+	if find "$path" -type p -print -quit | grep . >/dev/null 2>&1; then
+		find "$path" -type p -print >&2
+		fail "Named progress pipes were not cleaned up under $path"
+	fi
+}
+
+write_fake_pv() {
+	path="$1"
+	# shellcheck disable=SC2016
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' '(printf "0\n" >&2; sleep 1; printf "50\n" >&2; sleep 1; printf "100\n" >&2) &'
+		printf '%s\n' 'progress_pid=$!'
+		printf '%s\n' 'copy_status=0'
+		printf '%s\n' 'cat || copy_status=$?'
+		printf '%s\n' 'wait "$progress_pid" || true'
+		printf '%s\n' 'exit "$copy_status"'
+	} > "$path"
+	chmod +x "$path"
+}
+
+run_payload_progress_smoke() {
+	work_dir="$1/payload-progress"
+	mkdir -p "$work_dir/bin"
+	raw_file="$work_dir/payload.raw"
+	payload_file="$work_dir/payload.raw.gz"
+	target_file="$work_dir/target.raw"
+	out_file="$work_dir/run.out"
+	progress_file="$work_dir/progress.out"
+
+	dd if=/dev/zero of="$raw_file" bs=1024 count=128 >/dev/null 2>&1
+	printf 'openwrt-installer-progress-smoke\n' | dd of="$raw_file" conv=notrunc >/dev/null 2>&1
+	gzip -c "$raw_file" > "$payload_file"
+	payload_size="$(wc -c < "$raw_file" | tr -d ' ')"
+	write_fake_pv "$work_dir/bin/pv"
+
+	PATH="$work_dir/bin:$PATH" OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" \
+		UI_LIB="$UI_LIB" sh -eu -c '
+			. "$1"
+			PAYLOAD="$2"
+			PAYLOAD_UNCOMPRESSED_SIZE="$3"
+			INSTALL_LOG="$4/install.log"
+			progress_file="$5"
+			ui_install_progress_stream() {
+				while IFS= read -r percent; do
+					printf "progress=%s\n" "$percent" >> "$progress_file"
+				done < "$1"
+			}
+			write_payload_with_percent "$6"
+			cleanup
+		' sh "$INSTALLER" "$payload_file" "$payload_size" "$work_dir" "$progress_file" "$target_file" \
+		> "$out_file" 2>&1
+
+	cmp "$raw_file" "$target_file" || fail "Determinate payload write changed the byte stream"
+	assert_contains "$progress_file" "progress=0"
+	assert_contains "$progress_file" "progress=50"
+	assert_contains "$progress_file" "progress=100"
+	assert_no_fifo "$work_dir"
+}
+
+run_payload_progress_failure_smoke() {
+	work_dir="$1/payload-progress-failure"
+	mkdir -p "$work_dir/bin"
+	raw_file="$work_dir/payload.raw"
+	payload_file="$work_dir/payload.raw.gz"
+	out_file="$work_dir/run.out"
+
+	dd if=/dev/zero of="$raw_file" bs=1024 count=128 >/dev/null 2>&1
+	gzip -c "$raw_file" > "$payload_file"
+	payload_size="$(wc -c < "$raw_file" | tr -d ' ')"
+	write_fake_pv "$work_dir/bin/pv"
+	# Open the input FIFO like real dd before returning the controlled failure.
+	# shellcheck disable=SC2016
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'input=""'
+		printf '%s\n' 'for arg in "$@"; do case "$arg" in if=*) input=${arg#if=} ;; esac; done'
+		printf '%s\n' '[ -n "$input" ] && exec 3<"$input"'
+		printf '%s\n' 'exit 7'
+	} > "$work_dir/bin/dd"
+	chmod +x "$work_dir/bin/dd"
+
+	set +e
+	PATH="$work_dir/bin:$PATH" OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" \
+		UI_LIB="$UI_LIB" sh -u -c '
+			. "$1"
+			PAYLOAD="$2"
+			PAYLOAD_UNCOMPRESSED_SIZE="$3"
+			INSTALL_LOG="$4/install.log"
+			ui_install_progress_stream() { cat "$1" >/dev/null; }
+			ui_failure_screen() { printf "failure=%s\n" "$1"; }
+			ui_leave() { :; }
+			write_payload_with_percent "$4/target.raw"
+		' sh "$INSTALLER" "$payload_file" "$payload_size" "$work_dir" > "$out_file" 2>&1
+	status=$?
+	set -e
+
+	[ "$status" -eq 1 ] || fail "Failed dd progress smoke exited with $status instead of 1"
+	assert_contains "$out_file" "dd status 7"
+	assert_no_fifo "$work_dir"
 }
 
 run_parse_args_smoke() {
@@ -342,5 +446,7 @@ run_parse_args_smoke "$work_dir"
 run_dry_run_skip_network_smoke "$work_dir"
 run_network_back_state_smoke "$work_dir"
 run_line_network_wizard_back_smoke "$work_dir"
+run_payload_progress_smoke "$work_dir"
+run_payload_progress_failure_smoke "$work_dir"
 
 printf 'Install flow smoke tests passed.\n'

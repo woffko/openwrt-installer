@@ -38,7 +38,7 @@ Mouse support не является обязательным для прохож
 
 ```text
 +------------------------------------------------------------------------------+
-| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.6 |
+| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.7 |
 +------------------------------------------------------------------------------+
 | Steps: [1 Disk] -> [2 LAN] -> [3 WAN] -> [4 Review] -> [5 Install]            |
 +------------------------------------------------------------------------------+
@@ -208,13 +208,23 @@ OWRT_UI_DEBUG=1
 Цель: заменить голый `dd status=progress` на спокойный progress screen.
 
 Текущий статус на 2026-08-12: реализован stage-based progress screen для
-установки на диск. Runtime output `dd` и служебных команд уходит в
+установки на диск. Runtime output служебных команд уходит в
 `/tmp/owrt-installer.log`, TUI показывает текущий этап, DOS-style progress bar
 и compact log pane на 3-5 строк. Ошибки проходят через отдельный failure
-screen с log path и хвостом лога. `manifest.json` теперь содержит
-`payload_uncompressed_size`, установщик логирует этот размер перед записью.
-Точный byte-percent пока намеренно не рисуется, чтобы не показывать ложный
-progress без надежного счетчика вроде `pv`.
+screen с log path и хвостом лога. `manifest.json` содержит
+`payload_uncompressed_size`, а обязательный официальный `pv 1.9.31` дает
+честный byte-percent во время записи payload. Native curses использует gauge;
+ANSI и line backend отображают тот же numeric stream. При отсутствии точного
+размера или `pv` остается stage-only fallback.
+
+Дополнение для `v1.0-alpha.7`: официальный пакет `pv 1.9.31` из OpenWrt
+`25.12` x86_64 feed заменяет статический `Write image` screen на честный
+byte-percent. `gzip`, `pv` и `dd` запускаются
+как три отдельно отслеживаемых процесса через data FIFOs; numeric progress
+идет по отдельному FIFO в native curses gauge или ANSI/line renderer. Это
+позволяет получить status каждого процесса через `wait PID`, завершить все
+дочерние процессы при interrupt и не зависеть от отсутствующего POSIX
+`pipefail`.
 
 Работы:
 
@@ -275,7 +285,7 @@ progress без надежного счетчика вроде `pv`.
 
 Цель: не выпускать красивый, но хрупкий installer.
 
-Текущий статус на 2026-08-12: матрица Hellforge ANSI/whiptail пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install`, `usr/libexec/owrt-installer-ui` и исполняемый `whiptail 0.52.24`; runtime `INSTALLER_VERSION=v1.0-alpha.6`. Текущий локальный ISO SHA-256: `107140e9c8bbd0b5dc52810b21866d66a5ba5fc2b5f81934a5796d0230068571`; `v1.0-alpha.6` публикуется отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test проверяют GRUB, kernel/initramfs, OpenWrt serial console, backend marker и автозапуск wizard. VGA smoke дожидается реального target-disk menu, делает PPM framebuffer dump и проверяет, что экран не пуст. `make ui-smoke` дополнительно управляет настоящим host `whiptail` через pseudo-TTY: arrow selection, input editing, Esc/Back, скрытый password, shell-metacharacter safety, theme и backend fallback/precedence. `make install-flow-smoke` проверяет destructive guards и network state machine, а `make smoke` объединяет быстрые non-ISO проверки.
+Текущий статус на 2026-08-12: матрица Hellforge ANSI/whiptail пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install`, `usr/libexec/owrt-installer-ui`, исполняемые `whiptail 0.52.24` и `pv 1.9.31`; runtime `INSTALLER_VERSION=v1.0-alpha.7`. Текущий локальный ISO SHA-256: `89f9e2c89df7fe27f882d1d2db7114caefff226ad840b70b92b1205458ddfa7c`; `v1.0-alpha.7` опубликован отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test проверяют GRUB, kernel/initramfs, OpenWrt serial console, backend marker и автозапуск wizard. VGA smoke дожидается реального target-disk menu, делает PPM framebuffer dump и проверяет, что экран не пуст. Автоматический install smoke проходит весь wizard, проверяет numeric write-progress до `100`, устанавливает образ на одноразовый qcow2, загружает установленный OpenWrt и сверяет `/etc/openwrt-installer-release`. `make ui-smoke` дополнительно управляет настоящим host `whiptail` через pseudo-TTY: arrow selection, input editing, Esc/Back, скрытый password, shell-metacharacter safety, theme и backend fallback/precedence. `make install-flow-smoke` проверяет destructive guards, network state machine, byte-identical payload write, failure status и очистку FIFO, а `make smoke` объединяет быстрые non-ISO проверки.
 
 Минимальная матрица:
 
@@ -319,7 +329,7 @@ progress без надежного счетчика вроде `pv`.
 - Raw mode при аварии может оставить терминал без echo.
 - `whiptail` увеличивает installer image на newt/slang dependencies; это принято ради понятного local-console UX.
 - `dialog` потребует отдельной зависимости, если появится в feed или будет собираться отдельно.
-- Progress percent для gzip payload требует точного uncompressed size; иначе будет только spinner/stage progress.
+- Progress percent для gzip payload требует точного uncompressed size и `pv`; иначе остается stage-only progress.
 
 ## Решения На Сейчас
 
@@ -361,3 +371,7 @@ progress без надежного счетчика вроде `pv`.
 28. [done] Собрать и проверить `v1.0-alpha.5` ISO с form-level Back: checksums, source/initramfs compare, GPT/El Torito, BIOS и UEFI QEMU smoke; опубликовать отдельным alpha tag без перемещения старых tags.
 29. [done] Добавить официальный `whiptail` package, общую dialog/whiptail curses-абстракцию без `eval`, Hellforge newt theme, compact disk menu и real pseudo-TTY regression tests.
 30. [done] Добавить VGA framebuffer smoke с backend/ready markers, собрать и проверить `v1.0-alpha.6` в BIOS/UEFI/VGA и опубликовать отдельным immutable alpha tag.
+31. [done] Добавить обязательный `pv`, determinate payload write progress через отдельные data/progress FIFOs, native curses gauge, ANSI/line fallback и независимую проверку exit status `gzip`/`pv`/`dd`.
+32. [done] Добавить regression tests для progress stream, failure/interrupt cleanup и выполнить реальную QEMU-установку на одноразовый qcow2 с проверкой progress markers и загрузки установленной системы.
+33. [done] Собрать, проверить и опубликовать `v1.0-alpha.7` отдельным immutable prerelease с обновленными docs/checksums.
+34. [pending] Исследовать local VGA mouse как отдельный helper/package этап. В официальном OpenWrt `25.12` x86_64 feed нет `gpm` и `dialog`; не добавлять shell evdev parser без отдельного threat model, QEMU USB-mouse теста и проверки на железе.
