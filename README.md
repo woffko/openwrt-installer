@@ -109,6 +109,24 @@ owrt-install --list-disks
 owrt-install --list-nics
 ```
 
+## Installer UI
+
+Interactive local-console installs use the zero-dependency Hellforge ANSI TUI
+when the terminal is suitable. It keeps the installer keyboard-first with
+arrow-key menus, framed review screens, destructive-action warnings, and
+install-stage status screens. Serial, dumb terminals, pipes, and narrow
+terminals fall back to the plain numbered line UI.
+
+UI mode can be forced for debugging:
+
+```sh
+OWRT_UI_MODE=line owrt-install
+OWRT_UI_MODE=ansi owrt-install
+```
+
+Mouse support is planned as an optional `dialog --mouse` backend. It is not a
+guaranteed local VGA console feature yet.
+
 Unattended-style invocation still requires the explicit destructive flag:
 
 ```sh

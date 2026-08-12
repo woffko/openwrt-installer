@@ -1,3 +1,5 @@
+SHELLCHECK ?= $(if $(wildcard build/host-tools/usr/bin/shellcheck),build/host-tools/usr/bin/shellcheck,shellcheck)
+
 .PHONY: all download target installer iso iso-host-tools clean test shellcheck syntax-check
 
 all: target installer
@@ -22,7 +24,8 @@ test:
 	./scripts/test-qemu-bios.sh
 
 shellcheck:
-	shellcheck -x scripts/*.sh files-installer/usr/sbin/owrt-install \
+	$(SHELLCHECK) -x scripts/*.sh files-installer/usr/sbin/owrt-install \
+		files-installer/usr/libexec/owrt-installer-ui \
 		files-installer/etc/rc.local \
 		files-installer/usr/libexec/owrt-installer-autostart \
 		files-target/etc/uci-defaults/98-installer-network

@@ -306,10 +306,10 @@ OWRT_UI_DEBUG=1
 
 ## Первые Реальные Задачи
 
-1. Добавить `owrt-installer-ui` с line backend и подключить его к `owrt-install`.
-2. Перевести `render_arrow_menu` на новый `ui_menu`.
-3. Добавить Hellforge header/footer/frame для disk selection.
-4. Прогнать shellcheck/syntax-check.
-5. Прогнать QEMU BIOS/UEFI smoke на одном экране.
-6. После стабилизации перевести network wizard.
-7. Только после этого заниматься `dialog --mouse`.
+1. [done] Добавить `owrt-installer-ui` с line backend и подключить его к `owrt-install`.
+2. [done] Перевести `render_arrow_menu` на новый `ui_menu`.
+3. [done] Добавить Hellforge header/footer/frame для меню, review, confirmation и install-stage экранов.
+4. [done] Прогнать syntax-check, shellcheck и smoke.
+5. [pending] Прогнать QEMU BIOS/UEFI smoke на ISO после следующей сборки.
+6. [pending] После стабилизации глубже перевести network wizard forms.
+7. [pending] Только после этого заниматься `dialog --mouse`.

@@ -6,10 +6,19 @@ INSTALLER_VERSION="0.1.0"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 TARGET_MOUNT="/mnt/target"
-DISK_LIST="/tmp/owrt-installer-disks.$$"
-NIC_LIST="/tmp/owrt-installer-nics.$$"
-NIC_CHOICE_LIST="/tmp/owrt-installer-nic-choices.$$"
-MENU_LIST="/tmp/owrt-installer-menu.$$"
+
+tmp_file() {
+	if command -v mktemp >/dev/null 2>&1; then
+		mktemp "${TMPDIR:-/tmp}/owrt-installer-$1.XXXXXX"
+	else
+		printf '%s\n' "${TMPDIR:-/tmp}/owrt-installer-$1.$$"
+	fi
+}
+
+DISK_LIST="$(tmp_file disks)"
+NIC_LIST="$(tmp_file nics)"
+NIC_CHOICE_LIST="$(tmp_file nic-choices)"
+MENU_LIST="$(tmp_file menu)"
 
 TARGET=""
 LAN_MAC=""
@@ -36,6 +45,7 @@ SKIP_NETWORK=0
 TARGET_MOUNTED=0
 TTY_STATE=""
 MENU_NOTE=""
+CLEANED_UP=0
 
 C_RESET=""
 C_BOLD=""
@@ -65,10 +75,16 @@ die() {
 	if command -v logger >/dev/null 2>&1; then
 		logger -t owrt-installer "ERROR: $*" 2>/dev/null || true
 	fi
+	cleanup
 	exit 1
 }
 
 cleanup() {
+	[ "$CLEANED_UP" = "0" ] || return 0
+	CLEANED_UP=1
+	if command -v ui_leave >/dev/null 2>&1; then
+		ui_leave
+	fi
 	if [ -n "$TTY_STATE" ]; then
 		stty "$TTY_STATE" 2>/dev/null || true
 	fi
@@ -78,7 +94,17 @@ cleanup() {
 	rm -f "$DISK_LIST" "$NIC_LIST" "$NIC_CHOICE_LIST" "$MENU_LIST"
 }
 
-trap cleanup EXIT INT TERM
+trap 'cleanup; exit 130' INT TERM
+
+UI_LIB="/usr/libexec/owrt-installer-ui"
+if [ -r "$UI_LIB" ]; then
+	# shellcheck source=/dev/null
+	. "$UI_LIB"
+else
+	UI_LIB_LOCAL="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)/libexec/owrt-installer-ui"
+	# shellcheck source=files-installer/usr/libexec/owrt-installer-ui
+	. "$UI_LIB_LOCAL"
+fi
 
 usage() {
 	cat <<'EOF'
@@ -99,178 +125,6 @@ Usage:
 The selected target disk will be erased completely.
 Removable disks and the detected live boot disk are blocked by default.
 EOF
-}
-
-setup_ui() {
-	if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
-		C_RESET="$(printf '\033[0m')"
-		C_BOLD="$(printf '\033[1m')"
-		C_DIM="$(printf '\033[2m')"
-		C_RED="$(printf '\033[31m')"
-		C_GREEN="$(printf '\033[32m')"
-		C_YELLOW="$(printf '\033[33m')"
-		C_BLUE="$(printf '\033[34m')"
-		C_REVERSE="$(printf '\033[7m')"
-	fi
-}
-
-clear_screen() {
-	if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
-		printf '\033[2J\033[H'
-	fi
-}
-
-section() {
-	printf '\n%s%s%s%s\n' "$C_BLUE" "$C_BOLD" "$1" "$C_RESET"
-	printf '%s\n' "------------------------------------------------------------"
-}
-
-can_arrow_menu() {
-	[ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] && command -v stty >/dev/null 2>&1
-}
-
-menu_reset() {
-	: > "$MENU_LIST"
-	MENU_NOTE=""
-}
-
-menu_note() {
-	MENU_NOTE="$1"
-}
-
-menu_add() {
-	value="$1"
-	label="$2"
-	printf '%s|%s\n' "$value" "$label" >> "$MENU_LIST"
-}
-
-menu_count() {
-	wc -l < "$MENU_LIST" | tr -d ' '
-}
-
-menu_value_at() {
-	sed -n "${1}s/|.*//p" "$MENU_LIST"
-}
-
-menu_label_at() {
-	sed -n "${1}s/^[^|]*|//p" "$MENU_LIST"
-}
-
-render_numbered_menu() {
-	if [ -n "$MENU_NOTE" ]; then
-		printf '%s\n\n' "$MENU_NOTE"
-	fi
-	number=0
-	while IFS='|' read -r value label; do
-		[ -n "$value" ] || continue
-		number=$((number + 1))
-		printf '[%s] %s\n' "$number" "$label"
-	done < "$MENU_LIST"
-}
-
-render_arrow_menu() {
-	title="$1"
-	selected="$2"
-	clear_screen
-	section "$title"
-	if [ -n "$MENU_NOTE" ]; then
-		printf '%s\n\n' "$MENU_NOTE"
-	fi
-	number=0
-	while IFS='|' read -r value label; do
-		[ -n "$value" ] || continue
-		number=$((number + 1))
-		if [ "$number" -eq "$selected" ]; then
-			printf '%s> %s%s\n' "$C_REVERSE" "$label" "$C_RESET"
-		else
-			printf '  %s\n' "$label"
-		fi
-	done < "$MENU_LIST"
-	printf '\n%sUp/Down: move  Enter: select  q: cancel%s\n' "$C_DIM" "$C_RESET"
-}
-
-read_one_key() {
-	dd bs=1 count=1 2>/dev/null || true
-}
-
-select_from_menu() {
-	title="$1"
-	prompt="$2"
-	count="$(menu_count)"
-	[ "$count" -gt 0 ] || die "No choices available for $prompt"
-
-	if can_arrow_menu; then
-		selected=1
-		esc="$(printf '\033')"
-		TTY_STATE="$(stty -g)"
-		stty -icanon -echo min 1 time 0
-		while :; do
-			render_arrow_menu "$title" "$selected"
-			key="$(read_one_key)"
-			if [ "$key" = "$esc" ]; then
-				key2="$(read_one_key)"
-				key3="$(read_one_key)"
-				case "$key2$key3" in
-					"[A")
-						[ "$selected" -gt 1 ] && selected=$((selected - 1))
-						;;
-					"[B")
-						[ "$selected" -lt "$count" ] && selected=$((selected + 1))
-						;;
-				esac
-				continue
-			fi
-			case "$key" in
-				q|Q)
-					stty "$TTY_STATE" 2>/dev/null || true
-					TTY_STATE=""
-					die "Selection cancelled"
-					;;
-				"")
-					stty "$TTY_STATE" 2>/dev/null || true
-					TTY_STATE=""
-					SELECTED_VALUE="$(menu_value_at "$selected")"
-					MENU_NOTE=""
-					clear_screen
-					return 0
-					;;
-			esac
-		done
-	fi
-
-	section "$title"
-	render_numbered_menu
-	printf '\nEnter %s number: ' "$prompt"
-	IFS= read -r choice
-	case "$choice" in
-		*[!0-9]*|"") die "Invalid $prompt selection" ;;
-esac
-SELECTED_VALUE="$(menu_value_at "$choice")"
-[ -n "$SELECTED_VALUE" ] || die "Invalid $prompt selection"
-MENU_NOTE=""
-}
-
-prompt_default() {
-	label="$1"
-	default="$2"
-	printf '%s [%s]: ' "$label" "$default"
-	IFS= read -r answer
-	SELECTED_INPUT="${answer:-$default}"
-}
-
-prompt_secret() {
-	label="$1"
-	printf '%s: ' "$label"
-	if [ -t 0 ] && command -v stty >/dev/null 2>&1; then
-		TTY_STATE="$(stty -g)"
-		stty -echo
-		IFS= read -r SELECTED_INPUT
-		stty "$TTY_STATE" 2>/dev/null || true
-		TTY_STATE=""
-		printf '\n'
-	else
-		IFS= read -r SELECTED_INPUT
-	fi
 }
 
 shell_quote() {
@@ -798,7 +652,7 @@ select_network() {
 			WAN_MAC="$mac"
 			break
 		done < "$NIC_LIST"
-		printf '\nWAN interface selected automatically: %s %s\n' "$WAN_DEV" "$WAN_MAC"
+		ui_notice "WAN interface" "WAN selected automatically: $WAN_DEV $WAN_MAC"
 	else
 		select_nic WAN "$LAN_DEV"
 		entry="$SELECTED_NIC"
@@ -936,6 +790,9 @@ EOF
 }
 
 show_summary() {
+	if ui_summary_screen; then
+		return 0
+	fi
 	printf '\nInstallation summary:\n\n'
 	printf '  Target disk: %s\n' "$TARGET"
 	if [ "$SKIP_NETWORK" = "1" ]; then
@@ -959,12 +816,27 @@ show_summary() {
 confirm_erase() {
 	[ "$ASSUME_YES" = "1" ] && return 0
 	expected="ERASE $TARGET"
+	ui_confirm_erase_screen "$expected"
 	printf 'Type exactly "%s" to continue: ' "$expected"
 	IFS= read -r answer
 	[ "$answer" = "$expected" ] || die "Confirmation did not match; installation cancelled"
 }
 
 post_install_menu() {
+	if ui_ansi_active; then
+		menu_reset
+		menu_add "1" "Reboot now"
+		menu_add "2" "Shutdown"
+		menu_add "3" "Return to shell"
+		select_from_menu "Installation completed" "post-install action"
+		choice="$SELECTED_VALUE"
+		case "$choice" in
+			1) reboot ;;
+			2) poweroff ;;
+			*) return 0 ;;
+		esac
+		return 0
+	fi
 	printf '\nInstallation completed successfully.\n\n'
 	printf '[1] Reboot now\n'
 	printf '[2] Shutdown\n'
@@ -980,12 +852,9 @@ post_install_menu() {
 
 run_install() {
 	setup_ui
-	clear_screen
-	printf '\nOpenWrt x86 Installer %s\n\n' "$INSTALLER_VERSION"
-	[ "$AUTO_STARTED" = "1" ] && printf 'Autostart mode: installer launched from boot console.\n\n'
-	printf 'This installer writes a prebuilt OpenWrt image to a disk.\n'
-	printf 'The selected disk will be erased completely.\n\n'
+	ui_welcome_screen "$INSTALLER_VERSION" "$AUTO_STARTED"
 
+	ui_install_stage "Verify payload" "Checking embedded OpenWrt image integrity."
 	verify_payload
 	if [ -z "$TARGET" ]; then
 		select_target_disk
@@ -1012,14 +881,19 @@ run_install() {
 		return 0
 	fi
 
+	ui_install_stage "Prepare target" "Stopping swap and unmounting target partitions."
 	swapoff -a || true
 	unmount_target_partitions "$TARGET"
+	ui_install_stage "Write image" "Writing embedded OpenWrt image to $TARGET."
 	write_payload "$TARGET"
 
 	rootpart="$(get_partition_path "$TARGET" 2)"
+	ui_install_stage "Resize rootfs" "Growing partition 2 and ext4 root filesystem."
 	resize_rootfs "$TARGET" "$rootpart"
+	ui_install_stage "Write installed config" "Saving installer metadata and network mapping."
 	write_installed_config "$rootpart" "$TARGET"
 	log "Installation completed successfully"
+	ui_success_screen "Installation completed successfully."
 
 	if [ "$ASSUME_YES" != "1" ]; then
 		post_install_menu
@@ -1028,6 +902,7 @@ run_install() {
 
 if [ "$#" -eq 0 ]; then
 	run_install
+	cleanup
 	exit 0
 fi
 
@@ -1148,3 +1023,5 @@ case "$action" in
 	list-nics) show_nics ;;
 	install) run_install ;;
 esac
+
+cleanup

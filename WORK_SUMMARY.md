@@ -8,14 +8,15 @@
 - GitHub repository: `https://github.com/woffko/openwrt-installer`.
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
-- Текущий commit: `d2d1382 Update ISO build checksums`.
-- Последняя функциональная правка: `62890af Improve WAN IPv6 wizard`.
+- Текущий commit: см. `git log -1 --oneline`.
+- Последняя функциональная правка: `Add Hellforge ANSI installer UI`.
 - Текущий release: `v1.0-alpha.1`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.1`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, optional `dialog`/mouse later).
+- Начата реализация Hellforge TUI: добавлен `files-installer/usr/libexec/owrt-installer-ui`, `OWRT_UI_MODE=line|ansi|auto`, ANSI frame/menu/review/confirm/install-stage screens и line fallback.
 
 ## Что сделано
 
@@ -120,6 +121,17 @@ a8ffa95bd1d7bec0a25a1cfbda0ae662236b43588da6a0f77d8243922a5343ce  openwrt-x86-64
 - локальная распаковка QEMU/OVMF в `build/qemu-local`;
 - BIOS ISO boot smoke-test в QEMU: OpenWrt загрузился, `owrt-install --autostart` появился на консоли;
 - UEFI ISO boot smoke-test в QEMU: OpenWrt загрузился, `owrt-install --autostart` появился на консоли.
+
+Для первой Hellforge TUI итерации дополнительно выполнено:
+
+- `make syntax-check`;
+- `OWRT_UI_MODE=line TERM=dumb owrt-install --help`;
+- `OWRT_UI_MODE=line TERM=dumb owrt-install --list-disks`;
+- `OWRT_UI_MODE=line TERM=dumb owrt-install --list-nics`;
+- `OWRT_UI_MODE=line TERM=dumb owrt-install --dry-run`;
+- synthetic TTY smoke для ANSI arrow menu;
+- synthetic TTY smoke для ANSI review/confirm/install-stage screens.
+- `make shellcheck` через локальный `build/host-tools/usr/bin/shellcheck`.
 
 ## Как пользоваться
 
