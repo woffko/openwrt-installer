@@ -7,6 +7,7 @@ UI_HEIGHT=25
 UI_INNER_WIDTH=76
 UI_CURSOR_HIDDEN=0
 UI_DIALOGRC=""
+MENU_NOTE_KIND=""
 
 ui_repeat() {
 	char="$1"
@@ -228,6 +229,13 @@ ui_line_error() {
 	printf '%s %s|%s\n' "$C_RESET" "$C_BLUE" "$C_RESET"
 }
 
+ui_line_warning() {
+	printf '%s|%s ' "$C_BLUE" "$C_RESET"
+	printf '%s%s' "$C_RED" "$C_BOLD"
+	ui_print_padded "$1"
+	printf '%s %s|%s\n' "$C_RESET" "$C_BLUE" "$C_RESET"
+}
+
 ui_blank() {
 	ui_line ""
 }
@@ -302,10 +310,17 @@ can_arrow_menu() {
 menu_reset() {
 	: > "$MENU_LIST"
 	MENU_NOTE=""
+	MENU_NOTE_KIND=""
 }
 
 menu_note() {
 	MENU_NOTE="$1"
+	MENU_NOTE_KIND="note"
+}
+
+menu_warning() {
+	MENU_NOTE="$1"
+	MENU_NOTE_KIND="warning"
 }
 
 menu_add() {
@@ -333,6 +348,23 @@ ui_note_lines() {
 		ui_line "$(ui_trunc "$text" "$max")"
 		text="$(printf '%s' "$text" | cut -c $((max + 1))-)"
 	done
+}
+
+ui_warning_lines() {
+	text="$1"
+	max="$UI_INNER_WIDTH"
+	while [ -n "$text" ]; do
+		ui_line_warning "$(ui_trunc "$text" "$max")"
+		text="$(printf '%s' "$text" | cut -c $((max + 1))-)"
+	done
+}
+
+ui_menu_note_lines() {
+	if [ "$MENU_NOTE_KIND" = "warning" ]; then
+		ui_warning_lines "$MENU_NOTE"
+	else
+		ui_note_lines "$MENU_NOTE"
+	fi
 }
 
 ui_log_tail_lines() {
@@ -386,7 +418,7 @@ ui_install_progress_line() {
 render_numbered_menu() {
 	if [ -n "$MENU_NOTE" ]; then
 		if ui_ansi_active; then
-			ui_note_lines "$MENU_NOTE"
+			ui_menu_note_lines
 			ui_blank
 		else
 			printf '%s\n\n' "$MENU_NOTE"
@@ -412,7 +444,7 @@ render_arrow_menu() {
 	ui_screen_begin "$title"
 
 	if [ -n "$MENU_NOTE" ]; then
-		ui_note_lines "$MENU_NOTE"
+		ui_menu_note_lines
 		ui_blank
 	fi
 
@@ -745,10 +777,7 @@ ALL DATA ON $TARGET WILL BE ERASED."
 		[ "$WAN_PROTO" = "disabled" ] || ui_line "NAT: enabled"
 	fi
 	ui_blank
-	printf '%s|%s ' "$C_BLUE" "$C_RESET"
-	printf '%s%s' "$C_RED" "$C_BOLD"
-	ui_print_padded "ALL DATA ON $TARGET WILL BE ERASED."
-	printf '%s %s|%s\n' "$C_RESET" "$C_BLUE" "$C_RESET"
+	ui_line_warning "ALL DATA ON $TARGET WILL BE ERASED."
 	ui_rule
 	ui_show_cursor
 	return 0
@@ -769,10 +798,7 @@ $expected" 0 0 ||
 	fi
 	if ui_ansi_active; then
 		ui_screen_begin "Final erase confirmation"
-		printf '%s|%s ' "$C_BLUE" "$C_RESET"
-		printf '%s%s' "$C_RED" "$C_BOLD"
-		ui_print_padded "DESTRUCTIVE ACTION"
-		printf '%s %s|%s\n' "$C_RESET" "$C_BLUE" "$C_RESET"
+		ui_line_warning "DESTRUCTIVE ACTION"
 		ui_line "Type the exact confirmation string to start writing the image."
 		ui_blank
 		ui_line "$expected"

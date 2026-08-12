@@ -113,7 +113,7 @@ owrt-install --list-nics
 
 Interactive local-console installs use the zero-dependency Hellforge ANSI TUI
 when the terminal is suitable. It keeps the installer keyboard-first with
-arrow-key menus, `Esc`/`q` cancel, framed review screens, destructive-action
+arrow-key menus, `Esc`/`q` cancel, framed review screens, red destructive
 warnings, and install-stage status screens. Network forms show context,
 examples, defaults, and local validation errors before the final review.
 Serial, dumb terminals, pipes, and narrow terminals fall back to the plain

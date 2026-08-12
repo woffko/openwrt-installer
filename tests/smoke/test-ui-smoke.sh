@@ -135,7 +135,7 @@ run_ansi_menu_snapshot_smoke() {
 		printf '%s\n' 'stty rows 25 cols 80 2>/dev/null || true'
 		printf '%s\n' 'setup_ui'
 		printf '%s\n' 'menu_reset'
-		printf '%s\n' 'menu_note "Selected disk will be erased after final confirmation."'
+		printf '%s\n' 'menu_warning "WARNING: selected disk will be erased after final confirmation."'
 		printf '%s\n' 'menu_add "/dev/sda" "/dev/sda 119.2G SSD removable=no live=no"'
 		printf '%s\n' 'menu_add "/dev/nvme0n1" "/dev/nvme0n1 476.9G NVMe removable=no live=no"'
 		printf '%s\n' 'render_arrow_menu "Select target disk" 1'
@@ -150,7 +150,7 @@ run_ansi_menu_snapshot_smoke() {
 	assert_contains "$clean_file" "OPENWRT HELLFORGE INSTALLER"
 	assert_contains "$clean_file" "Steps: [DISK] ->  LAN  ->  WAN  ->  REVIEW  ->  INSTALL"
 	assert_contains "$clean_file" "Select target disk"
-	assert_contains "$clean_file" "Selected disk will be erased after final confirmation."
+	assert_contains "$clean_file" "WARNING: selected disk will be erased after final confirmation."
 	assert_contains "$clean_file" "> /dev/sda 119.2G SSD removable=no live=no"
 	assert_contains "$clean_file" "  /dev/nvme0n1 476.9G NVMe removable=no live=no"
 	assert_contains "$clean_file" "Up/Down Move  Enter Select  Esc/q Cancel"

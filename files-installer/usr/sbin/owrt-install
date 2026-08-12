@@ -447,6 +447,7 @@ validate_target_disk() {
 
 select_target_disk() {
 	build_disk_menu
+	menu_warning "WARNING: selected disk will be erased after final confirmation."
 	select_from_menu "Select target disk" "target disk"
 	TARGET="$SELECTED_VALUE"
 }
