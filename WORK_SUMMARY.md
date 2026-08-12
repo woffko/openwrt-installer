@@ -9,12 +9,12 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя функциональная правка: native SGR mouse support для Hellforge ANSI menus в SSH/xterm-compatible terminals, исправление Down navigation и runtime version `v1.0-alpha.4`.
-- Последний опубликованный release: `v1.0-alpha.4`.
-- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.4`.
+- Последняя функциональная правка: form-level Back для LAN/WAN forms, PPPoE/static state machine, ghost-credential cleanup и runtime version `v1.0-alpha.5`.
+- Последний опубликованный release: `v1.0-alpha.5`.
+- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.5`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
-- Старые releases `v1.0-alpha.1`, `v1.0-alpha.2` и `v1.0-alpha.3` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
-- Локальный ISO пересобран после native ANSI mouse/runtime изменений и публикуется как `v1.0-alpha.4`.
+- Старые releases `v1.0-alpha.1`, `v1.0-alpha.2`, `v1.0-alpha.3` и `v1.0-alpha.4` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
+- Локальный ISO пересобран после form-level Back и WAN state-machine изменений и публикуется как `v1.0-alpha.5`.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, native SGR mouse для terminal emulators и optional `dialog`).
@@ -23,6 +23,7 @@
 - Добавлен optional `dialog` backend hook: `OWRT_UI_MODE=dialog` и `auto` используют `dialog` только если runtime package есть в live image; `OWRT_UI_NO_MOUSE=1` отключает `--mouse`.
 - В текущей сборке OpenWrt `25.12.4` пакет `dialog` недоступен в ImageBuilder и пропускается optional package resolver, поэтому стандартный ISO остается ANSI-first.
 - В ANSI menus добавлена zero-dependency мышь через SGR mouse protocol: direct click выбирает видимый пункт, wheel меняет highlight, а `OWRT_UI_NO_MOUSE=1` отключает tracking. Функция включается только для SSH/xterm-compatible terminals; `TERM=linux` и serial остаются keyboard-only.
+- Network forms теперь поддерживают пошаговый Back: ANSI `Esc`, dialog Cancel и line-mode `!back`; WAN/WAN6 menus имеют явные Back items. Уже введенные значения сохраняются при возврате, а credentials/settings невыбранного WAN protocol очищаются до review.
 - Перед финальным destructive confirmation добавлен safe review action menu: continue к точному `ERASE /dev/...`, edit LAN/WAN interfaces and network settings или cancel.
 - Для установки на диск добавлен stage progress screen с compact log pane, `/tmp/owrt-installer.log`, тихой записью `dd` в лог и отдельным failure screen с хвостом лога.
 - `manifest.json` теперь содержит `payload_uncompressed_size`; установщик логирует распакованный размер payload перед записью.
@@ -121,9 +122,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-4f368376534447777ba9afc7e10391436528dbdcdc43b39a71e1a039d6aca3f3  openwrt-x86-64-installer.img.gz
-1953ec5b949cee33149ed317a70b95020cdea925131ecfe9f0b30d31d457d682  openwrt-x86-64-installer-hybrid.iso
-bd573cf4aea5dc097da9a1354c582a1ddd2de2e671ba044c782456a0dccea84b  manifest.json
+57e5a2a0d330a787ed563296f434939d9198e9dcd273606388ead112bc65b9ca  openwrt-x86-64-installer.img.gz
+cfa29fb9bfbdd4d9c00df0e900e6d8308ec6995734ce736e55691104d5058e09  openwrt-x86-64-installer-hybrid.iso
+2b71a4b15d4b698ca2e5eeb093be3d424f0f36bb90676e4ef1efe190b1b59218  manifest.json
 ```
 
 ## Проверки

@@ -404,6 +404,156 @@ run_ansi_mouse_disabled_smoke() {
 	assert_not_contains "$linux_out_file" "$(printf '\033[?1006h')"
 }
 
+run_line_form_back_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	printf '!back\n!!back\n' |
+		OWRT_UI_MODE=line TERM=dumb sh -eu -c '
+			. "$1"
+			setup_ui
+			prompt_default "Value" "default" "Form back"
+			printf "first_action=%s first_value=%s\n" "$UI_INPUT_ACTION" "$SELECTED_INPUT"
+			prompt_default "Value" "default" "Literal back"
+			printf "second_action=%s second_value=%s\n" "$UI_INPUT_ACTION" "$SELECTED_INPUT"
+		' sh "$UI_LIB" > "$out_file" 2>&1
+
+	assert_contains "$out_file" "first_action=back first_value="
+	assert_contains "$out_file" "second_action=submit second_value=!back"
+}
+
+run_ansi_form_back_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI form Back smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-form-back.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'INSTALLER_VERSION=smoke'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'prompt_default "LAN IPv4" "192.168.1.1/24" "LAN IPv4 settings"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "action=%s value=%s\n" "$UI_INPUT_ACTION" "$SELECTED_INPUT"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	( sleep 1; printf '\033' ) |
+		OWRT_UI_MODE=ansi TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "ANSI form Back smoke failed"
+
+	assert_contains "$out_file" "action=back value="
+	assert_contains "$out_file" "$(printf '\033[?25h')"
+}
+
+run_ansi_form_edit_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI form editor smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-form-edit.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'INSTALLER_VERSION=smoke'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'prompt_default "Value" "default" "Form editor"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "action=%s value=%s\n" "$UI_INPUT_ACTION" "$SELECTED_INPUT"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	# Arrow Up is ignored; both Ctrl-H and DEL remove one character.
+	( sleep 1; printf '\033[Aab\010c\177d\n' ) |
+		OWRT_UI_MODE=ansi TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "ANSI form editor smoke failed"
+
+	assert_contains "$out_file" "action=submit value=ad"
+	assert_not_contains "$out_file" "action=back"
+}
+
+run_ansi_secret_form_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI secret form smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-secret-form.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'INSTALLER_VERSION=smoke'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'prompt_secret "PPPoE password" "PPPoE settings"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "action=%s length=%s\n" "$UI_INPUT_ACTION" "${#SELECTED_INPUT}"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	( sleep 1; printf 's3cr3t\n' ) |
+		OWRT_UI_MODE=ansi TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "ANSI secret form smoke failed"
+
+	assert_contains "$out_file" "******"
+	assert_contains "$out_file" "action=submit length=6"
+	assert_not_contains "$out_file" "s3cr3t"
+}
+
+run_dialog_form_back_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; dialog form Back smoke skipped.\n'
+		return 0
+	fi
+
+	fake_bin="$work_dir/dialog-bin"
+	mkdir -p "$fake_bin"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'exit 1'
+	} > "$fake_bin/dialog"
+	chmod +x "$fake_bin/dialog"
+
+	harness="$work_dir/dialog-form-back.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'prompt_default "Value" "default" "Dialog form"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "mode=%s action=%s value=%s\n" "$UI_MODE_ACTUAL" "$UI_INPUT_ACTION" "$SELECTED_INPUT"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	PATH="$fake_bin:$PATH" OWRT_UI_MODE=dialog TERM=xterm \
+		script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "dialog form Back smoke failed"
+
+	assert_contains "$out_file" "mode=dialog action=back value="
+}
+
 run_dialog_mode_smoke() {
 	work_dir="$1"
 	out_file="$2"
@@ -509,6 +659,11 @@ run_ansi_menu_mouse_smoke "$work_dir" "$work_dir/ansi-menu-mouse.out"
 run_ansi_menu_mouse_wheel_smoke "$work_dir" "$work_dir/ansi-menu-mouse-wheel.out"
 run_ansi_mouse_disabled_smoke "$work_dir" "$work_dir/ansi-mouse-disabled.out" \
 	"$work_dir/ansi-mouse-linux-console.out"
+run_line_form_back_smoke "$work_dir" "$work_dir/line-form-back.out"
+run_ansi_form_back_smoke "$work_dir" "$work_dir/ansi-form-back.out"
+run_ansi_form_edit_smoke "$work_dir" "$work_dir/ansi-form-edit.out"
+run_ansi_secret_form_smoke "$work_dir" "$work_dir/ansi-secret-form.out"
+run_dialog_form_back_smoke "$work_dir" "$work_dir/dialog-form-back.out"
 run_dialog_mode_smoke "$work_dir" "$work_dir/dialog-mode.out"
 run_terminal_size_smoke "$work_dir"
 

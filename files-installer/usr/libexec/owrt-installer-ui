@@ -11,6 +11,7 @@ UI_MOUSE_ENABLED=0
 UI_MENU_FIRST_ROW=0
 UI_MENU_LAST_ROW=0
 UI_MENU_TOP=1
+UI_INPUT_ACTION="submit"
 MENU_NOTE_KIND=""
 
 ui_repeat() {
@@ -593,6 +594,109 @@ ui_restore_tty() {
 	ui_show_cursor
 }
 
+ui_discard_escape_sequence() {
+	escape_remaining=8
+	while [ "$escape_remaining" -gt 0 ]; do
+		escape_char="$(read_optional_key)"
+		[ -n "$escape_char" ] || return 0
+		case "$escape_char" in
+			[A-Za-z]|'~') return 0 ;;
+		esac
+		escape_remaining=$((escape_remaining - 1))
+	done
+}
+
+ui_read_form_input() {
+	input_default="$1"
+	input_secret="$2"
+	UI_INPUT_ACTION="submit"
+	SELECTED_INPUT=""
+
+	if ui_ansi_active && [ -t 0 ] && command -v stty >/dev/null 2>&1; then
+		input_buffer=""
+		esc="$(printf '\033')"
+		backspace="$(printf '\010')"
+		delete="$(printf '\177')"
+		eot="$(printf '\004')"
+		cr="$(printf '\r')"
+		TTY_STATE="$(stty -g)"
+		stty -icanon -echo min 1 time 0
+		while :; do
+			input_key="$(read_one_key)"
+			if [ "$input_key" = "$esc" ]; then
+				input_key2="$(read_optional_key)"
+				case "$input_key2" in
+					"" )
+						UI_INPUT_ACTION="back"
+						break
+						;;
+					"["|"O")
+						ui_discard_escape_sequence
+						continue
+						;;
+					*)
+						UI_INPUT_ACTION="back"
+						break
+						;;
+				esac
+			fi
+			case "$input_key" in
+				""|"$cr")
+					SELECTED_INPUT="${input_buffer:-$input_default}"
+					break
+					;;
+				"$backspace"|"$delete")
+					if [ -n "$input_buffer" ]; then
+						input_buffer="${input_buffer%?}"
+						printf '\b \b'
+					fi
+					;;
+				"$eot")
+					UI_INPUT_ACTION="back"
+					break
+					;;
+				[[:print:]])
+					input_buffer="$input_buffer$input_key"
+					if [ "$input_secret" = "1" ]; then
+						printf '*'
+					else
+						printf '%s' "$input_key"
+					fi
+					;;
+			esac
+		done
+		ui_restore_tty
+		printf '\n'
+		return 0
+	fi
+
+	if [ "$input_secret" = "1" ] && [ -t 0 ] && command -v stty >/dev/null 2>&1; then
+		TTY_STATE="$(stty -g)"
+		stty -echo
+		if ! IFS= read -r input_answer; then
+			ui_restore_tty
+			printf '\n'
+			die "Input cancelled"
+		fi
+		ui_restore_tty
+		printf '\n'
+	elif ! IFS= read -r input_answer; then
+		die "Input cancelled"
+	fi
+	case "$input_answer" in
+		'!back')
+			UI_INPUT_ACTION="back"
+			SELECTED_INPUT=""
+			;;
+		'!!back')
+			SELECTED_INPUT="!back"
+			;;
+		*)
+			SELECTED_INPUT="${input_answer:-$input_default}"
+			;;
+	esac
+}
+
 select_from_menu() {
 	title="$1"
 	prompt="$2"
@@ -707,9 +811,18 @@ prompt_default() {
 }ERROR: $error"
 		[ -n "$body" ] || body="Type a new value or press Enter to keep the default."
 		mouse_arg="$(ui_dialog_mouse_arg)"
+		dialog_status=0
 		# shellcheck disable=SC2086
-		SELECTED_INPUT="$(dialog --stdout $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --inputbox "$body" 0 0 "$default")" ||
-			die "Input cancelled"
+		SELECTED_INPUT="$(dialog --stdout $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --inputbox "$body" 0 0 "$default")" || dialog_status=$?
+		case "$dialog_status" in
+			0) UI_INPUT_ACTION="submit" ;;
+			1|255)
+				UI_INPUT_ACTION="back"
+				SELECTED_INPUT=""
+				return 0
+				;;
+			*) die "Input dialog failed with status $dialog_status" ;;
+		esac
 		[ -n "$SELECTED_INPUT" ] || SELECTED_INPUT="$default"
 		return 0
 	fi
@@ -727,7 +840,7 @@ prompt_default() {
 			ui_line_error "ERROR: $error"
 		fi
 		ui_blank
-		ui_line "Type a new value or press Enter to keep the default."
+		ui_line "Type a value. Enter keeps current/default. Esc goes back."
 		ui_rule
 		ui_show_cursor
 	else
@@ -737,10 +850,10 @@ prompt_default() {
 		[ -n "$details" ] && printf '%s\n' "$details"
 		[ -n "$example" ] && printf '%s\n' "$example"
 		[ -n "$error" ] && printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$error"
+		printf '%s\n' "Type !back to return; type !!back for a literal !back value."
 	fi
 	printf '%s [%s]: ' "$label" "$default"
-	IFS= read -r answer
-	SELECTED_INPUT="${answer:-$default}"
+	ui_read_form_input "$default" 0
 }
 
 prompt_secret() {
@@ -748,14 +861,27 @@ prompt_secret() {
 	title="${2:-$label}"
 	error="${3:-}"
 	details="${4:-}"
+	default="${5:-}"
 	if ui_dialog_active; then
 		body="${details:-Input is hidden.}"
+		[ -n "$default" ] && body="$body
+A value is already set; submit an empty value to keep it."
 		[ -n "$error" ] && body="${body}${body:+
 }ERROR: $error"
 		mouse_arg="$(ui_dialog_mouse_arg)"
+		dialog_status=0
 		# shellcheck disable=SC2086
-		SELECTED_INPUT="$(dialog --stdout $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --passwordbox "$body" 0 0)" ||
-			die "Input cancelled"
+		SELECTED_INPUT="$(dialog --stdout $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --passwordbox "$body" 0 0)" || dialog_status=$?
+		case "$dialog_status" in
+			0) UI_INPUT_ACTION="submit" ;;
+			1|255)
+				UI_INPUT_ACTION="back"
+				SELECTED_INPUT=""
+				return 0
+				;;
+			*) die "Password dialog failed with status $dialog_status" ;;
+		esac
+		[ -n "$SELECTED_INPUT" ] || SELECTED_INPUT="$default"
 		return 0
 	fi
 	if ui_ansi_active; then
@@ -766,10 +892,13 @@ prompt_secret() {
 		fi
 		ui_line "Field: $label"
 		ui_line "Input is hidden."
+		[ -n "$default" ] && ui_line "A value is already set; Enter keeps it."
 		if [ -n "$error" ]; then
 			ui_blank
 			ui_line_error "ERROR: $error"
 		fi
+		ui_blank
+		ui_line "Enter submits/keeps the value. Esc goes back."
 		ui_rule
 		ui_show_cursor
 	else
@@ -778,18 +907,11 @@ prompt_secret() {
 		fi
 		[ -n "$details" ] && printf '%s\n' "$details"
 		[ -n "$error" ] && printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$error"
+		[ -n "$default" ] && printf '%s\n' "A value is already set; Enter keeps it."
+		printf '%s\n' "Type !back to return; type !!back for a literal !back value."
 	fi
 	printf '%s: ' "$label"
-	if [ -t 0 ] && command -v stty >/dev/null 2>&1; then
-		TTY_STATE="$(stty -g)"
-		stty -echo
-		IFS= read -r SELECTED_INPUT
-		stty "$TTY_STATE" 2>/dev/null || true
-		TTY_STATE=""
-		printf '\n'
-	else
-		IFS= read -r SELECTED_INPUT
-	fi
+	ui_read_form_input "$default" 1
 }
 
 ui_welcome_screen() {

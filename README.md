@@ -120,6 +120,13 @@ Serial, dumb terminals, pipes, and narrow terminals fall back to the plain
 numbered line UI. Auto mode uses the ANSI TUI only when the terminal is at
 least `80x24`.
 
+Network forms support step-by-step Back navigation. Press `Esc` in an ANSI
+form, use Cancel in a `dialog` form, or enter `!back` in the line UI. Enter
+`!!back` when the literal value `!back` is required. WAN mode and WAN IPv6
+menus include explicit Back items. Values already entered are retained while
+moving between fields, but credentials and static settings for an unused WAN
+protocol are cleared before review.
+
 In SSH and xterm-compatible terminal emulators, ANSI menus also accept direct
 mouse clicks and wheel scrolling through the standard SGR mouse protocol. The
 same menus always remain usable with Up/Down and Enter. Mouse tracking is

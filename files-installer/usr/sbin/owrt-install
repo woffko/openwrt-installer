@@ -2,7 +2,7 @@
 
 set -eu
 
-INSTALLER_VERSION="v1.0-alpha.4"
+INSTALLER_VERSION="v1.0-alpha.5"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 TARGET_MOUNT="/mnt/target"
@@ -116,6 +116,7 @@ run_or_die() {
 cleanup() {
 	[ "$CLEANED_UP" = "0" ] || return 0
 	CLEANED_UP=1
+	WAN_PPP_PASSWORD=""
 	if command -v ui_leave >/dev/null 2>&1; then
 		ui_leave
 	fi
@@ -553,6 +554,9 @@ select_lan_settings() {
 			"Example: 192.168.1.1/24" \
 			"$error" \
 			"This address becomes the router address and LAN gateway."
+		if [ "$UI_INPUT_ACTION" = "back" ]; then
+			return 2
+		fi
 		if parse_cidr_address "$SELECTED_INPUT" "$LAN_CIDR"; then
 			LAN_IP="$PARSED_IP"
 			LAN_CIDR="$PARSED_CIDR"
@@ -570,8 +574,9 @@ select_wan_mode() {
 	menu_add "pppoe" "PPPoE"
 	menu_add "static" "Static IPv4"
 	menu_add "disabled" "Disabled / LAN-only"
+	menu_add "__back" "Back to LAN settings"
 	select_from_menu "Select WAN mode" "WAN mode"
-	WAN_PROTO="$SELECTED_VALUE"
+	SELECTED_WAN_MODE="$SELECTED_VALUE"
 }
 
 select_wan6_mode() {
@@ -586,8 +591,9 @@ select_wan6_mode() {
 	esac
 	menu_add "dhcpv6" "DHCPv6 / Prefix Delegation"
 	menu_add "disabled" "Disabled / no WAN IPv6"
+	menu_add "__back" "Back to previous WAN setting"
 	select_from_menu "Select WAN IPv6 configuration type" "WAN IPv6 mode"
-	WAN6_PROTO="$SELECTED_VALUE"
+	SELECTED_WAN6_MODE="$SELECTED_VALUE"
 }
 
 wan6_label() {
@@ -598,108 +604,199 @@ wan6_label() {
 	esac
 }
 
-select_wan_settings() {
-	select_wan_mode
-	WAN_PPP_USERNAME=""
-	WAN_PPP_PASSWORD=""
-	WAN_IPADDR=""
-	WAN_NETMASK=""
-	WAN_GATEWAY=""
-	WAN_DNS=""
-
+clear_unused_wan_settings() {
 	case "$WAN_PROTO" in
 		dhcp)
-			select_wan6_mode
+			WAN_PPP_USERNAME=""
+			WAN_PPP_PASSWORD=""
+			WAN_IPADDR=""
+			WAN_NETMASK=""
+			WAN_GATEWAY=""
+			WAN_DNS=""
 			;;
 		pppoe)
-			error=""
-			while [ -z "$WAN_PPP_USERNAME" ]; do
-				prompt_default \
-					"PPPoE username" \
-					"$WAN_PPP_USERNAME" \
-					"PPPoE settings" \
-					"Example: user@example.net" \
-					"$error" \
-					"Credentials are saved only into the installed OpenWrt configuration."
-				WAN_PPP_USERNAME="$SELECTED_INPUT"
-				[ -n "$WAN_PPP_USERNAME" ] || error="PPPoE username is required."
-			done
-			prompt_secret \
-				"PPPoE password" \
-				"PPPoE settings" \
-				"" \
-				"The password is hidden and will not be shown in the review screen."
-			WAN_PPP_PASSWORD="$SELECTED_INPUT"
-			select_wan6_mode
+			WAN_IPADDR=""
+			WAN_NETMASK=""
+			WAN_GATEWAY=""
+			WAN_DNS=""
 			;;
 		static)
-			error=""
-			while :; do
+			WAN_PPP_USERNAME=""
+			WAN_PPP_PASSWORD=""
+			;;
+		disabled)
+			WAN6_PROTO="disabled"
+			WAN_PPP_USERNAME=""
+			WAN_PPP_PASSWORD=""
+			WAN_IPADDR=""
+			WAN_NETMASK=""
+			WAN_GATEWAY=""
+			WAN_DNS=""
+			;;
+	esac
+}
+
+select_wan_settings() {
+	wan_state="mode"
+	wan_back_from_wan6="mode"
+	wan_form_error=""
+
+	while :; do
+		case "$wan_state" in
+			mode)
+				select_wan_mode
+				if [ "$SELECTED_WAN_MODE" = "__back" ]; then
+					return 2
+				fi
+				WAN_PROTO="$SELECTED_WAN_MODE"
+				wan_form_error=""
+				case "$WAN_PROTO" in
+					dhcp)
+						wan_back_from_wan6="mode"
+						wan_state="wan6"
+						;;
+					pppoe) wan_state="pppoe-user" ;;
+					static) wan_state="static-ip" ;;
+					disabled)
+						clear_unused_wan_settings
+						return 0
+						;;
+					*) die "Unsupported WAN mode: $WAN_PROTO" ;;
+				esac
+				;;
+			pppoe-user)
+				prompt_default \
+					"PPPoE username" \
+					"${WAN_PPP_USERNAME:-}" \
+					"PPPoE settings" \
+					"Example: user@example.net" \
+					"$wan_form_error" \
+					"Credentials are saved only into the installed OpenWrt configuration."
+				if [ "$UI_INPUT_ACTION" = "back" ]; then
+					wan_form_error=""
+					wan_state="mode"
+					continue
+				fi
+				if [ -n "$SELECTED_INPUT" ]; then
+					WAN_PPP_USERNAME="$SELECTED_INPUT"
+					wan_form_error=""
+					wan_state="pppoe-password"
+				else
+					wan_form_error="PPPoE username is required."
+				fi
+				;;
+			pppoe-password)
+				prompt_secret \
+					"PPPoE password" \
+					"PPPoE settings" \
+					"" \
+					"The password is hidden and will not be shown in the review screen." \
+					"${WAN_PPP_PASSWORD:-}"
+				if [ "$UI_INPUT_ACTION" = "back" ]; then
+					wan_state="pppoe-user"
+					continue
+				fi
+				WAN_PPP_PASSWORD="$SELECTED_INPUT"
+				wan_back_from_wan6="pppoe-password"
+				wan_state="wan6"
+				;;
+			static-ip)
 				prompt_default \
 					"WAN IPv4 address/CIDR" \
 					"${WAN_IPADDR:-192.0.2.2}/$WAN_CIDR" \
 					"Static WAN IPv4 settings" \
 					"Example: 192.0.2.2/24" \
-					"$error" \
+					"$wan_form_error" \
 					"Set the address assigned by your ISP or upstream router."
+				if [ "$UI_INPUT_ACTION" = "back" ]; then
+					wan_form_error=""
+					wan_state="mode"
+					continue
+				fi
 				if parse_cidr_address "$SELECTED_INPUT" "$WAN_CIDR"; then
 					WAN_IPADDR="$PARSED_IP"
 					WAN_CIDR="$PARSED_CIDR"
 					WAN_NETMASK="$PARSED_NETMASK"
-					break
+					wan_form_error=""
+					wan_state="static-gateway"
+				else
+					wan_form_error="Invalid WAN address. Use IPv4/CIDR, for example 192.0.2.2/24."
 				fi
-				error="Invalid WAN address. Use IPv4/CIDR, for example 192.0.2.2/24."
-			done
-			error=""
-			while :; do
+				;;
+			static-gateway)
 				prompt_default \
 					"WAN gateway" \
-					"$WAN_GATEWAY" \
+					"${WAN_GATEWAY:-}" \
 					"Static WAN IPv4 settings" \
 					"Example: 192.0.2.1, or leave empty if no gateway is needed" \
-					"$error" \
+					"$wan_form_error" \
 					"Gateway must be an IPv4 address reachable through the WAN network."
-				candidate="$SELECTED_INPUT"
-				if [ -z "$candidate" ]; then
-					WAN_GATEWAY=""
-					break
+				if [ "$UI_INPUT_ACTION" = "back" ]; then
+					wan_form_error=""
+					wan_state="static-ip"
+					continue
 				fi
-				if is_ipv4 "$candidate"; then
-					WAN_GATEWAY="$candidate"
-					break
+				if [ -z "$SELECTED_INPUT" ] || is_ipv4 "$SELECTED_INPUT"; then
+					WAN_GATEWAY="$SELECTED_INPUT"
+					wan_form_error=""
+					wan_state="static-dns"
+				else
+					wan_form_error="Invalid gateway IPv4 address."
 				fi
-				error="Invalid gateway IPv4 address."
-			done
-			error=""
-			while :; do
+				;;
+			static-dns)
 				prompt_default \
 					"WAN DNS servers" \
-					"$WAN_DNS" \
+					"${WAN_DNS:-}" \
 					"Static WAN IPv4 settings" \
 					"Example: 1.1.1.1 8.8.8.8, or leave empty" \
-					"$error" \
+					"$wan_form_error" \
 					"Enter IPv4 DNS server addresses separated by spaces."
-				candidate="$SELECTED_INPUT"
-				if validate_dns_servers "$candidate"; then
-					WAN_DNS="$candidate"
-					break
+				if [ "$UI_INPUT_ACTION" = "back" ]; then
+					wan_form_error=""
+					wan_state="static-gateway"
+					continue
 				fi
-				error="DNS servers must be IPv4 addresses separated by spaces."
-			done
-			select_wan6_mode
-			;;
-		disabled)
-			WAN6_PROTO="disabled"
-			;;
-		*)
-			die "Unsupported WAN mode: $WAN_PROTO"
-			;;
-	esac
+				if validate_dns_servers "$SELECTED_INPUT"; then
+					WAN_DNS="$SELECTED_INPUT"
+					wan_form_error=""
+					wan_back_from_wan6="static-dns"
+					wan_state="wan6"
+				else
+					wan_form_error="DNS servers must be IPv4 addresses separated by spaces."
+				fi
+				;;
+			wan6)
+				select_wan6_mode
+				if [ "$SELECTED_WAN6_MODE" = "__back" ]; then
+					wan_state="$wan_back_from_wan6"
+					continue
+				fi
+				WAN6_PROTO="$SELECTED_WAN6_MODE"
+				clear_unused_wan_settings
+				return 0
+				;;
+			*) die "Unsupported WAN settings state: $wan_state" ;;
+		esac
+	done
 }
 
 select_network_settings() {
-	select_lan_settings
-	select_wan_settings
+	while :; do
+		if select_lan_settings; then
+			:
+		else
+			form_status=$?
+			[ "$form_status" -eq 2 ] && return 2
+			return "$form_status"
+		fi
+		if select_wan_settings; then
+			return 0
+		else
+			form_status=$?
+		fi
+		[ "$form_status" -eq 2 ] || return "$form_status"
+	done
 }
 
 validate_network_settings() {
@@ -735,33 +832,40 @@ validate_network_settings() {
 }
 
 select_network() {
-	refresh_nics
-	nic_count="$(wc -l < "$NIC_LIST")"
-	[ "$nic_count" -ge 2 ] ||
-		die "At least two network interfaces are required. Use --skip-network-wizard to keep defaults."
+	while :; do
+		refresh_nics
+		nic_count="$(wc -l < "$NIC_LIST")"
+		[ "$nic_count" -ge 2 ] ||
+			die "At least two network interfaces are required. Use --skip-network-wizard to keep defaults."
 
-	select_nic LAN
-	entry="$SELECTED_NIC"
-	LAN_DEV="${entry%%,*}"
-	LAN_MAC="${entry#*,}"
-
-	if [ "$nic_count" -eq 2 ]; then
-		while IFS='|' read -r name mac; do
-			[ "$name" = "$LAN_DEV" ] && continue
-			WAN_DEV="$name"
-			WAN_MAC="$mac"
-			break
-		done < "$NIC_LIST"
-		ui_notice "WAN interface" "WAN selected automatically: $WAN_DEV $WAN_MAC"
-	else
-		select_nic WAN "$LAN_DEV"
+		select_nic LAN
 		entry="$SELECTED_NIC"
-		WAN_DEV="${entry%%,*}"
-		WAN_MAC="${entry#*,}"
-	fi
-	validate_network_selection
-	select_network_settings
-	validate_network_settings
+		LAN_DEV="${entry%%,*}"
+		LAN_MAC="${entry#*,}"
+
+		if [ "$nic_count" -eq 2 ]; then
+			while IFS='|' read -r name mac; do
+				[ "$name" = "$LAN_DEV" ] && continue
+				WAN_DEV="$name"
+				WAN_MAC="$mac"
+				break
+			done < "$NIC_LIST"
+			ui_notice "WAN interface" "WAN selected automatically: $WAN_DEV $WAN_MAC"
+		else
+			select_nic WAN "$LAN_DEV"
+			entry="$SELECTED_NIC"
+			WAN_DEV="${entry%%,*}"
+			WAN_MAC="${entry#*,}"
+		fi
+		validate_network_selection
+		if select_network_settings; then
+			validate_network_settings
+			return 0
+		else
+			network_status=$?
+		fi
+		[ "$network_status" -eq 2 ] || return "$network_status"
+	done
 }
 
 get_partition_path() {

@@ -121,6 +121,217 @@ run_dry_run_skip_network_smoke() {
 	assert_not_contains "$calls_file" "write_installed_config"
 }
 
+run_network_back_state_smoke() {
+	work_dir="$1"
+	out_file="$work_dir/network-back-state.out"
+
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" \
+		OWRT_UI_MODE=line TERM=dumb sh -eu -c '
+			. "$1"
+
+			static_ip_calls=0
+			static_gateway_calls=0
+			static_dns_calls=0
+			static_wan6_calls=0
+			select_wan_mode() {
+				SELECTED_WAN_MODE=static
+			}
+			select_wan6_mode() {
+				static_wan6_calls=$((static_wan6_calls + 1))
+				if [ "$static_wan6_calls" -eq 1 ]; then
+					SELECTED_WAN6_MODE=__back
+				else
+					SELECTED_WAN6_MODE=disabled
+				fi
+			}
+			prompt_default() {
+				UI_INPUT_ACTION=submit
+				case "$1" in
+					"WAN IPv4 address/CIDR")
+						static_ip_calls=$((static_ip_calls + 1))
+						SELECTED_INPUT=198.51.100.2/24
+						;;
+					"WAN gateway")
+						static_gateway_calls=$((static_gateway_calls + 1))
+						if [ "$static_gateway_calls" -eq 1 ]; then
+							UI_INPUT_ACTION=back
+							SELECTED_INPUT=""
+						else
+							SELECTED_INPUT=198.51.100.1
+						fi
+						;;
+					"WAN DNS servers")
+						static_dns_calls=$((static_dns_calls + 1))
+						if [ "$static_dns_calls" -eq 1 ]; then
+							SELECTED_INPUT=1.1.1.1
+						else
+							SELECTED_INPUT=8.8.8.8
+						fi
+						;;
+				esac
+			}
+			WAN_PPP_USERNAME=stale-user
+			WAN_PPP_PASSWORD=stale-password
+			select_wan_settings
+			printf "static=%s/%s gateway=%s dns=%s wan6=%s\n" \
+				"$WAN_IPADDR" "$WAN_CIDR" "$WAN_GATEWAY" "$WAN_DNS" "$WAN6_PROTO"
+			printf "static_calls=%s,%s,%s,%s stale_ppp=%s,%s\n" \
+				"$static_ip_calls" "$static_gateway_calls" "$static_dns_calls" "$static_wan6_calls" \
+				"${#WAN_PPP_USERNAME}" "${#WAN_PPP_PASSWORD}"
+
+			ppp_user_calls=0
+			ppp_password_calls=0
+			ppp_wan6_calls=0
+			select_wan_mode() {
+				SELECTED_WAN_MODE=pppoe
+			}
+			select_wan6_mode() {
+				ppp_wan6_calls=$((ppp_wan6_calls + 1))
+				if [ "$ppp_wan6_calls" -eq 1 ]; then
+					SELECTED_WAN6_MODE=__back
+				else
+					SELECTED_WAN6_MODE=dhcpv6
+				fi
+			}
+			prompt_default() {
+				ppp_user_calls=$((ppp_user_calls + 1))
+				UI_INPUT_ACTION=submit
+				if [ "$ppp_user_calls" -eq 1 ]; then
+					SELECTED_INPUT=old-user
+				else
+					SELECTED_INPUT=new-user
+				fi
+			}
+			prompt_secret() {
+				ppp_password_calls=$((ppp_password_calls + 1))
+				case "$ppp_password_calls" in
+					1)
+						UI_INPUT_ACTION=submit
+						SELECTED_INPUT=kept-secret
+						;;
+					2)
+						UI_INPUT_ACTION=back
+						SELECTED_INPUT=""
+						;;
+					*)
+						UI_INPUT_ACTION=submit
+						SELECTED_INPUT="$5"
+						;;
+				esac
+			}
+			WAN_IPADDR=203.0.113.2
+			WAN_NETMASK=255.255.255.0
+			WAN_GATEWAY=203.0.113.1
+			WAN_DNS=9.9.9.9
+			select_wan_settings
+			printf "ppp_user=%s ppp_pass_len=%s wan6=%s\n" \
+				"$WAN_PPP_USERNAME" "${#WAN_PPP_PASSWORD}" "$WAN6_PROTO"
+			printf "ppp_calls=%s,%s,%s stale_static=%s,%s,%s\n" \
+				"$ppp_user_calls" "$ppp_password_calls" "$ppp_wan6_calls" \
+				"${#WAN_IPADDR}" "${#WAN_GATEWAY}" "${#WAN_DNS}"
+
+			select_wan_mode() {
+				SELECTED_WAN_MODE=__back
+			}
+			status=0
+			select_wan_settings || status=$?
+			printf "wan_mode_back_status=%s\n" "$status"
+
+			loop_lan_calls=0
+			loop_wan_calls=0
+			select_lan_settings() {
+				loop_lan_calls=$((loop_lan_calls + 1))
+				return 0
+			}
+			select_wan_settings() {
+				loop_wan_calls=$((loop_wan_calls + 1))
+				if [ "$loop_wan_calls" -eq 1 ]; then
+					return 2
+				fi
+				return 0
+			}
+			select_network_settings
+			printf "wan_back_loop_calls=%s,%s\n" "$loop_lan_calls" "$loop_wan_calls"
+
+			lan_calls=0
+			select_lan_settings() {
+				lan_calls=$((lan_calls + 1))
+				return 2
+			}
+			select_wan_settings() {
+				printf "unexpected WAN call\n" >&2
+				return 1
+			}
+			status=0
+			select_network_settings || status=$?
+			printf "lan_back_status=%s lan_calls=%s\n" "$status" "$lan_calls"
+
+			WAN_PPP_PASSWORD=cleanup-secret
+			cleanup
+			printf "cleanup_ppp_pass_len=%s\n" "${#WAN_PPP_PASSWORD}"
+		' sh "$INSTALLER" > "$out_file" 2>&1 || {
+			sed -n '1,240p' "$out_file" >&2 || true
+			fail "Network Back state harness failed"
+		}
+
+	assert_contains "$out_file" "lan_back_status=2 lan_calls=1"
+	assert_contains "$out_file" "static=198.51.100.2/24 gateway=198.51.100.1 dns=8.8.8.8 wan6=disabled"
+	assert_contains "$out_file" "static_calls=2,2,2,2 stale_ppp=0,0"
+	assert_contains "$out_file" "ppp_user=new-user ppp_pass_len=11 wan6=dhcpv6"
+	assert_contains "$out_file" "ppp_calls=2,3,2 stale_static=0,0,0"
+	assert_contains "$out_file" "wan_mode_back_status=2"
+	assert_contains "$out_file" "wan_back_loop_calls=2,2"
+	assert_contains "$out_file" "cleanup_ppp_pass_len=0"
+	assert_not_contains "$out_file" "kept-secret"
+}
+
+run_line_network_wizard_back_smoke() {
+	work_dir="$1"
+	out_file="$work_dir/line-network-wizard-back.out"
+
+	{
+		printf '%s\n' \
+			1 \
+			10.0.0.1/24 \
+			3 \
+			198.51.100.2/24 \
+			'!back' \
+			198.51.100.3/24 \
+			198.51.100.1 \
+			1.1.1.1 \
+			3 \
+			8.8.8.8 \
+			1
+	} | OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" \
+		OWRT_UI_MODE=line TERM=dumb sh -eu -c '
+			. "$1"
+			setup_ui
+			refresh_nics() {
+				printf "%s\n" \
+					"eth0|02:00:00:00:00:10" \
+					"eth1|02:00:00:00:00:11" > "$NIC_LIST"
+			}
+			nic_label() {
+				printf "%s %s" "$1" "$2"
+			}
+
+			select_network
+			printf "interfaces=%s,%s macs=%s,%s\n" \
+				"$LAN_DEV" "$WAN_DEV" "$LAN_MAC" "$WAN_MAC"
+			printf "lan=%s/%s wan=%s/%s gateway=%s dns=%s wan6=%s\n" \
+				"$LAN_IP" "$LAN_CIDR" "$WAN_IPADDR" "$WAN_CIDR" \
+				"$WAN_GATEWAY" "$WAN_DNS" "$WAN6_PROTO"
+			cleanup
+		' sh "$INSTALLER" > "$out_file" 2>&1 || {
+			sed -n '1,260p' "$out_file" >&2 || true
+			fail "Line network wizard Back smoke failed"
+		}
+
+	assert_contains "$out_file" "WAN selected automatically: eth1 02:00:00:00:00:11"
+	assert_contains "$out_file" "interfaces=eth0,eth1 macs=02:00:00:00:00:10,02:00:00:00:00:11"
+	assert_contains "$out_file" "lan=10.0.0.1/24 wan=198.51.100.3/24 gateway=198.51.100.1 dns=8.8.8.8 wan6=dhcpv6"
+}
+
 [ -r "$INSTALLER" ] || fail "Installer not found: $INSTALLER"
 [ -r "$UI_LIB" ] || fail "UI library not found: $UI_LIB"
 
@@ -129,5 +340,7 @@ trap 'rm -rf "$work_dir"' EXIT INT TERM
 
 run_parse_args_smoke "$work_dir"
 run_dry_run_skip_network_smoke "$work_dir"
+run_network_back_state_smoke "$work_dir"
+run_line_network_wizard_back_smoke "$work_dir"
 
 printf 'Install flow smoke tests passed.\n'

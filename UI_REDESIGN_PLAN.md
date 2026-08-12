@@ -38,7 +38,7 @@ Mouse support не является обязательным для прохож
 
 ```text
 +------------------------------------------------------------------------------+
-| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.4 |
+| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.5 |
 +------------------------------------------------------------------------------+
 | Steps: [1 Disk] -> [2 LAN] -> [3 WAN] -> [4 Review] -> [5 Install]            |
 +------------------------------------------------------------------------------+
@@ -170,7 +170,7 @@ OWRT_UI_DEBUG=1
 
 Цель: сделать ввод IP/WAN понятным и проверяемым до записи диска.
 
-Текущий статус на 2026-08-12: первая итерация structured forms реализована без новых зависимостей. `prompt_default` и `prompt_secret` умеют показывать context, example, current/default и error zone. LAN IPv4/CIDR, PPPoE username/password, static WAN IPv4/gateway/DNS и WAN IPv6 выбор используют этот слой. Ошибки валидации возвращают только к текущему полю; PPPoE password не попадает в review. Полноценный Back/Edit flow остается future work.
+Текущий статус на 2026-08-12: structured forms и полноценный form-level Back реализованы без новых зависимостей. `prompt_default` и `prompt_secret` показывают context, example, current/default и error zone. В ANSI form `Esc` возвращает на предыдущий шаг, `dialog` Cancel делает то же самое, line fallback использует `!back` с escape `!!back` для literal value. WAN mode и WAN6 menus содержат явные Back items. PPPoE/static state machine возвращается по одному полю, сохраняет уже введенные значения во время редактирования и очищает credentials/settings невыбранного протокола перед review. Ошибки валидации возвращают только к текущему полю; PPPoE password не попадает в review и стирается из shell variable при cleanup.
 
 Дополнение на 2026-08-12: добавлен безопасный review action loop перед финальным `ERASE`. Пользователь может продолжить к точному destructive confirmation, заново пройти выбор LAN/WAN и network settings или отменить установку. Это не запускает запись диска с review screen напрямую.
 
@@ -273,7 +273,7 @@ progress без надежного счетчика вроде `pv`.
 
 Цель: не выпускать красивый, но хрупкий installer.
 
-Текущий статус на 2026-08-12: базовая матрица Hellforge ANSI пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`, runtime `INSTALLER_VERSION=v1.0-alpha.4`. Текущий локальный ISO SHA-256: `1953ec5b949cee33149ed317a70b95020cdea925131ecfe9f0b30d31d457d682`; `v1.0-alpha.4` публикуется отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Быстрый `make ui-smoke` покрывает line menu/stage/failure, ANSI stage/snapshot, red warning, Ctrl+C cleanup, Esc cancel, Down + Enter, native SGR click, wheel, mouse opt-out, dialog fallback и terminal-size checks. Auto-mode ANSI включается только при терминале минимум `80x24`. `make install-flow-smoke` проверяет `--dry-run`/`--skip-network-wizard` guards, а `make smoke` объединяет быстрые non-ISO проверки. `make iso-smoke` bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
+Текущий статус на 2026-08-12: базовая матрица Hellforge ANSI пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`, runtime `INSTALLER_VERSION=v1.0-alpha.5`. Текущий локальный ISO SHA-256: `cfa29fb9bfbdd4d9c00df0e900e6d8308ec6995734ce736e55691104d5058e09`; `v1.0-alpha.5` публикуется отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs, OpenWrt serial console и marker автозапуска wizard; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Быстрый `make ui-smoke` покрывает line menu/stage/failure, ANSI stage/snapshot, red warning, Ctrl+C cleanup, Esc cancel, form Back, raw input editing, Down + Enter, native SGR click, wheel, mouse opt-out, dialog fallback и terminal-size checks. Auto-mode ANSI включается только при терминале минимум `80x24`. `make install-flow-smoke` проверяет `--dry-run`/`--skip-network-wizard` guards, LAN/WAN form boundaries, PPPoE/static per-field Back и очистку ghost settings, а `make smoke` объединяет быстрые non-ISO проверки. `make iso-smoke` bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
 
 Минимальная матрица:
 
@@ -335,7 +335,7 @@ progress без надежного счетчика вроде `pv`.
 5. [done] Прогнать QEMU BIOS/UEFI smoke на ISO после следующей сборки.
 6. [done] После стабилизации глубже перевести network wizard forms.
 7. [done] Только после этого заниматься `dialog --mouse`.
-8. [done] Добавить настоящий Back/Edit flow для network forms без риска случайного destructive continue.
+8. [done] Добавить безопасный review-level Edit flow без риска случайного destructive continue.
 9. [done] Реализовать install progress screen, `/tmp/owrt-installer.log`, failure screen и manifest `payload_uncompressed_size`.
 10. [done] Добавить быстрый `make ui-smoke` для повторяемой проверки line/ANSI/dialog-fallback UI.
 11. [done] Добавить автоматический `make iso-smoke` для BIOS/UEFI hybrid ISO boot markers.
@@ -354,3 +354,5 @@ progress без надежного счетчика вроде `pv`.
 24. [done] Добавить native SGR mouse в ANSI menus для SSH/xterm-compatible terminals: click selection, wheel navigation, `OWRT_UI_NO_MOUSE=1`, terminal gating, cleanup и pseudo-TTY smoke.
 25. [done] Исправить POSIX shell variable collision в `ui_repeat`, из-за которой render обнулял menu item count; добавить отдельный pseudo-TTY regression smoke для Down + Enter.
 26. [done] Собрать и проверить `v1.0-alpha.4` ISO с native ANSI mouse: checksums, source/initramfs compare, GPT/El Torito, BIOS и UEFI QEMU smoke; публиковать отдельным tag.
+27. [done] Реализовать настоящий form-level Back: ANSI `Esc`, dialog Cancel, line `!back`, WAN/WAN6 Back items, per-field PPPoE/static state machine, сохранение введенных значений и очистка ghost credentials; покрыть raw editor, secret, state и end-to-end line smoke.
+28. [done] Собрать и проверить `v1.0-alpha.5` ISO с form-level Back: checksums, source/initramfs compare, GPT/El Torito, BIOS и UEFI QEMU smoke; опубликовать отдельным alpha tag без перемещения старых tags.
