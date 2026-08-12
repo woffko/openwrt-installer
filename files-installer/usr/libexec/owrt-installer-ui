@@ -166,6 +166,13 @@ ui_line_selected() {
 	printf '%s %s|%s\n' "$C_RESET" "$C_BLUE" "$C_RESET"
 }
 
+ui_line_error() {
+	printf '%s|%s ' "$C_BLUE" "$C_RESET"
+	printf '%s%s' "$C_RED" "$C_BOLD"
+	ui_print_padded "$1"
+	printf '%s %s|%s\n' "$C_RESET" "$C_BLUE" "$C_RESET"
+}
+
 ui_blank() {
 	ui_line ""
 }
@@ -408,13 +415,34 @@ select_from_menu() {
 prompt_default() {
 	label="$1"
 	default="$2"
+	title="${3:-$label}"
+	example="${4:-}"
+	error="${5:-}"
+	details="${6:-}"
 	if ui_ansi_active; then
-		ui_screen_begin "$label"
-		ui_line "Default: $default"
+		ui_screen_begin "$title"
+		if [ -n "$details" ]; then
+			ui_note_lines "$details"
+			ui_blank
+		fi
+		ui_line "Field: $label"
+		ui_line "Current/default: $default"
+		[ -n "$example" ] && ui_line "$example"
+		if [ -n "$error" ]; then
+			ui_blank
+			ui_line_error "ERROR: $error"
+		fi
 		ui_blank
 		ui_line "Type a new value or press Enter to keep the default."
 		ui_rule
 		ui_show_cursor
+	else
+		if [ -n "$title" ] && [ "$title" != "$label" ]; then
+			section "$title"
+		fi
+		[ -n "$details" ] && printf '%s\n' "$details"
+		[ -n "$example" ] && printf '%s\n' "$example"
+		[ -n "$error" ] && printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$error"
 	fi
 	printf '%s [%s]: ' "$label" "$default"
 	IFS= read -r answer
@@ -423,11 +451,29 @@ prompt_default() {
 
 prompt_secret() {
 	label="$1"
+	title="${2:-$label}"
+	error="${3:-}"
+	details="${4:-}"
 	if ui_ansi_active; then
-		ui_screen_begin "$label"
+		ui_screen_begin "$title"
+		if [ -n "$details" ]; then
+			ui_note_lines "$details"
+			ui_blank
+		fi
+		ui_line "Field: $label"
 		ui_line "Input is hidden."
+		if [ -n "$error" ]; then
+			ui_blank
+			ui_line_error "ERROR: $error"
+		fi
 		ui_rule
 		ui_show_cursor
+	else
+		if [ -n "$title" ] && [ "$title" != "$label" ]; then
+			section "$title"
+		fi
+		[ -n "$details" ] && printf '%s\n' "$details"
+		[ -n "$error" ] && printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$error"
 	fi
 	printf '%s: ' "$label"
 	if [ -t 0 ] && command -v stty >/dev/null 2>&1; then

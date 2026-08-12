@@ -216,6 +216,15 @@ parse_cidr_address() {
 	PARSED_NETMASK="$(cidr_to_netmask "$PARSED_CIDR")"
 }
 
+validate_dns_servers() {
+	servers="$1"
+	[ -n "$servers" ] || return 0
+	for server in $servers; do
+		is_ipv4 "$server" || return 1
+	done
+	return 0
+}
+
 trim_file() {
 	file="$1"
 	if [ -r "$file" ]; then
@@ -495,21 +504,28 @@ validate_network_selection() {
 }
 
 select_lan_settings() {
-	section "LAN settings"
+	error=""
 	while :; do
-		prompt_default "LAN IPv4 address/CIDR" "$LAN_IP/$LAN_CIDR"
+		prompt_default \
+			"LAN IPv4 address/CIDR" \
+			"$LAN_IP/$LAN_CIDR" \
+			"LAN IPv4 settings" \
+			"Example: 192.168.1.1/24" \
+			"$error" \
+			"This address becomes the router address and LAN gateway."
 		if parse_cidr_address "$SELECTED_INPUT" "$LAN_CIDR"; then
 			LAN_IP="$PARSED_IP"
 			LAN_CIDR="$PARSED_CIDR"
 			LAN_NETMASK="$PARSED_NETMASK"
 			return 0
 		fi
-		warn "Invalid LAN address. Example: 192.168.1.1/24"
+		error="Invalid LAN address. Use IPv4/CIDR, for example 192.168.1.1/24."
 	done
 }
 
 select_wan_mode() {
 	menu_reset
+	menu_note "Choose how the installed OpenWrt system will configure IPv4 on the WAN interface."
 	menu_add "dhcp" "DHCP client"
 	menu_add "pppoe" "PPPoE"
 	menu_add "static" "Static IPv4"
@@ -522,14 +538,14 @@ select_wan6_mode() {
 	menu_reset
 	case "$WAN_PROTO" in
 		pppoe)
-			menu_note "IPv6 is configured separately from IPv4. For IPv6 over PPPoE, choose DHCPv6 / Prefix Delegation; OpenWrt will attach WAN6 to the PPPoE session."
+			menu_note "IPv6 is configured separately from PPPoE IPv4. There is no separate PPPoE IPv6 mode here; choose DHCPv6 / Prefix Delegation if your ISP provides IPv6 over the PPP session."
 			;;
 		*)
 			menu_note "IPv6 is configured separately from the IPv4 WAN mode. Choose DHCPv6 / Prefix Delegation for typical ISP IPv6, or None to leave WAN IPv6 disabled."
 			;;
 	esac
 	menu_add "dhcpv6" "DHCPv6 / Prefix Delegation"
-	menu_add "disabled" "None / IPv6 disabled"
+	menu_add "disabled" "Disabled / no WAN IPv6"
 	select_from_menu "Select WAN IPv6 configuration type" "WAN IPv6 mode"
 	WAN6_PROTO="$SELECTED_VALUE"
 }
@@ -556,37 +572,80 @@ select_wan_settings() {
 			select_wan6_mode
 			;;
 		pppoe)
-			section "PPPoE settings"
+			error=""
 			while [ -z "$WAN_PPP_USERNAME" ]; do
-				prompt_default "PPPoE username" "$WAN_PPP_USERNAME"
+				prompt_default \
+					"PPPoE username" \
+					"$WAN_PPP_USERNAME" \
+					"PPPoE settings" \
+					"Example: user@example.net" \
+					"$error" \
+					"Credentials are saved only into the installed OpenWrt configuration."
 				WAN_PPP_USERNAME="$SELECTED_INPUT"
-				[ -n "$WAN_PPP_USERNAME" ] || warn "PPPoE username is required"
+				[ -n "$WAN_PPP_USERNAME" ] || error="PPPoE username is required."
 			done
-			prompt_secret "PPPoE password"
+			prompt_secret \
+				"PPPoE password" \
+				"PPPoE settings" \
+				"" \
+				"The password is hidden and will not be shown in the review screen."
 			WAN_PPP_PASSWORD="$SELECTED_INPUT"
 			select_wan6_mode
 			;;
 		static)
-			section "Static WAN settings"
+			error=""
 			while :; do
-				prompt_default "WAN IPv4 address/CIDR" "${WAN_IPADDR:-192.0.2.2}/$WAN_CIDR"
+				prompt_default \
+					"WAN IPv4 address/CIDR" \
+					"${WAN_IPADDR:-192.0.2.2}/$WAN_CIDR" \
+					"Static WAN IPv4 settings" \
+					"Example: 192.0.2.2/24" \
+					"$error" \
+					"Set the address assigned by your ISP or upstream router."
 				if parse_cidr_address "$SELECTED_INPUT" "$WAN_CIDR"; then
 					WAN_IPADDR="$PARSED_IP"
 					WAN_CIDR="$PARSED_CIDR"
 					WAN_NETMASK="$PARSED_NETMASK"
 					break
 				fi
-				warn "Invalid WAN address. Example: 192.0.2.2/24"
+				error="Invalid WAN address. Use IPv4/CIDR, for example 192.0.2.2/24."
 			done
+			error=""
 			while :; do
-				prompt_default "WAN gateway" "$WAN_GATEWAY"
-				WAN_GATEWAY="$SELECTED_INPUT"
-				[ -z "$WAN_GATEWAY" ] && break
-				is_ipv4 "$WAN_GATEWAY" && break
-				warn "Invalid gateway IPv4 address"
+				prompt_default \
+					"WAN gateway" \
+					"$WAN_GATEWAY" \
+					"Static WAN IPv4 settings" \
+					"Example: 192.0.2.1, or leave empty if no gateway is needed" \
+					"$error" \
+					"Gateway must be an IPv4 address reachable through the WAN network."
+				candidate="$SELECTED_INPUT"
+				if [ -z "$candidate" ]; then
+					WAN_GATEWAY=""
+					break
+				fi
+				if is_ipv4 "$candidate"; then
+					WAN_GATEWAY="$candidate"
+					break
+				fi
+				error="Invalid gateway IPv4 address."
 			done
-			prompt_default "WAN DNS servers, space separated" "$WAN_DNS"
-			WAN_DNS="$SELECTED_INPUT"
+			error=""
+			while :; do
+				prompt_default \
+					"WAN DNS servers" \
+					"$WAN_DNS" \
+					"Static WAN IPv4 settings" \
+					"Example: 1.1.1.1 8.8.8.8, or leave empty" \
+					"$error" \
+					"Enter IPv4 DNS server addresses separated by spaces."
+				candidate="$SELECTED_INPUT"
+				if validate_dns_servers "$candidate"; then
+					WAN_DNS="$candidate"
+					break
+				fi
+				error="DNS servers must be IPv4 addresses separated by spaces."
+			done
 			select_wan6_mode
 			;;
 		disabled)
@@ -620,6 +679,7 @@ validate_network_settings() {
 			if [ -n "$WAN_GATEWAY" ]; then
 				is_ipv4 "$WAN_GATEWAY" || die "Invalid WAN gateway: $WAN_GATEWAY"
 			fi
+			validate_dns_servers "$WAN_DNS" || die "Invalid WAN DNS servers: $WAN_DNS"
 			;;
 		disabled)
 			WAN6_PROTO="disabled"

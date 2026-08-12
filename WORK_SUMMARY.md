@@ -9,7 +9,7 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя функциональная правка: `Add Hellforge ANSI installer UI`.
+- Последняя функциональная правка: structured Hellforge network forms.
 - Последний опубликованный release: `v1.0-alpha.1`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.1`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
@@ -18,6 +18,7 @@
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, optional `dialog`/mouse later).
 - Реализована первая итерация Hellforge TUI: добавлен `files-installer/usr/libexec/owrt-installer-ui`, `OWRT_UI_MODE=line|ansi|auto`, ANSI frame/menu/review/confirm/install-stage screens и line fallback.
+- Network wizard теперь использует form-aware prompt screens для LAN IPv4, PPPoE и static WAN settings: на экране показываются context, example, current/default и error zone.
 
 ## Что сделано
 
@@ -66,6 +67,16 @@
 - WAN6 DHCPv6 или disabled.
 
 Эти параметры сохраняются в `/etc/owrt-installer/interface-map` и применяются на первом boot установленной системы.
+
+Последняя итерация wizard:
+
+- LAN IPv4/CIDR, PPPoE username/password, static WAN IPv4/gateway/DNS переведены на structured form screens;
+- ошибки валидации возвращают только к текущему полю и не сбрасывают весь wizard;
+- неверный gateway/DNS больше не становится новым default после ошибки;
+- static WAN DNS теперь проверяется как список IPv4 адресов;
+- WAN IPv6 menu явно показывает только `DHCPv6 / Prefix Delegation` и `Disabled / no WAN IPv6`;
+- для PPPoE добавлена note, что отдельного PPPoE IPv6 режима нет; IPv6 выбирается как DHCPv6/PD поверх WAN-сессии при поддержке ISP;
+- PPPoE password не выводится в review screen.
 
 ## Автозапуск
 
@@ -133,6 +144,10 @@ d1bf004c9608bbecde118f355a41d1860fce32529aecd542bab2c5628b8f47fc  manifest.json
 - synthetic TTY smoke для ANSI arrow menu;
 - synthetic TTY smoke для ANSI review/confirm/install-stage screens;
 - `make shellcheck` через локальный `build/host-tools/usr/bin/shellcheck`;
+- line smoke для LAN form error retry;
+- line smoke для static WAN invalid IP/gateway/DNS retry и WAN6 disabled;
+- line smoke для PPPoE + DHCPv6/PD с проверкой, что password не появляется в review;
+- ANSI pseudo-TTY smoke для LAN form error screen через `script`;
 - сборка нового hybrid ISO после Hellforge TUI;
 - проверка `sha256sum -c output/sha256sums.txt`;
 - проверка initramfs через `cpio`, что внутри есть `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`;

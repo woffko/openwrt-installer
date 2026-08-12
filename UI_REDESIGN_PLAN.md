@@ -169,6 +169,8 @@ OWRT_UI_DEBUG=1
 
 Цель: сделать ввод IP/WAN понятным и проверяемым до записи диска.
 
+Текущий статус на 2026-08-12: первая итерация structured forms реализована без новых зависимостей. `prompt_default` и `prompt_secret` умеют показывать context, example, current/default и error zone. LAN IPv4/CIDR, PPPoE username/password, static WAN IPv4/gateway/DNS и WAN IPv6 выбор используют этот слой. Ошибки валидации возвращают только к текущему полю; PPPoE password не попадает в review. Полноценный Back/Edit flow остается future work.
+
 Работы:
 
 - Заменить отдельные prompts на structured form screens:
@@ -313,5 +315,6 @@ OWRT_UI_DEBUG=1
 3. [done] Добавить Hellforge header/footer/frame для меню, review, confirmation и install-stage экранов.
 4. [done] Прогнать syntax-check, shellcheck и smoke.
 5. [done] Прогнать QEMU BIOS/UEFI smoke на ISO после следующей сборки.
-6. [pending] После стабилизации глубже перевести network wizard forms.
+6. [done] После стабилизации глубже перевести network wizard forms.
 7. [pending] Только после этого заниматься `dialog --mouse`.
+8. [pending] Добавить настоящий Back/Edit flow для network forms без риска случайного destructive continue.
