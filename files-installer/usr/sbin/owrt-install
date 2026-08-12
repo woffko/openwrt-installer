@@ -883,7 +883,7 @@ confirm_erase() {
 }
 
 post_install_menu() {
-	if ui_ansi_active; then
+	if ui_ansi_active || ui_dialog_active; then
 		menu_reset
 		menu_add "1" "Reboot now"
 		menu_add "2" "Shutdown"

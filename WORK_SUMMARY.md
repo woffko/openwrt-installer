@@ -9,7 +9,7 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя функциональная правка: structured Hellforge network forms.
+- Последняя функциональная правка: optional `dialog --mouse` backend hook.
 - Последний опубликованный release: `v1.0-alpha.1`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.1`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
@@ -19,6 +19,8 @@
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, optional `dialog`/mouse later).
 - Реализована первая итерация Hellforge TUI: добавлен `files-installer/usr/libexec/owrt-installer-ui`, `OWRT_UI_MODE=line|ansi|auto`, ANSI frame/menu/review/confirm/install-stage screens и line fallback.
 - Network wizard теперь использует form-aware prompt screens для LAN IPv4, PPPoE и static WAN settings: на экране показываются context, example, current/default и error zone.
+- Добавлен optional `dialog` backend hook: `OWRT_UI_MODE=dialog` и `auto` используют `dialog` только если runtime package есть в live image; `OWRT_UI_NO_MOUSE=1` отключает `--mouse`.
+- В текущей сборке OpenWrt `25.12.4` пакет `dialog` недоступен в ImageBuilder и пропускается optional package resolver, поэтому стандартный ISO остается ANSI-first.
 
 ## Что сделано
 
@@ -114,9 +116,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-e7b64af24c6b36dc88be71988868d3818b0e271ba45ef20def9feaa5930a4589  openwrt-x86-64-installer.img.gz
-c7bf2e45910184f9402e50ddbb65e23947a1e3cebd7fb3895520a690f20cef1b  openwrt-x86-64-installer-hybrid.iso
-ac898d815376f7e4a35c06a0fcba465bea16892bdadf03d4357a79b05e22c26e  manifest.json
+4f67a1155e2426e634e5cddc42c0c8545ebfc3e51181065133b166463965aac4  openwrt-x86-64-installer.img.gz
+7a62976c4c54997b87ffda92a8f36fd54b1e39bcc13fabf67e5b35ce2db0d07b  openwrt-x86-64-installer-hybrid.iso
+25b568f2bbdfeb24329fa82625502abba7de9e2a09dfb3b500e36be8dad6f0d9  manifest.json
 ```
 
 ## Проверки
@@ -148,10 +150,14 @@ ac898d815376f7e4a35c06a0fcba465bea16892bdadf03d4357a79b05e22c26e  manifest.json
 - line smoke для static WAN invalid IP/gateway/DNS retry и WAN6 disabled;
 - line smoke для PPPoE + DHCPv6/PD с проверкой, что password не появляется в review;
 - ANSI pseudo-TTY smoke для LAN form error screen через `script`;
-- сборка нового hybrid ISO после Hellforge TUI и structured network forms;
+- fake runtime smoke для optional `dialog` backend: проверено `mode=dialog`, menu selection, наличие `--mouse` и отключение через `OWRT_UI_NO_MOUSE=1`;
+- pseudo-TTY smoke для `OWRT_UI_MODE=dialog` без runtime package: fallback уходит в `mode=ansi`;
+- сборка нового hybrid ISO после Hellforge TUI, structured network forms и optional dialog backend hook;
 - проверка `sha256sum -c output/sha256sums.txt`;
+- проверка ISO layout после последней сборки через `fdisk` и `xorriso -report_el_torito`;
 - проверка initramfs через `cpio`, что внутри есть `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`;
 - проверка строк structured forms внутри initramfs: `LAN IPv4 settings`, `Static WAN IPv4 settings`, `Disabled / no WAN IPv6`, note про отсутствие отдельного PPPoE IPv6 режима;
+- проверка dialog hook строк внутри initramfs: `ui_dialog_active`, `OWRT_UI_NO_MOUSE`, `dialog --stdout`;
 - BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
 - UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
 - на serial видно, что live installer управляется `/etc/inittab` на `tty1`; полноэкранный TUI проверяется на локальной VGA/tty1, а serial остается fallback/login каналом.

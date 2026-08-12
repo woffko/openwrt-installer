@@ -231,6 +231,8 @@ OWRT_UI_DEBUG=1
 
 Цель: добавить mouse-friendly backend без зависимости от него.
 
+Текущий статус на 2026-08-12: optional runtime hook реализован. `OWRT_UI_MODE=dialog` включает backend только если `dialog` реально есть в PATH; `auto` выбирает `dialog` на подходящей non-serial TTY только при наличии пакета, иначе остается ANSI. Backend использует `--mouse` по умолчанию и отключает его через `OWRT_UI_NO_MOUSE=1`. В текущем OpenWrt `25.12.4` ImageBuilder пакет `dialog` недоступен и optional package пропускается, поэтому стандартный ISO продолжает использовать ANSI.
+
 Работы:
 
 - Если `OWRT_UI_MODE=dialog` или `OWRT_UI_MODE=auto` и `dialog` доступен:
@@ -316,5 +318,6 @@ OWRT_UI_DEBUG=1
 4. [done] Прогнать syntax-check, shellcheck и smoke.
 5. [done] Прогнать QEMU BIOS/UEFI smoke на ISO после следующей сборки.
 6. [done] После стабилизации глубже перевести network wizard forms.
-7. [pending] Только после этого заниматься `dialog --mouse`.
+7. [done] Только после этого заниматься `dialog --mouse`.
 8. [pending] Добавить настоящий Back/Edit flow для network forms без риска случайного destructive continue.
+9. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.

@@ -6,6 +6,7 @@ UI_WIDTH=80
 UI_HEIGHT=25
 UI_INNER_WIDTH=76
 UI_CURSOR_HIDDEN=0
+UI_DIALOGRC=""
 
 ui_repeat() {
 	char="$1"
@@ -27,6 +28,12 @@ ui_trunc() {
 		return 0
 	fi
 	printf '%s' "$text" | cut -c 1-"$max"
+}
+
+ui_shell_quote() {
+	printf "'"
+	printf '%s' "$1" | sed "s/'/'\\\\''/g"
+	printf "'"
 }
 
 ui_print_padded() {
@@ -98,7 +105,16 @@ setup_ui() {
 		line)
 			UI_MODE_ACTUAL="line"
 			;;
-		ansi|dialog)
+		dialog)
+			if [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] &&
+				command -v dialog >/dev/null 2>&1; then
+				UI_MODE_ACTUAL="dialog"
+				ui_dialog_setup_theme
+			elif [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+				UI_MODE_ACTUAL="ansi"
+			fi
+			;;
+		ansi)
 			if [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
 				UI_MODE_ACTUAL="ansi"
 			fi
@@ -106,7 +122,12 @@ setup_ui() {
 		auto|"")
 			if [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] &&
 				! ui_is_serial && [ "$UI_WIDTH" -ge 80 ] && [ "$UI_HEIGHT" -ge 20 ]; then
-				UI_MODE_ACTUAL="ansi"
+				if command -v dialog >/dev/null 2>&1; then
+					UI_MODE_ACTUAL="dialog"
+					ui_dialog_setup_theme
+				else
+					UI_MODE_ACTUAL="ansi"
+				fi
 			fi
 			;;
 		*)
@@ -119,6 +140,37 @@ ui_ansi_active() {
 	[ "$UI_MODE_ACTUAL" = "ansi" ]
 }
 
+ui_dialog_active() {
+	[ "$UI_MODE_ACTUAL" = "dialog" ]
+}
+
+ui_dialog_mouse_arg() {
+	[ "${OWRT_UI_NO_MOUSE:-0}" = "1" ] || printf '%s\n' "--mouse"
+}
+
+ui_dialog_setup_theme() {
+	UI_DIALOGRC="${DIALOGRC:-/tmp/owrt-installer.dialogrc}"
+	if [ ! -s "$UI_DIALOGRC" ]; then
+		{
+			printf 'use_colors = ON\n'
+			printf 'screen_color = (WHITE,BLACK,OFF)\n'
+			printf 'shadow_color = (BLACK,BLACK,OFF)\n'
+			printf 'dialog_color = (WHITE,BLACK,OFF)\n'
+			printf 'title_color = (YELLOW,BLACK,ON)\n'
+			printf 'border_color = (CYAN,BLACK,ON)\n'
+			printf 'button_active_color = (BLACK,YELLOW,ON)\n'
+			printf 'button_inactive_color = (WHITE,BLACK,OFF)\n'
+			printf 'tag_color = (YELLOW,BLACK,ON)\n'
+			printf 'tag_selected_color = (BLACK,YELLOW,ON)\n'
+			printf 'item_color = (WHITE,BLACK,OFF)\n'
+			printf 'item_selected_color = (BLACK,YELLOW,ON)\n'
+			printf 'inputbox_color = (WHITE,BLACK,OFF)\n'
+			printf 'inputbox_border_color = (CYAN,BLACK,ON)\n'
+		} > "$UI_DIALOGRC" 2>/dev/null || true
+	fi
+	export DIALOGRC="$UI_DIALOGRC"
+}
+
 ui_leave() {
 	if [ "$UI_CURSOR_HIDDEN" = "1" ]; then
 		printf '\033[?25h'
@@ -126,6 +178,9 @@ ui_leave() {
 	fi
 	if ui_ansi_active; then
 		printf '\033[?1000l\033[?1006l' 2>/dev/null || true
+	fi
+	if ui_dialog_active; then
+		dialog --clear 2>/dev/null || true
 	fi
 }
 
@@ -363,6 +418,23 @@ select_from_menu() {
 	count="$(menu_count)"
 	[ "$count" -gt 0 ] || die "No choices available for $prompt"
 
+	if ui_dialog_active; then
+		args=""
+		number=0
+		while IFS='|' read -r value label; do
+			[ -n "$value" ] || continue
+			number=$((number + 1))
+			args="$args $(ui_shell_quote "$value") $(ui_shell_quote "$label")"
+		done < "$MENU_LIST"
+		dialog_body="${MENU_NOTE:-Select $prompt.}"
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		SELECTED_VALUE="$(eval "dialog --stdout $mouse_arg --backtitle 'OpenWrt Hellforge Installer' --title $(ui_shell_quote "$title") --menu $(ui_shell_quote "$dialog_body") 0 0 0 $args")" ||
+			die "Selection cancelled"
+		MENU_NOTE=""
+		return 0
+	fi
+
 	if can_arrow_menu; then
 		selected=1
 		esc="$(printf '\033')"
@@ -419,6 +491,20 @@ prompt_default() {
 	example="${4:-}"
 	error="${5:-}"
 	details="${6:-}"
+	if ui_dialog_active; then
+		body="$details"
+		[ -n "$example" ] && body="${body}${body:+
+}$example"
+		[ -n "$error" ] && body="${body}${body:+
+}ERROR: $error"
+		[ -n "$body" ] || body="Type a new value or press Enter to keep the default."
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		SELECTED_INPUT="$(dialog --stdout $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --inputbox "$body" 0 0 "$default")" ||
+			die "Input cancelled"
+		[ -n "$SELECTED_INPUT" ] || SELECTED_INPUT="$default"
+		return 0
+	fi
 	if ui_ansi_active; then
 		ui_screen_begin "$title"
 		if [ -n "$details" ]; then
@@ -454,6 +540,16 @@ prompt_secret() {
 	title="${2:-$label}"
 	error="${3:-}"
 	details="${4:-}"
+	if ui_dialog_active; then
+		body="${details:-Input is hidden.}"
+		[ -n "$error" ] && body="${body}${body:+
+}ERROR: $error"
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		SELECTED_INPUT="$(dialog --stdout $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --passwordbox "$body" 0 0)" ||
+			die "Input cancelled"
+		return 0
+	fi
 	if ui_ansi_active; then
 		ui_screen_begin "$title"
 		if [ -n "$details" ]; then
@@ -514,6 +610,13 @@ ui_welcome_screen() {
 ui_notice() {
 	title="$1"
 	message="$2"
+	if ui_dialog_active; then
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --msgbox "$message" 0 0 ||
+			die "Notice cancelled"
+		return 0
+	fi
 	if ui_ansi_active; then
 		ui_screen_begin "$title"
 		ui_line "$message"
@@ -528,6 +631,40 @@ ui_notice() {
 }
 
 ui_summary_screen() {
+	if ui_dialog_active; then
+		body="Target disk: $TARGET"
+		if [ "$SKIP_NETWORK" = "1" ]; then
+			body="$body
+Network: keep OpenWrt defaults"
+		else
+			body="$body
+LAN: ${LAN_DEV:-selected-by-mac} $LAN_MAC
+WAN: ${WAN_DEV:-selected-by-mac} $WAN_MAC
+LAN address: $LAN_IP/$LAN_CIDR"
+			case "$WAN_PROTO" in
+				dhcp) body="$body
+WAN IPv4: DHCP client" ;;
+				pppoe) body="$body
+WAN IPv4: PPPoE user=$WAN_PPP_USERNAME" ;;
+				static) body="$body
+WAN IPv4: static $WAN_IPADDR/$WAN_CIDR gateway=${WAN_GATEWAY:-none}" ;;
+				disabled) body="$body
+WAN IPv4: disabled" ;;
+			esac
+			body="$body
+WAN IPv6: $(wan6_label "$WAN6_PROTO")"
+			[ "$WAN_PROTO" = "disabled" ] || body="$body
+NAT: enabled"
+		fi
+		body="$body
+
+ALL DATA ON $TARGET WILL BE ERASED."
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Review installation" --msgbox "$body" 0 0 ||
+			die "Review cancelled"
+		return 0
+	fi
 	ui_ansi_active || return 1
 	ui_screen_begin "Review installation"
 	ui_line "Target disk: $TARGET"
@@ -558,6 +695,17 @@ ui_summary_screen() {
 
 ui_confirm_erase_screen() {
 	expected="$1"
+	if ui_dialog_active; then
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Final erase confirmation" --msgbox "DESTRUCTIVE ACTION
+
+Type this exact confirmation string in the next prompt:
+
+$expected" 0 0 ||
+			die "Confirmation cancelled"
+		return 0
+	fi
 	if ui_ansi_active; then
 		ui_screen_begin "Final erase confirmation"
 		printf '%s|%s ' "$C_BLUE" "$C_RESET"
@@ -575,6 +723,16 @@ ui_confirm_erase_screen() {
 ui_install_stage() {
 	stage="$1"
 	detail="$2"
+	if ui_dialog_active; then
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Install" --infobox "Stage: $stage
+
+$detail
+
+Do not power off the machine while this step is running." 9 70 2>/dev/null || true
+		return 0
+	fi
 	if ui_ansi_active; then
 		ui_screen_begin "Install"
 		ui_line "Stage: $stage"
@@ -588,6 +746,13 @@ ui_install_stage() {
 
 ui_success_screen() {
 	message="$1"
+	if ui_dialog_active; then
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Installation completed" --msgbox "$message" 0 0 ||
+			true
+		return 0
+	fi
 	if ui_ansi_active; then
 		ui_screen_begin "Installation completed"
 		printf '%s|%s ' "$C_BLUE" "$C_RESET"

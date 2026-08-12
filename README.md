@@ -123,10 +123,14 @@ UI mode can be forced for debugging:
 ```sh
 OWRT_UI_MODE=line owrt-install
 OWRT_UI_MODE=ansi owrt-install
+OWRT_UI_MODE=dialog owrt-install
 ```
 
-Mouse support is planned as an optional `dialog --mouse` backend. It is not a
-guaranteed local VGA console feature yet.
+Mouse support is available only through the optional runtime `dialog --mouse`
+backend when the `dialog` package is present and the terminal forwards mouse
+events. The standard build currently falls back to ANSI because the OpenWrt
+`25.12.4` ImageBuilder used here does not provide the optional `dialog`
+package. Use `OWRT_UI_NO_MOUSE=1` to force keyboard-only `dialog` mode.
 
 Unattended-style invocation still requires the explicit destructive flag:
 
