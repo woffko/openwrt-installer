@@ -15,6 +15,7 @@
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
+- План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, optional `dialog`/mouse later).
 
 ## Что сделано
 
