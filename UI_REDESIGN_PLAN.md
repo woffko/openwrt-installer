@@ -6,9 +6,9 @@
 
 ## Короткий вывод
 
-Рекомендуемый путь: сначала сделать zero-dependency TUI на ANSI/POSIX shell поверх текущего `owrt-install`, затем отдельно добавить optional `dialog` backend для мыши там, где терминал реально передает mouse events.
+Рекомендуемый путь: zero-dependency TUI на ANSI/POSIX shell поверх текущего `owrt-install`, native SGR mouse для SSH/xterm-compatible terminals и optional `dialog` backend там, где пакет доступен.
 
-Mouse support не должен быть базовым требованием первой версии. В локальной Linux console `tty1` мышь обычно не работает как terminal event без `gpm` или прямой обработки `/dev/input/event*`. В SSH/xterm-подобных терминалах и иногда в serial frontend `dialog --mouse` или SGR mouse reporting может работать. Поэтому базовая UX-модель должна оставаться keyboard-first.
+Mouse support не является обязательным для прохождения wizard. В локальной Linux console `tty1` мышь обычно не работает как terminal event без `gpm` или прямой обработки `/dev/input/event*`. В SSH/xterm-подобных терминалах SGR mouse reporting работает без дополнительных пакетов. Поэтому базовая UX-модель остается keyboard-first, а мышь дублирует те же безопасные действия.
 
 ## Принципы
 
@@ -18,6 +18,7 @@ Mouse support не должен быть базовым требованием �
 - Не добавлять тяжелые зависимости в v1. `dialog` уже есть в `profiles/optional-packages.txt`, но его использовать как optional backend, а не как единственный UI.
 - ASCII default. UTF-8 box drawing можно добавить позже как опцию, но не делать базой из-за VGA/serial/font рисков.
 - Все raw terminal modes должны восстанавливаться через `trap`: cursor visible, mouse off, `stty` restored.
+- Native mouse tracking включать только на время ANSI menu и только для известных xterm-compatible `TERM`; `TERM=linux` и serial не включать.
 
 ## Визуальная Спецификация
 
@@ -37,7 +38,7 @@ Mouse support не должен быть базовым требованием �
 
 ```text
 +------------------------------------------------------------------------------+
-| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.3 |
+| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.4 |
 +------------------------------------------------------------------------------+
 | Steps: [1 Disk] -> [2 LAN] -> [3 WAN] -> [4 Review] -> [5 Install]            |
 +------------------------------------------------------------------------------+
@@ -244,6 +245,8 @@ progress без надежного счетчика вроде `pv`.
 
 Текущий статус на 2026-08-12: optional runtime hook реализован. `OWRT_UI_MODE=dialog` включает backend только если `dialog` реально есть в PATH; `auto` выбирает `dialog` на подходящей non-serial TTY только при наличии пакета, иначе остается ANSI. Backend использует `--mouse` по умолчанию и отключает его через `OWRT_UI_NO_MOUSE=1`. В текущем OpenWrt `25.12.4` ImageBuilder пакет `dialog` недоступен и optional package пропускается, поэтому стандартный ISO продолжает использовать ANSI.
 
+Дополнение на 2026-08-12: в ANSI backend реализован native SGR mouse без новых зависимостей. В SSH/xterm-compatible terminals direct left click выбирает видимый menu item, wheel меняет выделение, а клавиатурные Up/Down/Enter продолжают работать всегда. Tracking `1000`/`1006` включается только внутри menu loop и выключается при выборе, отмене, `Ctrl+C` и общем cleanup. `OWRT_UI_NO_MOUSE=1`, local `TERM=linux` и serial оставляют keyboard-only flow.
+
 Работы:
 
 - Если `OWRT_UI_MODE=dialog` или `OWRT_UI_MODE=auto` и `dialog` доступен:
@@ -253,6 +256,7 @@ progress без надежного счетчика вроде `pv`.
   - включать `--mouse`, если не задан `OWRT_UI_NO_MOUSE=1`.
 - Если `dialog` не работает или terminal неподходящий, fallback на `ansi`.
 - Для локальной VGA console мышь считать experimental: проверить отдельно, не обещать как гарантированную функцию.
+- Для ANSI backend использовать SGR mouse reporting только на совместимых terminal emulators; click должен вызывать тот же selection path, что Enter.
 
 Ограничение:
 
@@ -262,14 +266,14 @@ progress без надежного счетчика вроде `pv`.
 Критерии приемки:
 
 - Keyboard flow работает всегда.
-- Mouse click работает хотя бы в SSH/xterm-подобном терминале при `dialog`.
+- Mouse click работает в SSH/xterm-подобном терминале через native ANSI SGR protocol; `dialog --mouse` остается optional альтернативой.
 - При отсутствии мыши UI не деградирует.
 
 ## Фаза 5: QEMU И Regression Tests
 
 Цель: не выпускать красивый, но хрупкий installer.
 
-Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`, runtime `INSTALLER_VERSION=v1.0-alpha.3`. Текущий локальный ISO SHA-256: `63a2067d01e1e8fb435a2ec9966155df2eedea5d1e5ad30442ff066f11e0f3ad`; `v1.0-alpha.3` публикуется отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Добавлен быстрый повторяемый `make ui-smoke` для line menu/stage/failure, ANSI stage, ANSI snapshot после strip ANSI/CR, red warning menu note, Ctrl+C cleanup, Esc cancel, dialog fallback и terminal-size checks. Auto-mode ANSI включается только при терминале минимум `80x24`. Добавлен `make install-flow-smoke` для `--dry-run`/`--skip-network-wizard` guards. Добавлен `make smoke` как быстрый non-ISO aggregate для syntax-check, shellcheck, ui-smoke и install-flow-smoke. Добавлен автоматический `make iso-smoke`, который bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
+Текущий статус на 2026-08-12: базовая матрица Hellforge ANSI пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`, runtime `INSTALLER_VERSION=v1.0-alpha.4`. Текущий локальный ISO SHA-256: `1953ec5b949cee33149ed317a70b95020cdea925131ecfe9f0b30d31d457d682`; `v1.0-alpha.4` публикуется отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Быстрый `make ui-smoke` покрывает line menu/stage/failure, ANSI stage/snapshot, red warning, Ctrl+C cleanup, Esc cancel, Down + Enter, native SGR click, wheel, mouse opt-out, dialog fallback и terminal-size checks. Auto-mode ANSI включается только при терминале минимум `80x24`. `make install-flow-smoke` проверяет `--dry-run`/`--skip-network-wizard` guards, а `make smoke` объединяет быстрые non-ISO проверки. `make iso-smoke` bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
 
 Минимальная матрица:
 
@@ -309,7 +313,7 @@ progress без надежного счетчика вроде `pv`.
 
 - Escape-последовательности могут выглядеть плохо на serial или dumb terminals.
 - UTF-8 рамки могут ломаться на VGA console.
-- Mouse support может работать в SSH, но не работать на локальном экране.
+- Native mouse работает в SSH/xterm-compatible terminals, но не обещается на локальном `TERM=linux` экране.
 - Raw mode при аварии может оставить терминал без echo.
 - `dialog` увеличит installer image и может потянуть ncurses-зависимости.
 - Progress percent для gzip payload требует точного uncompressed size; иначе будет только spinner/stage progress.
@@ -318,7 +322,7 @@ progress без надежного счетчика вроде `pv`.
 
 - v1 делать на pure shell ANSI, без обязательного `dialog`.
 - ASCII рамки сделать default.
-- `dialog` и mouse support планировать как v2 после рабочей keyboard-first версии.
+- Native SGR mouse использовать как lightweight дополнение к keyboard-first ANSI; `dialog` остается optional backend.
 - Native local mouse через `gpm`/evdev не делать до отдельной проверки в QEMU и на железе.
 - Plan хранить в этом файле и зарегистрировать в Project Memory.
 
@@ -347,3 +351,6 @@ progress без надежного счетчика вроде `pv`.
 21. [done] Подготовить `v1.0-alpha.3` как отдельный alpha release tag, не двигая старые alpha tags.
 22. [pending] Добавить GitHub Actions `make smoke` gate на push/PR, когда доступный GitHub token/connection сможет записывать `.github/workflows/*` с `workflow` scope.
 23. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.
+24. [done] Добавить native SGR mouse в ANSI menus для SSH/xterm-compatible terminals: click selection, wheel navigation, `OWRT_UI_NO_MOUSE=1`, terminal gating, cleanup и pseudo-TTY smoke.
+25. [done] Исправить POSIX shell variable collision в `ui_repeat`, из-за которой render обнулял menu item count; добавить отдельный pseudo-TTY regression smoke для Down + Enter.
+26. [done] Собрать и проверить `v1.0-alpha.4` ISO с native ANSI mouse: checksums, source/initramfs compare, GPT/El Torito, BIOS и UEFI QEMU smoke; публиковать отдельным tag.

@@ -153,7 +153,7 @@ run_ansi_menu_snapshot_smoke() {
 	assert_contains "$clean_file" "WARNING: selected disk will be erased after final confirmation."
 	assert_contains "$clean_file" "> /dev/sda 119.2G SSD removable=no live=no"
 	assert_contains "$clean_file" "  /dev/nvme0n1 476.9G NVMe removable=no live=no"
-	assert_contains "$clean_file" "Up/Down Move  Enter Select  Esc/q Cancel"
+	assert_contains "$clean_file" "Up/Down Move  Enter/Click Select  Wheel Scroll  Esc/q Cancel"
 	assert_not_contains "$clean_file" "$(printf '\033')"
 }
 
@@ -245,6 +245,163 @@ run_ansi_menu_esc_smoke() {
 	assert_contains "$out_file" "ERROR: Selection cancelled"
 	assert_contains "$out_file" "$(printf '\033[?25h')"
 	assert_not_contains "$out_file" "unexpected-success"
+}
+
+run_ansi_menu_arrow_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI arrow smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-menu-arrow.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'INSTALLER_VERSION=smoke'
+		printf 'MENU_LIST=%s\n' "$(shell_quote "$work_dir/menu-arrow")"
+		printf '%s\n' 'stty rows 25 cols 80 2>/dev/null || true'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'menu_reset'
+		printf '%s\n' 'menu_add "one" "First option"'
+		printf '%s\n' 'menu_add "two" "Second option"'
+		printf '%s\n' 'select_from_menu "Arrow selection" "option"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "selected=%s\n" "$SELECTED_VALUE"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	( sleep 1; printf '\033[B'; sleep 1; printf '\n' ) |
+		OWRT_UI_MODE=ansi OWRT_UI_NO_MOUSE=1 TERM=xterm \
+		script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "ANSI arrow selection smoke failed"
+
+	assert_contains "$out_file" "selected=two"
+}
+
+run_ansi_menu_mouse_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI mouse smoke skipped.\n'
+		return 0
+	fi
+
+	if ! script -q -e -c true "$work_dir/script-mouse-return.out" >/dev/null 2>&1; then
+		printf 'SKIP: script(1) has no usable -e support; ANSI mouse smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-menu-mouse.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'INSTALLER_VERSION=smoke'
+		printf 'MENU_LIST=%s\n' "$(shell_quote "$work_dir/menu-mouse")"
+		printf '%s\n' 'stty rows 25 cols 80 2>/dev/null || true'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'menu_reset'
+		printf '%s\n' 'menu_warning "WARNING: selected disk will be erased after final confirmation."'
+		printf '%s\n' 'menu_add "one" "First disk"'
+		printf '%s\n' 'menu_add "two" "Second disk"'
+		printf '%s\n' 'select_from_menu "Select target disk" "target disk"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "selected=%s\n" "$SELECTED_VALUE"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	# At 80x25 with one warning line, the second item is rendered on row 11.
+	( sleep 1; printf '\033[<0;12;11M' ) |
+		OWRT_UI_MODE=ansi TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "ANSI mouse selection smoke failed"
+
+	assert_contains "$out_file" "$(printf '\033[?1000h')"
+	assert_contains "$out_file" "$(printf '\033[?1006h')"
+	assert_contains "$out_file" "selected=two"
+	assert_contains "$out_file" "$(printf '\033[?1000l')"
+	assert_contains "$out_file" "$(printf '\033[?1006l')"
+}
+
+run_ansi_menu_mouse_wheel_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI mouse wheel smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-menu-mouse-wheel.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'INSTALLER_VERSION=smoke'
+		printf 'MENU_LIST=%s\n' "$(shell_quote "$work_dir/menu-mouse-wheel")"
+		printf '%s\n' 'stty rows 25 cols 80 2>/dev/null || true'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'menu_reset'
+		printf '%s\n' 'menu_add "one" "First option"'
+		printf '%s\n' 'menu_add "two" "Second option"'
+		printf '%s\n' 'select_from_menu "Mouse wheel" "option"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "selected=%s\n" "$SELECTED_VALUE"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	( sleep 1; printf '\033[<65;12;8M'; sleep 1; printf '\n' ) |
+		OWRT_UI_MODE=ansi TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "ANSI mouse wheel smoke failed"
+
+	assert_contains "$out_file" "selected=two"
+}
+
+run_ansi_mouse_disabled_smoke() {
+	work_dir="$1"
+	out_file="$2"
+	linux_out_file="$3"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI mouse opt-out smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-mouse-disabled.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'ui_mouse_enable'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "mouse=%s\n" "$UI_MOUSE_ENABLED"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	OWRT_UI_MODE=ansi OWRT_UI_NO_MOUSE=1 TERM=xterm \
+		script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "ANSI mouse opt-out smoke failed"
+
+	assert_contains "$out_file" "mouse=0"
+	assert_not_contains "$out_file" "$(printf '\033[?1000h')"
+	assert_not_contains "$out_file" "$(printf '\033[?1006h')"
+
+	OWRT_UI_MODE=ansi TERM=linux \
+		script -q -e -c "$harness" "$linux_out_file" >/dev/null 2>&1 ||
+		fail "ANSI TERM=linux mouse policy smoke failed"
+
+	assert_contains "$linux_out_file" "mouse=0"
+	assert_not_contains "$linux_out_file" "$(printf '\033[?1000h')"
+	assert_not_contains "$linux_out_file" "$(printf '\033[?1006h')"
 }
 
 run_dialog_mode_smoke() {
@@ -347,6 +504,11 @@ run_ansi_stage_smoke "$work_dir" "$log_file" "$work_dir/ansi-stage.out"
 run_ansi_menu_snapshot_smoke "$work_dir" "$work_dir/ansi-menu-snapshot.out" "$work_dir/ansi-menu-snapshot.clean"
 run_ansi_menu_ctrl_c_smoke "$work_dir" "$work_dir/ansi-menu-ctrl-c.out"
 run_ansi_menu_esc_smoke "$work_dir" "$work_dir/ansi-menu-esc.out"
+run_ansi_menu_arrow_smoke "$work_dir" "$work_dir/ansi-menu-arrow.out"
+run_ansi_menu_mouse_smoke "$work_dir" "$work_dir/ansi-menu-mouse.out"
+run_ansi_menu_mouse_wheel_smoke "$work_dir" "$work_dir/ansi-menu-mouse-wheel.out"
+run_ansi_mouse_disabled_smoke "$work_dir" "$work_dir/ansi-mouse-disabled.out" \
+	"$work_dir/ansi-mouse-linux-console.out"
 run_dialog_mode_smoke "$work_dir" "$work_dir/dialog-mode.out"
 run_terminal_size_smoke "$work_dir"
 

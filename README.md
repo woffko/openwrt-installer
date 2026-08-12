@@ -120,6 +120,13 @@ Serial, dumb terminals, pipes, and narrow terminals fall back to the plain
 numbered line UI. Auto mode uses the ANSI TUI only when the terminal is at
 least `80x24`.
 
+In SSH and xterm-compatible terminal emulators, ANSI menus also accept direct
+mouse clicks and wheel scrolling through the standard SGR mouse protocol. The
+same menus always remain usable with Up/Down and Enter. Mouse tracking is
+enabled only while a menu is open and is disabled during cleanup. Set
+`OWRT_UI_NO_MOUSE=1` to force keyboard-only operation. The local Linux VGA
+console (`TERM=linux`) and serial consoles intentionally stay keyboard-only.
+
 UI mode can be forced for debugging:
 
 ```sh
@@ -128,11 +135,10 @@ OWRT_UI_MODE=ansi owrt-install
 OWRT_UI_MODE=dialog owrt-install
 ```
 
-Mouse support is available only through the optional runtime `dialog --mouse`
-backend when the `dialog` package is present and the terminal forwards mouse
-events. The standard build currently falls back to ANSI because the OpenWrt
-`25.12.4` ImageBuilder used here does not provide the optional `dialog`
-package. Use `OWRT_UI_NO_MOUSE=1` to force keyboard-only `dialog` mode.
+The optional runtime `dialog --mouse` backend remains available when the
+`dialog` package is present. The standard build currently uses ANSI because
+the OpenWrt `25.12.4` ImageBuilder used here does not provide that optional
+package. Native ANSI mouse support therefore does not add a package dependency.
 
 Before the final destructive confirmation, the review screen offers a safe
 action menu: continue to the exact `ERASE /dev/...` prompt, edit LAN/WAN

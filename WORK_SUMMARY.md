@@ -9,19 +9,20 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя функциональная правка: Hellforge ANSI warning/menu refinements, terminal-size fallback gates and runtime version `v1.0-alpha.3`.
-- Последний опубликованный release: `v1.0-alpha.3`.
-- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.3`.
+- Последняя функциональная правка: native SGR mouse support для Hellforge ANSI menus в SSH/xterm-compatible terminals, исправление Down navigation и runtime version `v1.0-alpha.4`.
+- Последний опубликованный release: `v1.0-alpha.4`.
+- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.4`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
-- Старые releases `v1.0-alpha.1` и `v1.0-alpha.2` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
-- Локальный ISO пересобран после последних UI/runtime изменений и публикуется как `v1.0-alpha.3`.
+- Старые releases `v1.0-alpha.1`, `v1.0-alpha.2` и `v1.0-alpha.3` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
+- Локальный ISO пересобран после native ANSI mouse/runtime изменений и публикуется как `v1.0-alpha.4`.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
-- План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, optional `dialog`/mouse later).
+- План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, native SGR mouse для terminal emulators и optional `dialog`).
 - Реализована первая итерация Hellforge TUI: добавлен `files-installer/usr/libexec/owrt-installer-ui`, `OWRT_UI_MODE=line|ansi|auto`, ANSI frame/menu/review/confirm/install-stage screens и line fallback.
 - Network wizard теперь использует form-aware prompt screens для LAN IPv4, PPPoE и static WAN settings: на экране показываются context, example, current/default и error zone.
 - Добавлен optional `dialog` backend hook: `OWRT_UI_MODE=dialog` и `auto` используют `dialog` только если runtime package есть в live image; `OWRT_UI_NO_MOUSE=1` отключает `--mouse`.
 - В текущей сборке OpenWrt `25.12.4` пакет `dialog` недоступен в ImageBuilder и пропускается optional package resolver, поэтому стандартный ISO остается ANSI-first.
+- В ANSI menus добавлена zero-dependency мышь через SGR mouse protocol: direct click выбирает видимый пункт, wheel меняет highlight, а `OWRT_UI_NO_MOUSE=1` отключает tracking. Функция включается только для SSH/xterm-compatible terminals; `TERM=linux` и serial остаются keyboard-only.
 - Перед финальным destructive confirmation добавлен safe review action menu: continue к точному `ERASE /dev/...`, edit LAN/WAN interfaces and network settings или cancel.
 - Для установки на диск добавлен stage progress screen с compact log pane, `/tmp/owrt-installer.log`, тихой записью `dd` в лог и отдельным failure screen с хвостом лога.
 - `manifest.json` теперь содержит `payload_uncompressed_size`; установщик логирует распакованный размер payload перед записью.
@@ -120,9 +121,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-c9a171aef62aefab847f1503f5f06ea7fc16203fe7a1225b941817a4d82aaab8  openwrt-x86-64-installer.img.gz
-63a2067d01e1e8fb435a2ec9966155df2eedea5d1e5ad30442ff066f11e0f3ad  openwrt-x86-64-installer-hybrid.iso
-a9b325f61802ba910987555087010226eb854e76cdeaf208d2930996617178b1  manifest.json
+4f368376534447777ba9afc7e10391436528dbdcdc43b39a71e1a039d6aca3f3  openwrt-x86-64-installer.img.gz
+1953ec5b949cee33149ed317a70b95020cdea925131ecfe9f0b30d31d457d682  openwrt-x86-64-installer-hybrid.iso
+bd573cf4aea5dc097da9a1354c582a1ddd2de2e671ba044c782456a0dccea84b  manifest.json
 ```
 
 ## Проверки
@@ -175,6 +176,7 @@ a9b325f61802ba910987555087010226eb854e76cdeaf208d2930996617178b1  manifest.json
 - auto-mode ANSI TUI теперь включается только с терминалом минимум `80x24`; `make ui-smoke` проверяет `80x24` как TUI и `80x23` как line fallback;
 - добавлен и пройден Ctrl+C cleanup smoke внутри `make ui-smoke`: ANSI menu в pseudo-TTY получает interrupt byte, выходит с кодом 130 и возвращает cursor-visible state;
 - добавлен и пройден Esc cancel smoke внутри `make ui-smoke`: одиночный Esc в ANSI menu отменяет выбор без случайного Enter/selection;
+- добавлен и пройден native ANSI mouse smoke внутри `make ui-smoke`: pseudo-TTY получает SGR click по второй строке, выбирает второй пункт и подтверждает enable/disable `1000`/`1006` tracking;
 - добавлен и пройден безопасный `make install-flow-smoke`: source-only проверка CLI parsing, `--dry-run`, `--skip-network-wizard` и запрет destructive write path;
 - добавлен и пройден быстрый `make smoke`: syntax-check, shellcheck, ui-smoke и install-flow-smoke без пересборки ISO/QEMU;
 - добавлен автоматический `make iso-smoke`: bounded QEMU BIOS/UEFI boot текущего hybrid ISO с проверкой GRUB, kernel/initramfs, OpenWrt console и marker автозапуска на `tty1`;
