@@ -1,6 +1,6 @@
 # Краткий итог работ
 
-Дата фиксации: 2026-06-04.
+Дата фиксации: 2026-08-12.
 
 ## Актуальное состояние
 
@@ -10,13 +10,14 @@
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
 - Последняя функциональная правка: `Add Hellforge ANSI installer UI`.
-- Текущий release: `v1.0-alpha.1`.
+- Последний опубликованный release: `v1.0-alpha.1`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.1`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
+- Новый Hellforge ISO собран локально; для публикации нужен отдельный следующий alpha tag, старые release assets не двигать.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, optional `dialog`/mouse later).
-- Начата реализация Hellforge TUI: добавлен `files-installer/usr/libexec/owrt-installer-ui`, `OWRT_UI_MODE=line|ansi|auto`, ANSI frame/menu/review/confirm/install-stage screens и line fallback.
+- Реализована первая итерация Hellforge TUI: добавлен `files-installer/usr/libexec/owrt-installer-ui`, `OWRT_UI_MODE=line|ansi|auto`, ANSI frame/menu/review/confirm/install-stage screens и line fallback.
 
 ## Что сделано
 
@@ -102,9 +103,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-b95fcf8a4b133fe20cf80f65b9572019828580beec08341f2306a47686ef8e9f  openwrt-x86-64-installer.img.gz
-a8ffa95bd1d7bec0a25a1cfbda0ae662236b43588da6a0f77d8243922a5343ce  openwrt-x86-64-installer-hybrid.iso
-72852efd749c61b1ae85b4d0af977ce2d3952e22d7e43aca193226fbf85da9db  manifest.json
+08bf401e0454169e9ad7f80e71b78aa67b1ad0ffc82940a78bf3c77fbdddba8d  openwrt-x86-64-installer.img.gz
+4cbf708683f9aa55a9303e8503cdd467661c0263a748bb176b9177bf1191a0ed  openwrt-x86-64-installer-hybrid.iso
+d1bf004c9608bbecde118f355a41d1860fce32529aecd542bab2c5628b8f47fc  manifest.json
 ```
 
 ## Проверки
@@ -115,12 +116,12 @@ a8ffa95bd1d7bec0a25a1cfbda0ae662236b43588da6a0f77d8243922a5343ce  openwrt-x86-64
 - `make shellcheck`;
 - проверка `sha256sums.txt`;
 - проверка ISO через `fdisk` и `xorriso`;
-- проверка, что `owrt-install` внутри ISO совпадает с исходным файлом;
+- проверка, что `owrt-install` и `owrt-installer-ui` внутри ISO/initramfs совпадают с исходными файлами;
 - smoke-тест логики выбора LAN/WAN на 2 и 3 интерфейсах;
-- smoke-тест DHCP/static WAN wizard и CIDR-конвертации.
+- smoke-тест DHCP/static WAN wizard и CIDR-конвертации;
 - локальная распаковка QEMU/OVMF в `build/qemu-local`;
-- BIOS ISO boot smoke-test в QEMU: OpenWrt загрузился, `owrt-install --autostart` появился на консоли;
-- UEFI ISO boot smoke-test в QEMU: OpenWrt загрузился, `owrt-install --autostart` появился на консоли.
+- BIOS ISO boot smoke-test в QEMU: OpenWrt загрузился до serial console;
+- UEFI ISO boot smoke-test в QEMU: OpenWrt загрузился до serial console.
 
 Для первой Hellforge TUI итерации дополнительно выполнено:
 
@@ -130,8 +131,14 @@ a8ffa95bd1d7bec0a25a1cfbda0ae662236b43588da6a0f77d8243922a5343ce  openwrt-x86-64
 - `OWRT_UI_MODE=line TERM=dumb owrt-install --list-nics`;
 - `OWRT_UI_MODE=line TERM=dumb owrt-install --dry-run`;
 - synthetic TTY smoke для ANSI arrow menu;
-- synthetic TTY smoke для ANSI review/confirm/install-stage screens.
-- `make shellcheck` через локальный `build/host-tools/usr/bin/shellcheck`.
+- synthetic TTY smoke для ANSI review/confirm/install-stage screens;
+- `make shellcheck` через локальный `build/host-tools/usr/bin/shellcheck`;
+- сборка нового hybrid ISO после Hellforge TUI;
+- проверка `sha256sum -c output/sha256sums.txt`;
+- проверка initramfs через `cpio`, что внутри есть `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`;
+- BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
+- UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
+- на serial видно, что live installer управляется `/etc/inittab` на `tty1`; полноэкранный TUI проверяется на локальной VGA/tty1, а serial остается fallback/login каналом.
 
 ## Как пользоваться
 

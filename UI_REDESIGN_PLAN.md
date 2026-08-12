@@ -254,6 +254,8 @@ OWRT_UI_DEBUG=1
 
 Цель: не выпускать красивый, но хрупкий installer.
 
+Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`.
+
 Минимальная матрица:
 
 - `make syntax-check`;
@@ -310,6 +312,6 @@ OWRT_UI_DEBUG=1
 2. [done] Перевести `render_arrow_menu` на новый `ui_menu`.
 3. [done] Добавить Hellforge header/footer/frame для меню, review, confirmation и install-stage экранов.
 4. [done] Прогнать syntax-check, shellcheck и smoke.
-5. [pending] Прогнать QEMU BIOS/UEFI smoke на ISO после следующей сборки.
+5. [done] Прогнать QEMU BIOS/UEFI smoke на ISO после следующей сборки.
 6. [pending] После стабилизации глубже перевести network wizard forms.
 7. [pending] Только после этого заниматься `dialog --mouse`.
