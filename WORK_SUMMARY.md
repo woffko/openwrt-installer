@@ -9,7 +9,7 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя функциональная правка: safe review action edit loop.
+- Последняя функциональная правка: Hellforge install progress/log screen and failure screen.
 - Последний опубликованный release: `v1.0-alpha.1`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.1`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
@@ -22,6 +22,8 @@
 - Добавлен optional `dialog` backend hook: `OWRT_UI_MODE=dialog` и `auto` используют `dialog` только если runtime package есть в live image; `OWRT_UI_NO_MOUSE=1` отключает `--mouse`.
 - В текущей сборке OpenWrt `25.12.4` пакет `dialog` недоступен в ImageBuilder и пропускается optional package resolver, поэтому стандартный ISO остается ANSI-first.
 - Перед финальным destructive confirmation добавлен safe review action menu: continue к точному `ERASE /dev/...`, edit LAN/WAN interfaces and network settings или cancel.
+- Для установки на диск добавлен stage progress screen с compact log pane, `/tmp/owrt-installer.log`, тихой записью `dd` в лог и отдельным failure screen с хвостом лога.
+- `manifest.json` теперь содержит `payload_uncompressed_size`; установщик логирует распакованный размер payload перед записью.
 
 ## Что сделано
 
@@ -117,9 +119,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-bb4c1a8c0c04556a158d6d3c7d81473439476e415671a3c4f2f57a712b41ff1b  openwrt-x86-64-installer.img.gz
-b05a966bd5e576f90e9124a02b724023d64ab15459784b7e81a26d425cd8dfb9  openwrt-x86-64-installer-hybrid.iso
-3b30822a761c46e91f2263d036443e4dd54045cad2be939a3e27c3af01ecc69e  manifest.json
+0c3647ffadd0bac4d224a8d538fd6aab3bf2329788d70a2b73b70307bf4b130a  openwrt-x86-64-installer.img.gz
+582ab590d05d703fe122d6caa35aad4d5245fe0818512ad083950de55d117753  openwrt-x86-64-installer-hybrid.iso
+ccce64c10bc85d3dc08115f899ec569f9813ec6542d20bee5917e96e05944f81  manifest.json
 ```
 
 ## Проверки
@@ -161,6 +163,10 @@ b05a966bd5e576f90e9124a02b724023d64ab15459784b7e81a26d425cd8dfb9  openwrt-x86-64
 - проверка строк structured forms внутри initramfs: `LAN IPv4 settings`, `Static WAN IPv4 settings`, `Disabled / no WAN IPv6`, note про отсутствие отдельного PPPoE IPv6 режима;
 - проверка dialog hook строк внутри initramfs: `ui_dialog_active`, `OWRT_UI_NO_MOUSE`, `dialog --stdout`;
 - проверка review action loop внутри initramfs: `review_and_confirm`, `Review action`, `No disk write starts`;
+- line smoke для нового install-stage/failure screen с хвостом `/tmp/owrt-installer-ui-smoke.log`;
+- ANSI pseudo-TTY smoke для нового progress bar и compact log pane;
+- проверка manifest поля `payload_uncompressed_size` в `output/manifest.json` и initramfs;
+- проверка, что `dd status=progress` больше не используется в runtime installer path;
 - BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
 - UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
 - на serial видно, что live installer управляется `/etc/inittab` на `tty1`; полноэкранный TUI проверяется на локальной VGA/tty1, а serial остается fallback/login каналом.

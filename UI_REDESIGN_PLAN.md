@@ -205,6 +205,15 @@ OWRT_UI_DEBUG=1
 
 Цель: заменить голый `dd status=progress` на спокойный progress screen.
 
+Текущий статус на 2026-08-12: реализован stage-based progress screen для
+установки на диск. Runtime output `dd` и служебных команд уходит в
+`/tmp/owrt-installer.log`, TUI показывает текущий этап, DOS-style progress bar
+и compact log pane на 3-5 строк. Ошибки проходят через отдельный failure
+screen с log path и хвостом лога. `manifest.json` теперь содержит
+`payload_uncompressed_size`, установщик логирует этот размер перед записью.
+Точный byte-percent пока намеренно не рисуется, чтобы не показывать ложный
+progress без надежного счетчика вроде `pv`.
+
 Работы:
 
 - Добавить progress screen с этапами:
@@ -322,4 +331,5 @@ OWRT_UI_DEBUG=1
 6. [done] После стабилизации глубже перевести network wizard forms.
 7. [done] Только после этого заниматься `dialog --mouse`.
 8. [done] Добавить настоящий Back/Edit flow для network forms без риска случайного destructive continue.
-9. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.
+9. [done] Реализовать install progress screen, `/tmp/owrt-installer.log`, failure screen и manifest `payload_uncompressed_size`.
+10. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.

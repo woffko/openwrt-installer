@@ -136,6 +136,11 @@ Before the final destructive confirmation, the review screen offers a safe
 action menu: continue to the exact `ERASE /dev/...` prompt, edit LAN/WAN
 interfaces and network settings, or cancel back to the shell.
 
+During disk writes and filesystem resize, the installer shows stage progress
+and the last few lines from `/tmp/owrt-installer.log`. Command output is kept
+out of the TUI. If a step fails, the failure screen shows the log path and a
+short log tail before returning to the shell.
+
 Unattended-style invocation still requires the explicit destructive flag:
 
 ```sh

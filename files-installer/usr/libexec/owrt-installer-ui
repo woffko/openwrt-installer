@@ -335,6 +335,54 @@ ui_note_lines() {
 	done
 }
 
+ui_log_tail_lines() {
+	log_file="$1"
+	count="${2:-4}"
+	[ -n "$log_file" ] && [ -r "$log_file" ] || return 1
+	tail -n "$count" "$log_file" 2>/dev/null |
+		while IFS= read -r line; do
+			[ -n "$line" ] || continue
+			ui_line "  $line"
+		done
+}
+
+ui_log_tail_text() {
+	log_file="$1"
+	count="${2:-4}"
+	[ -n "$log_file" ] && [ -r "$log_file" ] || return 1
+	tail -n "$count" "$log_file" 2>/dev/null || true
+}
+
+ui_install_stage_position() {
+	case "$1" in
+		Verify*) printf '%s\n' "1 10" ;;
+		Prepare*) printf '%s\n' "2 10" ;;
+		Write\ image*) printf '%s\n' "3 10" ;;
+		Sync*) printf '%s\n' "4 10" ;;
+		Reread*) printf '%s\n' "5 10" ;;
+		Grow*) printf '%s\n' "6 10" ;;
+		Check\ ext4*) printf '%s\n' "7 10" ;;
+		Resize\ ext4*) printf '%s\n' "8 10" ;;
+		Final\ ext4*) printf '%s\n' "9 10" ;;
+		Write\ installed*) printf '%s\n' "10 10" ;;
+		*) printf '%s\n' "0 0" ;;
+	esac
+}
+
+ui_install_progress_line() {
+	stage="$1"
+	position="$(ui_install_stage_position "$stage")"
+	index="${position% *}"
+	total="${position#* }"
+	[ "$total" -gt 0 ] || return 0
+	bar_width=34
+	filled=$((index * bar_width / total))
+	[ "$filled" -lt 1 ] && filled=1
+	[ "$filled" -gt "$bar_width" ] && filled="$bar_width"
+	empty=$((bar_width - filled))
+	ui_line "Progress: [$(ui_repeat '#' "$filled")$(ui_repeat '-' "$empty")] $index/$total"
+}
+
 render_numbered_menu() {
 	if [ -n "$MENU_NOTE" ]; then
 		if ui_ansi_active; then
@@ -723,24 +771,101 @@ $expected" 0 0 ||
 ui_install_stage() {
 	stage="$1"
 	detail="$2"
+	log_file="${3:-}"
 	if ui_dialog_active; then
+		body="Stage: $stage
+
+$detail"
+		if [ -n "$log_file" ] && [ -r "$log_file" ]; then
+			log_tail="$(ui_log_tail_text "$log_file" 4)"
+			if [ -n "$log_tail" ]; then
+				body="$body
+
+Recent log:
+$log_tail"
+			fi
+		fi
+		body="$body
+
+Do not power off the machine while this step is running."
 		mouse_arg="$(ui_dialog_mouse_arg)"
 		# shellcheck disable=SC2086
-		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Install" --infobox "Stage: $stage
-
-$detail
-
-Do not power off the machine while this step is running." 9 70 2>/dev/null || true
+		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Install" --infobox "$body" 14 76 2>/dev/null || true
 		return 0
 	fi
 	if ui_ansi_active; then
 		ui_screen_begin "Install"
 		ui_line "Stage: $stage"
+		ui_install_progress_line "$stage"
 		[ -n "$detail" ] && ui_line "$detail"
 		ui_blank
+		if [ -n "$log_file" ] && [ -r "$log_file" ]; then
+			ui_line "Recent log:"
+			ui_log_tail_lines "$log_file" 4 || true
+			ui_blank
+		fi
 		ui_line "Do not power off the machine while this step is running."
 		ui_rule
 		ui_show_cursor
+	else
+		printf '[owrt-installer] stage: %s' "$stage"
+		[ -n "$detail" ] && printf ' - %s' "$detail"
+		printf '\n'
+	fi
+}
+
+ui_failure_screen() {
+	message="$1"
+	log_file="${2:-}"
+	if ui_dialog_active; then
+		body="Installation failed:
+
+$message"
+		if [ -n "$log_file" ]; then
+			body="$body
+
+Log: $log_file"
+		fi
+		if [ -n "$log_file" ] && [ -r "$log_file" ]; then
+			log_tail="$(ui_log_tail_text "$log_file" 5)"
+			if [ -n "$log_tail" ]; then
+				body="$body
+
+Recent log:
+$log_tail"
+			fi
+		fi
+		body="$body
+
+Return to shell and inspect the log before retrying."
+		mouse_arg="$(ui_dialog_mouse_arg)"
+		# shellcheck disable=SC2086
+		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Installation failed" --msgbox "$body" 0 0 2>/dev/null || true
+		return 0
+	fi
+	if ui_ansi_active; then
+		ui_screen_begin "Installation failed"
+		ui_line_error "ERROR: $message"
+		[ -n "$log_file" ] && ui_line "Log: $log_file"
+		if [ -n "$log_file" ] && [ -r "$log_file" ]; then
+			ui_blank
+			ui_line "Recent log:"
+			ui_log_tail_lines "$log_file" 5 || true
+		fi
+		ui_blank
+		ui_line "Press Enter to return to shell."
+		ui_rule
+		ui_show_cursor
+		if [ -t 0 ]; then
+			IFS= read -r ignored || true
+		fi
+	else
+		printf '\n[owrt-installer] ERROR: %s\n' "$message" >&2
+		[ -n "$log_file" ] && printf '[owrt-installer] Log: %s\n' "$log_file" >&2
+		if [ -n "$log_file" ] && [ -r "$log_file" ]; then
+			printf '[owrt-installer] Recent log:\n' >&2
+			tail -n 5 "$log_file" >&2 2>/dev/null || true
+		fi
 	fi
 }
 

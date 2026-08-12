@@ -23,6 +23,7 @@ manifest="$PROJECT_DIR/files-installer/usr/share/owrt-installer/manifest.json"
 log "Embedding target payload"
 cp "$target_image" "$payload"
 payload_sha256="$(sha256sum "$payload" | awk '{ print $1 }')"
+payload_uncompressed_size="$(gzip -dc "$payload" | wc -c | tr -d ' ')"
 build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 cat > "$manifest" <<EOF
@@ -34,7 +35,8 @@ cat > "$manifest" <<EOF
   "target_profile": "$PROFILE",
   "image_type": "$IMAGE_TYPE",
   "payload_filename": "target.img.gz",
-  "payload_sha256": "$payload_sha256"
+  "payload_sha256": "$payload_sha256",
+  "payload_uncompressed_size": "$payload_uncompressed_size"
 }
 EOF
 cp "$manifest" "$OUTPUT_DIR/manifest.json"

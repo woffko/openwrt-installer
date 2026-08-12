@@ -19,6 +19,7 @@ DISK_LIST="$(tmp_file disks)"
 NIC_LIST="$(tmp_file nics)"
 NIC_CHOICE_LIST="$(tmp_file nic-choices)"
 MENU_LIST="$(tmp_file menu)"
+INSTALL_LOG="${TMPDIR:-/tmp}/owrt-installer.log"
 
 TARGET=""
 LAN_MAC=""
@@ -56,27 +57,60 @@ C_YELLOW=""
 C_BLUE=""
 C_REVERSE=""
 
+append_install_log() {
+	[ -n "${INSTALL_LOG:-}" ] || return 0
+	ts="$(date '+%H:%M:%S' 2>/dev/null)" || ts="--:--:--"
+	printf '%s %s\n' "$ts" "$*" >> "$INSTALL_LOG" 2>/dev/null || true
+}
+
+ui_manages_screen() {
+	if command -v ui_ansi_active >/dev/null 2>&1 && ui_ansi_active; then
+		return 0
+	fi
+	if command -v ui_dialog_active >/dev/null 2>&1 && ui_dialog_active; then
+		return 0
+	fi
+	return 1
+}
+
 log() {
-	printf '%s[owrt-installer]%s %s\n' "${C_GREEN:-}" "${C_RESET:-}" "$*"
+	append_install_log "INFO: $*"
+	if ! ui_manages_screen; then
+		printf '%s[owrt-installer]%s %s\n' "${C_GREEN:-}" "${C_RESET:-}" "$*"
+	fi
 	if command -v logger >/dev/null 2>&1; then
 		logger -t owrt-installer "$*" 2>/dev/null || true
 	fi
 }
 
 warn() {
-	printf '%s[owrt-installer] WARNING:%s %s\n' "${C_YELLOW:-}" "${C_RESET:-}" "$*" >&2
+	append_install_log "WARNING: $*"
+	if ! ui_manages_screen; then
+		printf '%s[owrt-installer] WARNING:%s %s\n' "${C_YELLOW:-}" "${C_RESET:-}" "$*" >&2
+	fi
 	if command -v logger >/dev/null 2>&1; then
 		logger -t owrt-installer "WARNING: $*" 2>/dev/null || true
 	fi
 }
 
 die() {
-	printf '%s[owrt-installer] ERROR:%s %s\n' "${C_RED:-}" "${C_RESET:-}" "$*" >&2
+	append_install_log "ERROR: $*"
 	if command -v logger >/dev/null 2>&1; then
 		logger -t owrt-installer "ERROR: $*" 2>/dev/null || true
 	fi
+	if command -v ui_failure_screen >/dev/null 2>&1; then
+		ui_failure_screen "$*" "$INSTALL_LOG"
+	else
+		printf '%s[owrt-installer] ERROR:%s %s\n' "${C_RED:-}" "${C_RESET:-}" "$*" >&2
+	fi
 	cleanup
 	exit 1
+}
+
+run_or_die() {
+	error="$1"
+	shift
+	"$@" >> "$INSTALL_LOG" 2>&1 || die "$error"
 }
 
 cleanup() {
@@ -257,8 +291,13 @@ verify_payload() {
 	gzip -t "$PAYLOAD" || die "Payload gzip stream is invalid"
 
 	PAYLOAD_SHA256="$actual"
+	PAYLOAD_UNCOMPRESSED_SIZE="$(json_value payload_uncompressed_size || true)"
 	export PAYLOAD_SHA256
+	export PAYLOAD_UNCOMPRESSED_SIZE
 	log "Payload SHA-256 verified"
+	if [ -n "$PAYLOAD_UNCOMPRESSED_SIZE" ]; then
+		log "Payload uncompressed size: $PAYLOAD_UNCOMPRESSED_SIZE bytes"
+	fi
 }
 
 disk_name_from_path() {
@@ -750,10 +789,10 @@ unmount_target_partitions() {
 reread_partition_table() {
 	target="$1"
 	if command -v blockdev >/dev/null 2>&1; then
-		blockdev --rereadpt "$target" || true
+		blockdev --rereadpt "$target" >> "$INSTALL_LOG" 2>&1 || true
 	fi
 	if command -v partprobe >/dev/null 2>&1; then
-		partprobe "$target" || true
+		partprobe "$target" >> "$INSTALL_LOG" 2>&1 || true
 	fi
 	sleep 2
 }
@@ -761,19 +800,26 @@ reread_partition_table() {
 write_payload() {
 	target="$1"
 	log "Writing payload to $target"
-	if dd --help 2>&1 | grep -q 'status='; then
-		gzip -dc "$PAYLOAD" | dd of="$target" bs=16M conv=fsync status=progress
-	else
-		gzip -dc "$PAYLOAD" | dd of="$target" bs=16M conv=fsync
+	if [ -n "${PAYLOAD_UNCOMPRESSED_SIZE:-}" ]; then
+		log "Streaming $PAYLOAD_UNCOMPRESSED_SIZE bytes after decompression"
 	fi
-	sync
+	gzip -dc "$PAYLOAD" 2>> "$INSTALL_LOG" |
+		dd of="$target" bs=16M conv=fsync >> "$INSTALL_LOG" 2>&1 ||
+		die "Could not write payload image to $target"
+
+	ui_install_stage "Sync" "Flushing image writes to stable storage." "$INSTALL_LOG"
+	log "Payload stream completed; syncing disks"
+	run_or_die "sync failed after payload write" sync
+
+	ui_install_stage "Reread partition table" "Asking the kernel to reload $target partitions." "$INSTALL_LOG"
 	reread_partition_table "$target"
+	log "Partition table reread requested for $target"
 }
 
 check_ext4() {
 	rootpart="$1"
 	status=0
-	e2fsck -f -y "$rootpart" || status=$?
+	e2fsck -f -y "$rootpart" >> "$INSTALL_LOG" 2>&1 || status=$?
 	[ "$status" -le 1 ] || die "e2fsck failed for $rootpart with status $status"
 }
 
@@ -785,19 +831,31 @@ resize_rootfs() {
 	command -v e2fsck >/dev/null 2>&1 || die "e2fsck is required"
 	command -v resize2fs >/dev/null 2>&1 || die "resize2fs is required"
 
+	ui_install_stage "Grow partition" "Extending partition 2 to fill $target." "$INSTALL_LOG"
 	log "Growing partition 2 to fill $target"
-	parted -s -f "$target" resizepart 2 100%
+	run_or_die "Could not grow partition 2 on $target" parted -s -f "$target" resizepart 2 100%
+
+	ui_install_stage "Reread partition table" "Reloading partition layout after grow operation." "$INSTALL_LOG"
 	reread_partition_table "$target"
 	[ -b "$rootpart" ] || die "Root partition did not appear: $rootpart"
 
 	fstype="$(blkid -o value -s TYPE "$rootpart" 2>/dev/null || true)"
 	[ "$fstype" = "ext4" ] || die "Expected ext4 root partition at $rootpart, found: ${fstype:-unknown}"
 
-	log "Checking and growing ext4 filesystem"
+	ui_install_stage "Check ext4" "Checking root filesystem before resize." "$INSTALL_LOG"
+	log "Checking ext4 filesystem before resize"
 	check_ext4 "$rootpart"
-	resize2fs "$rootpart"
+
+	ui_install_stage "Resize ext4" "Growing root filesystem to the new partition size." "$INSTALL_LOG"
+	log "Growing ext4 filesystem"
+	run_or_die "resize2fs failed for $rootpart" resize2fs "$rootpart"
+
+	ui_install_stage "Final ext4 check" "Verifying root filesystem after resize." "$INSTALL_LOG"
+	log "Checking ext4 filesystem after resize"
 	check_ext4 "$rootpart"
-	sync
+
+	ui_install_stage "Sync" "Flushing resized filesystem metadata." "$INSTALL_LOG"
+	run_or_die "sync failed after filesystem resize" sync
 }
 
 write_installed_config() {
@@ -805,13 +863,15 @@ write_installed_config() {
 	target="$2"
 	install_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-	mkdir -p "$TARGET_MOUNT"
-	mount "$rootpart" "$TARGET_MOUNT"
+	log "Mounting $rootpart for installed configuration"
+	mkdir -p "$TARGET_MOUNT" || die "Could not create target mount point: $TARGET_MOUNT"
+	run_or_die "Could not mount $rootpart at $TARGET_MOUNT" mount "$rootpart" "$TARGET_MOUNT"
 	TARGET_MOUNTED=1
 
-	mkdir -p "$TARGET_MOUNT/etc/owrt-installer"
+	mkdir -p "$TARGET_MOUNT/etc/owrt-installer" ||
+		die "Could not create installer metadata directory"
 	if [ "$SKIP_NETWORK" != "1" ]; then
-		{
+		if ! {
 			printf 'LAN_MAC=%s\n' "$(shell_quote "$LAN_MAC")"
 			printf 'WAN_MAC=%s\n' "$(shell_quote "$WAN_MAC")"
 			printf 'LAN_IP=%s\n' "$(shell_quote "$LAN_IP")"
@@ -826,10 +886,12 @@ write_installed_config() {
 			printf 'WAN_NETMASK=%s\n' "$(shell_quote "$WAN_NETMASK")"
 			printf 'WAN_GATEWAY=%s\n' "$(shell_quote "$WAN_GATEWAY")"
 			printf 'WAN_DNS=%s\n' "$(shell_quote "$WAN_DNS")"
-		} > "$TARGET_MOUNT/etc/owrt-installer/interface-map"
+		} > "$TARGET_MOUNT/etc/owrt-installer/interface-map"; then
+			die "Could not write installed network mapping"
+		fi
 	fi
 
-	cat > "$TARGET_MOUNT/etc/openwrt-installer-release" <<EOF
+	if ! cat > "$TARGET_MOUNT/etc/openwrt-installer-release" <<EOF
 installed_by=openwrt-x86-installer
 installer_version=$INSTALLER_VERSION
 install_date=$install_date
@@ -843,10 +905,13 @@ lan_cidr=$LAN_CIDR
 wan_proto=$WAN_PROTO
 wan6_proto=$WAN6_PROTO
 EOF
+	then
+		die "Could not write installer release metadata"
+	fi
 
-	umount "$TARGET_MOUNT"
+	run_or_die "Could not unmount $TARGET_MOUNT" umount "$TARGET_MOUNT"
 	TARGET_MOUNTED=0
-	sync
+	run_or_die "sync failed after writing installed config" sync
 }
 
 show_summary() {
@@ -945,9 +1010,11 @@ post_install_menu() {
 
 run_install() {
 	setup_ui
+	: > "$INSTALL_LOG" 2>/dev/null || true
+	append_install_log "INFO: Installer session started"
 	ui_welcome_screen "$INSTALLER_VERSION" "$AUTO_STARTED"
 
-	ui_install_stage "Verify payload" "Checking embedded OpenWrt image integrity."
+	ui_install_stage "Verify payload" "Checking embedded OpenWrt image integrity." "$INSTALL_LOG"
 	verify_payload
 	if [ -z "$TARGET" ]; then
 		select_target_disk
@@ -973,16 +1040,15 @@ run_install() {
 		return 0
 	fi
 
-	ui_install_stage "Prepare target" "Stopping swap and unmounting target partitions."
-	swapoff -a || true
+	ui_install_stage "Prepare target" "Stopping swap and unmounting target partitions." "$INSTALL_LOG"
+	swapoff -a >> "$INSTALL_LOG" 2>&1 || true
 	unmount_target_partitions "$TARGET"
-	ui_install_stage "Write image" "Writing embedded OpenWrt image to $TARGET."
+	ui_install_stage "Write image" "Writing embedded OpenWrt image to $TARGET." "$INSTALL_LOG"
 	write_payload "$TARGET"
 
 	rootpart="$(get_partition_path "$TARGET" 2)"
-	ui_install_stage "Resize rootfs" "Growing partition 2 and ext4 root filesystem."
 	resize_rootfs "$TARGET" "$rootpart"
-	ui_install_stage "Write installed config" "Saving installer metadata and network mapping."
+	ui_install_stage "Write installed config" "Saving installer metadata and network mapping." "$INSTALL_LOG"
 	write_installed_config "$rootpart" "$TARGET"
 	log "Installation completed successfully"
 	ui_success_screen "Installation completed successfully."
