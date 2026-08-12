@@ -75,6 +75,9 @@ mkdir -p "$iso_root/boot/grub" "$iso_root/efi/boot" "$initramfs_root"
 
 log "Creating RAM-root initramfs"
 tar -xzf "$rootfs" -C "$initramfs_root"
+# Always overlay the current project files so a direct hybrid rebuild cannot
+# package stale UI scripts from an earlier ImageBuilder rootfs tarball.
+cp -a "$PROJECT_DIR/files-installer/." "$initramfs_root/"
 cp "$IMAGEBUILDER_DIR/target/linux/generic/other-files/init" "$initramfs_root/init"
 
 # shellcheck disable=SC2016 # Expanded by the nested shell after positional args are passed.

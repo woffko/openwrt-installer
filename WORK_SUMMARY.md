@@ -9,19 +9,19 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя функциональная правка: form-level Back для LAN/WAN forms, PPPoE/static state machine, ghost-credential cleanup и runtime version `v1.0-alpha.5`.
-- Последний опубликованный release: `v1.0-alpha.5`.
-- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.5`.
+- Последняя функциональная правка: packaged `whiptail` local-console backend, безопасная curses-абстракция, real pseudo-TTY tests, VGA framebuffer smoke и runtime version `v1.0-alpha.6`.
+- Последний опубликованный release: `v1.0-alpha.6`.
+- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.6`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
-- Старые releases `v1.0-alpha.1`, `v1.0-alpha.2`, `v1.0-alpha.3` и `v1.0-alpha.4` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
-- Локальный ISO пересобран после form-level Back и WAN state-machine изменений и публикуется как `v1.0-alpha.5`.
+- Старые releases `v1.0-alpha.1`...`v1.0-alpha.5` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
+- Локальный ISO пересобран с обязательным `whiptail` backend и публикуется как `v1.0-alpha.6`.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
-- План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, native SGR mouse для terminal emulators и optional `dialog`).
-- Реализована первая итерация Hellforge TUI: добавлен `files-installer/usr/libexec/owrt-installer-ui`, `OWRT_UI_MODE=line|ansi|auto`, ANSI frame/menu/review/confirm/install-stage screens и line fallback.
+- План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, packaged `whiptail` на local console, ANSI SGR mouse для terminal emulators, line fallback и optional `dialog`).
+- Реализованы `OWRT_UI_MODE=auto|line|ansi|whiptail|curses|dialog`, общий curses adapter и Hellforge frame/menu/review/confirm/install-stage screens.
 - Network wizard теперь использует form-aware prompt screens для LAN IPv4, PPPoE и static WAN settings: на экране показываются context, example, current/default и error zone.
-- Добавлен optional `dialog` backend hook: `OWRT_UI_MODE=dialog` и `auto` используют `dialog` только если runtime package есть в live image; `OWRT_UI_NO_MOUSE=1` отключает `--mouse`.
-- В текущей сборке OpenWrt `25.12.4` пакет `dialog` недоступен в ImageBuilder и пропускается optional package resolver, поэтому стандартный ISO остается ANSI-first.
+- `whiptail 0.52.24` добавлен как обязательный официальный package; local `TERM=linux` console использует его автоматически. `curses` выбирает работающий `dialog`, затем `whiptail`, затем ANSI.
+- Пакет `dialog` в текущем OpenWrt `25.12.4` feed недоступен и остается optional; SSH/xterm auto mode использует ANSI для native SGR mouse.
 - В ANSI menus добавлена zero-dependency мышь через SGR mouse protocol: direct click выбирает видимый пункт, wheel меняет highlight, а `OWRT_UI_NO_MOUSE=1` отключает tracking. Функция включается только для SSH/xterm-compatible terminals; `TERM=linux` и serial остаются keyboard-only.
 - Network forms теперь поддерживают пошаговый Back: ANSI `Esc`, dialog Cancel и line-mode `!back`; WAN/WAN6 menus имеют явные Back items. Уже введенные значения сохраняются при возврате, а credentials/settings невыбранного WAN protocol очищаются до review.
 - Перед финальным destructive confirmation добавлен safe review action menu: continue к точному `ERASE /dev/...`, edit LAN/WAN interfaces and network settings или cancel.
@@ -122,9 +122,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-57e5a2a0d330a787ed563296f434939d9198e9dcd273606388ead112bc65b9ca  openwrt-x86-64-installer.img.gz
-cfa29fb9bfbdd4d9c00df0e900e6d8308ec6995734ce736e55691104d5058e09  openwrt-x86-64-installer-hybrid.iso
-2b71a4b15d4b698ca2e5eeb093be3d424f0f36bb90676e4ef1efe190b1b59218  manifest.json
+75ae68ea11c5e709b757ae2512aebdd2863c0f6b7097e7d3eb10ce6230e9a688  openwrt-x86-64-installer.img.gz
+107140e9c8bbd0b5dc52810b21866d66a5ba5fc2b5f81934a5796d0230068571  openwrt-x86-64-installer-hybrid.iso
+fbb1376168991db821088f0265d393c7e36ac53b4a83b3d720d453c65013eaed  manifest.json
 ```
 
 ## Проверки
@@ -137,6 +137,7 @@ cfa29fb9bfbdd4d9c00df0e900e6d8308ec6995734ce736e55691104d5058e09  openwrt-x86-64
 - пересборка актуального hybrid ISO через `make iso` после последних UI/runtime изменений;
 - проверка ISO через `fdisk` и `xorriso`;
 - проверка, что `owrt-install` и `owrt-installer-ui` внутри ISO/initramfs совпадают с исходными файлами;
+- запуск встроенного `whiptail` через OpenWrt musl loader: `whiptail (newt): 0.52.24`;
 - smoke-тест логики выбора LAN/WAN на 2 и 3 интерфейсах;
 - smoke-тест DHCP/static WAN wizard и CIDR-конвертации;
 - локальная распаковка QEMU/OVMF в `build/qemu-local`;
@@ -180,10 +181,12 @@ cfa29fb9bfbdd4d9c00df0e900e6d8308ec6995734ce736e55691104d5058e09  openwrt-x86-64
 - добавлен и пройден native ANSI mouse smoke внутри `make ui-smoke`: pseudo-TTY получает SGR click по второй строке, выбирает второй пункт и подтверждает enable/disable `1000`/`1006` tracking;
 - добавлен и пройден безопасный `make install-flow-smoke`: source-only проверка CLI parsing, `--dry-run`, `--skip-network-wizard` и запрет destructive write path;
 - добавлен и пройден быстрый `make smoke`: syntax-check, shellcheck, ui-smoke и install-flow-smoke без пересборки ISO/QEMU;
-- добавлен автоматический `make iso-smoke`: bounded QEMU BIOS/UEFI boot текущего hybrid ISO с проверкой GRUB, kernel/initramfs, OpenWrt console и marker автозапуска на `tty1`;
+- добавлен автоматический `make iso-smoke`: bounded QEMU BIOS/UEFI/VGA boot текущего hybrid ISO с проверкой GRUB, kernel/initramfs, OpenWrt console, backend/ready markers и framebuffer;
 - BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
 - UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
-- на serial видно, что live installer управляется `/etc/inittab` на `tty1`; полноэкранный TUI проверяется на локальной VGA/tty1, а serial остается fallback/login каналом.
+- VGA QEMU smoke-test дождался target-disk menu на `tty1`, подтвердил `OWRT_INSTALLER_UI_BACKEND=whiptail` и сохранил непустой framebuffer `build/qemu-iso-smoke/vga-installer.ppm`;
+- real pseudo-TTY smoke управляет настоящим host `whiptail`: Down/Enter, input edit, Esc/Back, password hiding, theme, shell-metacharacter safety и backend precedence/fallback;
+- на serial видно, что live installer управляется `/etc/inittab` на `tty1`; serial остается fallback/login каналом.
 
 ## Как пользоваться
 

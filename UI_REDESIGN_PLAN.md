@@ -6,7 +6,7 @@
 
 ## Короткий вывод
 
-Рекомендуемый путь: zero-dependency TUI на ANSI/POSIX shell поверх текущего `owrt-install`, native SGR mouse для SSH/xterm-compatible terminals и optional `dialog` backend там, где пакет доступен.
+Реализованный путь: обязательный `whiptail`/newt backend для локальной Linux console, ANSI/POSIX shell backend с native SGR mouse для SSH/xterm-compatible terminals, line fallback для serial/pipe и optional `dialog` backend там, где пакет доступен.
 
 Mouse support не является обязательным для прохождения wizard. В локальной Linux console `tty1` мышь обычно не работает как terminal event без `gpm` или прямой обработки `/dev/input/event*`. В SSH/xterm-подобных терминалах SGR mouse reporting работает без дополнительных пакетов. Поэтому базовая UX-модель остается keyboard-first, а мышь дублирует те же безопасные действия.
 
@@ -15,7 +15,7 @@ Mouse support не является обязательным для прохож
 - Безопасность важнее красоты: destructive flow, `ERASE /dev/...`, проверка payload SHA-256 и disk guards не ослаблять.
 - Non-interactive CLI должен остаться стабильным: `--target`, `--lan-mac`, `--wan-mac`, `--lan-ip`, `--skip-network-wizard`, `--yes-i-know-this-will-erase-data`.
 - Serial/pipe fallback обязателен: если нет нормальной TTY, остаются простые numbered prompts.
-- Не добавлять тяжелые зависимости в v1. `dialog` уже есть в `profiles/optional-packages.txt`, но его использовать как optional backend, а не как единственный UI.
+- Использовать небольшой официальный пакет `whiptail` как обязательный local-console backend. `dialog` оставить optional backend, а ANSI/line fallback не удалять.
 - ASCII default. UTF-8 box drawing можно добавить позже как опцию, но не делать базой из-за VGA/serial/font рисков.
 - Все raw terminal modes должны восстанавливаться через `trap`: cursor visible, mouse off, `stty` restored.
 - Native mouse tracking включать только на время ANSI menu и только для известных xterm-compatible `TERM`; `TERM=linux` и serial не включать.
@@ -38,7 +38,7 @@ Mouse support не является обязательным для прохож
 
 ```text
 +------------------------------------------------------------------------------+
-| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.5 |
+| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.6 |
 +------------------------------------------------------------------------------+
 | Steps: [1 Disk] -> [2 LAN] -> [3 WAN] -> [4 Review] -> [5 Install]            |
 +------------------------------------------------------------------------------+
@@ -75,7 +75,8 @@ owrt-install
   +-- ui backend selector
       |
       +-- line backend       current numbered prompts / CI / non-TTY
-      +-- ansi backend       default interactive TUI, no extra packages
+      +-- ansi backend       SSH/xterm TUI with native SGR mouse
+      +-- whiptail backend   packaged local Linux-console curses UI
       +-- dialog backend     optional mouse-capable backend when dialog exists
 ```
 
@@ -102,7 +103,7 @@ ui_post_install_menu
 Переключатели окружения:
 
 ```text
-OWRT_UI_MODE=auto|line|ansi|dialog
+OWRT_UI_MODE=auto|line|ansi|whiptail|curses|dialog
 OWRT_UI_THEME=hellforge
 OWRT_UI_FORCE_ASCII=1
 OWRT_UI_NO_MOUSE=1
@@ -239,11 +240,11 @@ progress без надежного счетчика вроде `pv`.
 - Ошибка на любом этапе отображается в отдельном failure screen.
 - В failure screen есть `Return to shell` и краткая подсказка, где смотреть лог.
 
-## Фаза 4: Optional Dialog Backend И Мышь
+## Фаза 4: Curses Backend И Мышь
 
 Цель: добавить mouse-friendly backend без зависимости от него.
 
-Текущий статус на 2026-08-12: optional runtime hook реализован. `OWRT_UI_MODE=dialog` включает backend только если `dialog` реально есть в PATH; `auto` выбирает `dialog` на подходящей non-serial TTY только при наличии пакета, иначе остается ANSI. Backend использует `--mouse` по умолчанию и отключает его через `OWRT_UI_NO_MOUSE=1`. В текущем OpenWrt `25.12.4` ImageBuilder пакет `dialog` недоступен и optional package пропускается, поэтому стандартный ISO продолжает использовать ANSI.
+Текущий статус на 2026-08-12: официальный `whiptail 0.52.24` добавлен в installer image как обязательный пакет и является стандартным backend на локальной `TERM=linux` console. Общая curses-абстракция безопасно передает menu arguments без `eval`, проверяет работоспособность команды через `--version` и поддерживает menu/input/password/message/progress widgets. `OWRT_UI_MODE=curses` выбирает `dialog`, затем `whiptail`, затем ANSI; принудительные `whiptail` и `dialog` modes также доступны. В auto mode `dialog` имеет приоритет, локальная Linux console использует `whiptail`, а SSH/xterm остается на ANSI ради native SGR mouse. Пакет `dialog` в текущем OpenWrt `25.12.4` feed отсутствует и остается optional.
 
 Дополнение на 2026-08-12: в ANSI backend реализован native SGR mouse без новых зависимостей. В SSH/xterm-compatible terminals direct left click выбирает видимый menu item, wheel меняет выделение, а клавиатурные Up/Down/Enter продолжают работать всегда. Tracking `1000`/`1006` включается только внутри menu loop и выключается при выборе, отмене, `Ctrl+C` и общем cleanup. `OWRT_UI_NO_MOUSE=1`, local `TERM=linux` и serial оставляют keyboard-only flow.
 
@@ -254,7 +255,8 @@ progress без надежного счетчика вроде `pv`.
   - выставлять `DIALOGRC`;
   - использовать `dialog --menu`, `--radiolist`, `--inputbox`, `--passwordbox`, `--yesno`, `--gauge`;
   - включать `--mouse`, если не задан `OWRT_UI_NO_MOUSE=1`.
-- Если `dialog` не работает или terminal неподходящий, fallback на `ansi`.
+- Если выбранный curses command отсутствует или не работает, fallback на `ansi`; serial/pipe остается на line UI.
+- Для `whiptail` применять Hellforge `NEWT_COLORS`, full-width buttons и компактные disk labels, чтобы layout помещался в `80x24`.
 - Для локальной VGA console мышь считать experimental: проверить отдельно, не обещать как гарантированную функцию.
 - Для ANSI backend использовать SGR mouse reporting только на совместимых terminal emulators; click должен вызывать тот же selection path, что Enter.
 
@@ -273,7 +275,7 @@ progress без надежного счетчика вроде `pv`.
 
 Цель: не выпускать красивый, но хрупкий installer.
 
-Текущий статус на 2026-08-12: базовая матрица Hellforge ANSI пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`, runtime `INSTALLER_VERSION=v1.0-alpha.5`. Текущий локальный ISO SHA-256: `cfa29fb9bfbdd4d9c00df0e900e6d8308ec6995734ce736e55691104d5058e09`; `v1.0-alpha.5` публикуется отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs, OpenWrt serial console и marker автозапуска wizard; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Быстрый `make ui-smoke` покрывает line menu/stage/failure, ANSI stage/snapshot, red warning, Ctrl+C cleanup, Esc cancel, form Back, raw input editing, Down + Enter, native SGR click, wheel, mouse opt-out, dialog fallback и terminal-size checks. Auto-mode ANSI включается только при терминале минимум `80x24`. `make install-flow-smoke` проверяет `--dry-run`/`--skip-network-wizard` guards, LAN/WAN form boundaries, PPPoE/static per-field Back и очистку ghost settings, а `make smoke` объединяет быстрые non-ISO проверки. `make iso-smoke` bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
+Текущий статус на 2026-08-12: матрица Hellforge ANSI/whiptail пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install`, `usr/libexec/owrt-installer-ui` и исполняемый `whiptail 0.52.24`; runtime `INSTALLER_VERSION=v1.0-alpha.6`. Текущий локальный ISO SHA-256: `107140e9c8bbd0b5dc52810b21866d66a5ba5fc2b5f81934a5796d0230068571`; `v1.0-alpha.6` публикуется отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test проверяют GRUB, kernel/initramfs, OpenWrt serial console, backend marker и автозапуск wizard. VGA smoke дожидается реального target-disk menu, делает PPM framebuffer dump и проверяет, что экран не пуст. `make ui-smoke` дополнительно управляет настоящим host `whiptail` через pseudo-TTY: arrow selection, input editing, Esc/Back, скрытый password, shell-metacharacter safety, theme и backend fallback/precedence. `make install-flow-smoke` проверяет destructive guards и network state machine, а `make smoke` объединяет быстрые non-ISO проверки.
 
 Минимальная матрица:
 
@@ -294,7 +296,7 @@ progress без надежного счетчика вроде `pv`.
 
 - ANSI snapshot test: рендер меню в temp TTY или captured output, затем strip ANSI и проверка ключевых строк.
 - Проверка terminal size: 80x25, 80x24, 80x23, 100x30, слишком узкий экран.
-- Проверка dialog backend только если package реально есть в live image.
+- Проверка packaged whiptail backend в live image и настоящего dialog backend, когда его package станет доступен.
 
 ## Фаза 6: Документация И Release
 
@@ -315,12 +317,13 @@ progress без надежного счетчика вроде `pv`.
 - UTF-8 рамки могут ломаться на VGA console.
 - Native mouse работает в SSH/xterm-compatible terminals, но не обещается на локальном `TERM=linux` экране.
 - Raw mode при аварии может оставить терминал без echo.
-- `dialog` увеличит installer image и может потянуть ncurses-зависимости.
+- `whiptail` увеличивает installer image на newt/slang dependencies; это принято ради понятного local-console UX.
+- `dialog` потребует отдельной зависимости, если появится в feed или будет собираться отдельно.
 - Progress percent для gzip payload требует точного uncompressed size; иначе будет только spinner/stage progress.
 
 ## Решения На Сейчас
 
-- v1 делать на pure shell ANSI, без обязательного `dialog`.
+- v1 использует обязательный `whiptail` на локальной console, сохраняя pure-shell ANSI и line fallback.
 - ASCII рамки сделать default.
 - Native SGR mouse использовать как lightweight дополнение к keyboard-first ANSI; `dialog` остается optional backend.
 - Native local mouse через `gpm`/evdev не делать до отдельной проверки в QEMU и на железе.
@@ -356,3 +359,5 @@ progress без надежного счетчика вроде `pv`.
 26. [done] Собрать и проверить `v1.0-alpha.4` ISO с native ANSI mouse: checksums, source/initramfs compare, GPT/El Torito, BIOS и UEFI QEMU smoke; публиковать отдельным tag.
 27. [done] Реализовать настоящий form-level Back: ANSI `Esc`, dialog Cancel, line `!back`, WAN/WAN6 Back items, per-field PPPoE/static state machine, сохранение введенных значений и очистка ghost credentials; покрыть raw editor, secret, state и end-to-end line smoke.
 28. [done] Собрать и проверить `v1.0-alpha.5` ISO с form-level Back: checksums, source/initramfs compare, GPT/El Torito, BIOS и UEFI QEMU smoke; опубликовать отдельным alpha tag без перемещения старых tags.
+29. [done] Добавить официальный `whiptail` package, общую dialog/whiptail curses-абстракцию без `eval`, Hellforge newt theme, compact disk menu и real pseudo-TTY regression tests.
+30. [done] Добавить VGA framebuffer smoke с backend/ready markers, собрать и проверить `v1.0-alpha.6` в BIOS/UEFI/VGA и опубликовать отдельным immutable alpha tag.

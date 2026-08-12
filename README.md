@@ -35,8 +35,9 @@ If `cpio` or `xorriso` is unavailable on the host, download local copies into
 make iso-host-tools
 ```
 
-QEMU tests additionally require `qemu-system-x86_64`, `qemu-img`, and OVMF for
-UEFI testing. `shellcheck` is optional but recommended.
+QEMU tests additionally require `qemu-system-x86_64`, `qemu-img`, OVMF for
+UEFI testing, and `nc` for the VGA framebuffer smoke test. `shellcheck` is
+optional but recommended.
 
 ## Build
 
@@ -111,17 +112,16 @@ owrt-install --list-nics
 
 ## Installer UI
 
-Interactive local-console installs use the zero-dependency Hellforge ANSI TUI
-when the terminal is suitable. It keeps the installer keyboard-first with
-arrow-key menus, `Esc`/`q` cancel, framed review screens, red destructive
-warnings, and install-stage status screens. Network forms show context,
-examples, defaults, and local validation errors before the final review.
-Serial, dumb terminals, pipes, and narrow terminals fall back to the plain
-numbered line UI. Auto mode uses the ANSI TUI only when the terminal is at
-least `80x24`.
+Interactive local-console installs use the packaged Hellforge `whiptail` TUI.
+It keeps the installer keyboard-first with arrow-key menus, Cancel/`Esc` Back,
+framed review screens, destructive warnings, and install-stage status screens.
+Network forms show context, examples, defaults, and local validation errors
+before the final review. Serial, dumb terminals, pipes, and narrow terminals
+fall back to the plain numbered line UI. Full-screen auto mode requires a
+terminal of at least `80x24`.
 
 Network forms support step-by-step Back navigation. Press `Esc` in an ANSI
-form, use Cancel in a `dialog` form, or enter `!back` in the line UI. Enter
+form, use Cancel in a curses form, or enter `!back` in the line UI. Enter
 `!!back` when the literal value `!back` is required. WAN mode and WAN IPv6
 menus include explicit Back items. Values already entered are retained while
 moving between fields, but credentials and static settings for an unused WAN
@@ -131,21 +131,25 @@ In SSH and xterm-compatible terminal emulators, ANSI menus also accept direct
 mouse clicks and wheel scrolling through the standard SGR mouse protocol. The
 same menus always remain usable with Up/Down and Enter. Mouse tracking is
 enabled only while a menu is open and is disabled during cleanup. Set
-`OWRT_UI_NO_MOUSE=1` to force keyboard-only operation. The local Linux VGA
-console (`TERM=linux`) and serial consoles intentionally stay keyboard-only.
+`OWRT_UI_NO_MOUSE=1` to force keyboard-only operation. The packaged `whiptail`
+backend on the local Linux VGA console (`TERM=linux`) and serial consoles are
+keyboard-only.
 
 UI mode can be forced for debugging:
 
 ```sh
 OWRT_UI_MODE=line owrt-install
 OWRT_UI_MODE=ansi owrt-install
+OWRT_UI_MODE=whiptail owrt-install
+OWRT_UI_MODE=curses owrt-install
 OWRT_UI_MODE=dialog owrt-install
 ```
 
-The optional runtime `dialog --mouse` backend remains available when the
-`dialog` package is present. The standard build currently uses ANSI because
-the OpenWrt `25.12.4` ImageBuilder used here does not provide that optional
-package. Native ANSI mouse support therefore does not add a package dependency.
+`curses` selects `dialog` when available, then `whiptail`, then ANSI. In auto
+mode the local Linux console uses the required `whiptail` package. SSH and
+xterm-compatible terminals keep the native ANSI backend so SGR mouse support
+remains available. The optional `dialog --mouse` backend is still supported,
+but OpenWrt `25.12.4` does not currently provide that package in this feed.
 
 Before the final destructive confirmation, the review screen offers a safe
 action menu: continue to the exact `ERASE /dev/...` prompt, edit LAN/WAN
@@ -221,7 +225,8 @@ make shellcheck
 ```
 
 Run fast UI regression smoke tests for line, ANSI snapshot rendering,
-Ctrl+C cleanup, Esc cancel, dialog fallback, and terminal-size behavior:
+Ctrl+C cleanup, Esc cancel, real `whiptail` pseudo-TTY interaction, backend
+fallback, and terminal-size behavior:
 
 ```sh
 make ui-smoke
@@ -233,10 +238,16 @@ Run safe install-flow smoke tests for CLI flags and dry-run guards:
 make install-flow-smoke
 ```
 
-Run automated BIOS/UEFI hybrid ISO boot smoke tests after `make iso`:
+Run automated BIOS, UEFI, and VGA hybrid ISO boot smoke tests after `make iso`:
 
 ```sh
 make iso-smoke
+```
+
+Run only the VGA backend/framebuffer check:
+
+```sh
+make vga-smoke
 ```
 
 QEMU scripts are semi-manual smoke tests:

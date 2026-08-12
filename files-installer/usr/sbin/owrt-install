@@ -2,7 +2,7 @@
 
 set -eu
 
-INSTALLER_VERSION="v1.0-alpha.5"
+INSTALLER_VERSION="v1.0-alpha.6"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 TARGET_MOUNT="/mnt/target"
@@ -61,6 +61,12 @@ append_install_log() {
 	[ -n "${INSTALL_LOG:-}" ] || return 0
 	ts="$(date '+%H:%M:%S' 2>/dev/null)" || ts="--:--:--"
 	printf '%s %s\n' "$ts" "$*" >> "$INSTALL_LOG" 2>/dev/null || true
+}
+
+autostart_serial_marker() {
+	[ "$AUTO_STARTED" = "1" ] || return 0
+	[ -w /dev/ttyS0 ] || return 0
+	printf '%s\n' "$1" > /dev/ttyS0 2>/dev/null || true
 }
 
 ui_manages_screen() {
@@ -409,17 +415,37 @@ disk_label() {
 		"$removable" "$rotational" "$transport" "$boot"
 }
 
+disk_menu_label() {
+	disk="$1"
+	name="$(disk_name_from_path "$disk")"
+	model="$(trim_file "/sys/block/$name/device/model")"
+	removable="$(cat "/sys/block/$name/removable" 2>/dev/null || printf 0)"
+	case "$removable" in
+		1) media="removable" ;;
+		*) media="fixed" ;;
+	esac
+	live=""
+	is_live_boot_disk "$disk" && live=" LIVE-BOOT"
+	printf '%-18s %-6s %.24s [%s]%s' \
+		"$disk" "$(disk_size "$name")" "${model:-unknown}" "$media" "$live"
+}
+
 build_disk_menu() {
+	label_mode="${1:-compact}"
 	refresh_disks
 	menu_reset
 	while IFS= read -r disk; do
 		[ -n "$disk" ] || continue
-		menu_add "$disk" "$(disk_label "$disk")"
+		case "$label_mode" in
+			detailed) label="$(disk_label "$disk")" ;;
+			*) label="$(disk_menu_label "$disk")" ;;
+		esac
+		menu_add "$disk" "$label"
 	done < "$DISK_LIST"
 }
 
 show_disks() {
-	build_disk_menu
+	build_disk_menu detailed
 	section "Available target disks"
 	if [ "$(menu_count)" -eq 0 ]; then
 		printf 'No supported target disks found.\n'
@@ -449,6 +475,7 @@ validate_target_disk() {
 select_target_disk() {
 	build_disk_menu
 	menu_warning "WARNING: selected disk will be erased after final confirmation."
+	autostart_serial_marker "OWRT_INSTALLER_UI_READY=target-disk"
 	select_from_menu "Select target disk" "target disk"
 	TARGET="$SELECTED_VALUE"
 }
@@ -1117,6 +1144,8 @@ run_install() {
 	setup_ui
 	: > "$INSTALL_LOG" 2>/dev/null || true
 	append_install_log "INFO: Installer session started"
+	append_install_log "INFO: UI backend: ${UI_MODE_ACTUAL:-line}"
+	autostart_serial_marker "OWRT_INSTALLER_UI_BACKEND=${UI_MODE_ACTUAL:-line}"
 	ui_welcome_screen "$INSTALLER_VERSION" "$AUTO_STARTED"
 
 	ui_install_stage "Verify payload" "Checking embedded OpenWrt image integrity." "$INSTALL_LOG"

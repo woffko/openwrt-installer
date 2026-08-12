@@ -12,6 +12,7 @@ QEMU_TIMEOUT="${QEMU_TIMEOUT:-100s}"
 QEMU_ACCEL="${QEMU_ACCEL:-tcg}"
 QEMU_MEMORY="${QEMU_MEMORY:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
+QEMU_VGA_WAIT="${QEMU_VGA_WAIT:-100}"
 LOCAL_QEMU_ROOT="$BUILD_DIR/qemu-local/root"
 QEMU_ENV_PREFIX=""
 QEMU_L_ARG=""
@@ -92,7 +93,12 @@ run_qemu_logged() {
 ensure_qcow2() {
 	disk="$1"
 	if [ ! -f "$disk" ]; then
-		"$QEMU_IMG" create -f qcow2 "$disk" 1G >/dev/null
+		if [ -n "$QEMU_L_ARG" ]; then
+			# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+			env $QEMU_ENV_PREFIX "$QEMU_IMG" create -f qcow2 "$disk" 1G >/dev/null
+		else
+			"$QEMU_IMG" create -f qcow2 "$disk" 1G >/dev/null
+		fi
 	fi
 }
 
@@ -111,6 +117,92 @@ assert_common_boot_markers() {
 	assert_log_contains "$log_file" "Linux version"
 	assert_log_contains "$log_file" "Please press Enter to activate this console."
 	assert_log_contains "$log_file" "OpenWrt disk installer is managed by /etc/inittab on tty1."
+	assert_log_contains "$log_file" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+}
+
+run_vga_smoke() {
+	serial_log="$SMOKE_DIR/vga-iso.log"
+	qemu_log="$SMOKE_DIR/vga-qemu.log"
+	monitor_log="$SMOKE_DIR/vga-monitor.log"
+	screenshot="$SMOKE_DIR/vga-installer.ppm"
+	monitor_socket="$SMOKE_DIR/vga-monitor.sock"
+	target_disk="$SMOKE_DIR/target-vga.qcow2"
+
+	case "$QEMU_VGA_WAIT" in
+		''|*[!0-9]*) die "QEMU_VGA_WAIT must be an integer number of seconds" ;;
+	esac
+	ensure_qcow2 "$target_disk"
+	rm -f "$serial_log" "$qemu_log" "$monitor_log" "$screenshot" "$monitor_socket"
+
+	log "Starting VGA curses UI smoke test"
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$QEMU_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" -L "$QEMU_L_ARG" \
+			-machine "q35,accel=$QEMU_ACCEL" \
+			-m "$QEMU_MEMORY" \
+			-smp "$QEMU_SMP" \
+			-display none \
+			-vga std \
+			-serial "file:$serial_log" \
+			-monitor "unix:$monitor_socket,server=on,wait=off" \
+			-cdrom "$ISO_IMAGE" \
+			-boot d \
+			-drive "file=$target_disk,format=qcow2,if=virtio" \
+			-nic user,model=e1000 \
+			-nic user,model=e1000 > "$qemu_log" 2>&1 &
+	else
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$QEMU_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" \
+			-machine "q35,accel=$QEMU_ACCEL" \
+			-m "$QEMU_MEMORY" \
+			-smp "$QEMU_SMP" \
+			-display none \
+			-vga std \
+			-serial "file:$serial_log" \
+			-monitor "unix:$monitor_socket,server=on,wait=off" \
+			-cdrom "$ISO_IMAGE" \
+			-boot d \
+			-drive "file=$target_disk,format=qcow2,if=virtio" \
+			-nic user,model=e1000 \
+			-nic user,model=e1000 > "$qemu_log" 2>&1 &
+	fi
+	qemu_pid=$!
+
+	elapsed=0
+	while [ "$elapsed" -lt "$QEMU_VGA_WAIT" ]; do
+		if [ -S "$monitor_socket" ] && [ -r "$serial_log" ] &&
+			grep -F "OWRT_INSTALLER_UI_READY=target-disk" "$serial_log" >/dev/null 2>&1; then
+			break
+		fi
+		if ! kill -0 "$qemu_pid" 2>/dev/null; then
+			wait "$qemu_pid" || true
+			tail -n 80 "$qemu_log" >&2 || true
+			die "QEMU exited before the VGA installer became ready"
+		fi
+		sleep 1
+		elapsed=$((elapsed + 1))
+	done
+
+	if [ "$elapsed" -ge "$QEMU_VGA_WAIT" ]; then
+		printf 'quit\n' | nc -U "$monitor_socket" >/dev/null 2>&1 || true
+		wait "$qemu_pid" || true
+		tail -n 120 "$serial_log" >&2 || true
+		die "VGA installer did not reach the target-disk menu within ${QEMU_VGA_WAIT}s"
+	fi
+
+	sleep 2
+	printf 'screendump %s\ninfo status\nquit\n' "$screenshot" |
+		nc -U "$monitor_socket" > "$monitor_log" 2>&1 || true
+	wait "$qemu_pid" || true
+
+	[ -s "$screenshot" ] || die "QEMU VGA screenshot was not created: $screenshot"
+	[ "$(dd if="$screenshot" bs=1 count=2 2>/dev/null)" = "P6" ] ||
+		die "QEMU VGA screenshot is not a binary PPM image"
+	pixel_values="$(dd if="$screenshot" bs=1 skip=64 2>/dev/null | od -An -tu1 | tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
+	[ "$pixel_values" -ge 4 ] || die "QEMU VGA screenshot appears blank"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk"
+	log "VGA curses UI smoke passed: $screenshot"
 }
 
 run_bios_smoke() {
@@ -182,14 +274,20 @@ run_uefi_smoke() {
 }
 
 case "$MODE" in
-	all|bios|uefi) ;;
-	*) die "Usage: $0 [all|bios|uefi]" ;;
+	all|bios|uefi|vga) ;;
+	*) die "Usage: $0 [all|bios|uefi|vga]" ;;
 esac
 
 [ -s "$ISO_IMAGE" ] || die "Hybrid ISO is missing. Run: make iso"
 require_cmd timeout
 require_cmd grep
 require_cmd tail
+case "$MODE" in
+	all|vga)
+		require_cmd nc
+		require_cmd od
+		;;
+esac
 mkdir -p "$SMOKE_DIR"
 
 QEMU_SYSTEM="$(find_qemu_system)" || die "qemu-system-x86_64 is required"
@@ -200,12 +298,16 @@ case "$MODE" in
 	all)
 		run_bios_smoke
 		run_uefi_smoke
+		run_vga_smoke
 		;;
 	bios)
 		run_bios_smoke
 		;;
 	uefi)
 		run_uefi_smoke
+		;;
+	vga)
+		run_vga_smoke
 		;;
 esac
 

@@ -530,6 +530,8 @@ run_dialog_form_back_smoke() {
 	mkdir -p "$fake_bin"
 	{
 		printf '%s\n' '#!/bin/sh'
+		# shellcheck disable=SC2016
+		printf '%s\n' '[ "${1:-}" = "--version" ] && exit 0'
 		printf '%s\n' 'exit 1'
 	} > "$fake_bin/dialog"
 	chmod +x "$fake_bin/dialog"
@@ -583,6 +585,190 @@ run_dialog_mode_smoke() {
 		assert_contains "$out_file" "mode=ansi"
 	fi
 	assert_not_contains "$out_file" "mode=line"
+}
+
+run_curses_selection_smoke() {
+	work_dir="$1"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; curses selection smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/curses-selection.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'setup_ui'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "mode=%s command=%s\n" "$UI_MODE_ACTUAL" "$UI_DIALOG_CMD"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	for scenario in dialog whiptail ansi; do
+		fake_bin="$work_dir/curses-$scenario-bin"
+		mkdir -p "$fake_bin"
+		case "$scenario" in
+			dialog)
+				dialog_status=0
+				whiptail_status=0
+				expected="mode=dialog command=dialog"
+				;;
+			whiptail)
+				dialog_status=1
+				whiptail_status=0
+				expected="mode=whiptail command=whiptail"
+				;;
+			ansi)
+				dialog_status=1
+				whiptail_status=1
+				expected="mode=ansi command="
+				;;
+		esac
+		for command_name in dialog whiptail; do
+			case "$command_name" in
+				dialog) command_status="$dialog_status" ;;
+				whiptail) command_status="$whiptail_status" ;;
+			esac
+			{
+				printf '%s\n' '#!/bin/sh'
+				printf 'exit %s\n' "$command_status"
+			} > "$fake_bin/$command_name"
+			chmod +x "$fake_bin/$command_name"
+		done
+
+		out_file="$work_dir/curses-selection-$scenario.out"
+		PATH="$fake_bin:$PATH" OWRT_UI_MODE=curses TERM=xterm \
+			script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+			fail "Curses selection smoke failed for $scenario"
+		assert_contains "$out_file" "$expected"
+	done
+
+	auto_bin="$work_dir/curses-auto-bin"
+	mkdir -p "$auto_bin"
+	for command_name in dialog whiptail; do
+		{
+			printf '%s\n' '#!/bin/sh'
+			case "$command_name" in
+				dialog) printf '%s\n' 'exit 1' ;;
+				whiptail) printf '%s\n' 'exit 0' ;;
+			esac
+		} > "$auto_bin/$command_name"
+		chmod +x "$auto_bin/$command_name"
+	done
+
+	PATH="$auto_bin:$PATH" OWRT_UI_MODE=auto TERM=linux \
+		script -q -e -c "$harness" "$work_dir/auto-linux.out" >/dev/null 2>&1 ||
+		fail "Auto Linux-console backend selection smoke failed"
+	assert_contains "$work_dir/auto-linux.out" "mode=whiptail command=whiptail"
+
+	PATH="$auto_bin:$PATH" OWRT_UI_MODE=auto TERM=xterm \
+		script -q -e -c "$harness" "$work_dir/auto-xterm.out" >/dev/null 2>&1 ||
+		fail "Auto xterm backend selection smoke failed"
+	assert_contains "$work_dir/auto-xterm.out" "mode=ansi command="
+}
+
+run_whiptail_menu_form_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1 || ! command -v whiptail >/dev/null 2>&1; then
+		printf 'SKIP: script(1) or whiptail is unavailable; real whiptail smoke skipped.\n'
+		return 0
+	fi
+	if ! script -q -e -c true "$work_dir/whiptail-script-return.out" >/dev/null 2>&1; then
+		printf 'SKIP: script(1) has no usable -e support; real whiptail smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/whiptail-menu-form.sh"
+	marker="$work_dir/must-not-exist"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf 'MENU_LIST=%s\n' "$(shell_quote "$work_dir/whiptail-menu")"
+		printf '%s\n' 'stty rows 25 cols 80 2>/dev/null || true'
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'menu_reset'
+		printf '%s\n' 'menu_add "one" "First option"'
+		printf 'menu_add "two" %s\n' "$(shell_quote "Second option; touch $marker")"
+		printf '%s\n' 'select_from_menu "Pick value" "value"'
+		printf '%s\n' 'prompt_default "Address" "192.0.2.2/24" "Static address"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "backend=%s command=%s selected=%s input=%s action=%s colors=%s\n" "$UI_MODE_ACTUAL" "$UI_DIALOG_CMD" "$SELECTED_VALUE" "$SELECTED_INPUT" "$UI_INPUT_ACTION" "${NEWT_COLORS:+set}"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	( sleep 1; printf '\033[B\r'; sleep 1; printf '\025198.51.100.7/24\r'; sleep 1 ) |
+		OWRT_UI_MODE=whiptail TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "Real whiptail menu/form smoke failed"
+
+	assert_contains "$out_file" "backend=whiptail command=whiptail selected=two input=198.51.100.7/24 action=submit colors=set"
+	[ ! -e "$marker" ] || fail "Whiptail menu label was evaluated by the shell"
+}
+
+run_whiptail_back_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1 || ! command -v whiptail >/dev/null 2>&1; then
+		printf 'SKIP: script(1) or whiptail is unavailable; whiptail Back smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/whiptail-back.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'prompt_default "Address" "192.0.2.2/24" "Static address"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "backend=%s action=%s value=%s\n" "$UI_MODE_ACTUAL" "$UI_INPUT_ACTION" "$SELECTED_INPUT"'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	( sleep 1; printf '\033'; sleep 2 ) |
+		OWRT_UI_MODE=whiptail TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "Real whiptail Back smoke failed"
+
+	assert_contains "$out_file" "backend=whiptail action=back value="
+}
+
+run_whiptail_secret_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1 || ! command -v whiptail >/dev/null 2>&1; then
+		printf 'SKIP: script(1) or whiptail is unavailable; whiptail secret smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/whiptail-secret.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'prompt_secret "PPPoE password" "PPPoE settings"'
+		# shellcheck disable=SC2016
+		printf '%s\n' 'printf "backend=%s action=%s length=%s\n" "$UI_MODE_ACTUAL" "$UI_INPUT_ACTION" "${#SELECTED_INPUT}"'
+		printf '%s\n' 'SELECTED_INPUT=""'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	( sleep 1; printf 's3cr3t\r'; sleep 1 ) |
+		OWRT_UI_MODE=whiptail TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
+		fail "Real whiptail secret smoke failed"
+
+	assert_contains "$out_file" "backend=whiptail action=submit length=6"
+	assert_not_contains "$out_file" "s3cr3t"
 }
 
 run_terminal_size_smoke_case() {
@@ -665,6 +851,10 @@ run_ansi_form_edit_smoke "$work_dir" "$work_dir/ansi-form-edit.out"
 run_ansi_secret_form_smoke "$work_dir" "$work_dir/ansi-secret-form.out"
 run_dialog_form_back_smoke "$work_dir" "$work_dir/dialog-form-back.out"
 run_dialog_mode_smoke "$work_dir" "$work_dir/dialog-mode.out"
+run_curses_selection_smoke "$work_dir"
+run_whiptail_menu_form_smoke "$work_dir" "$work_dir/whiptail-menu-form.out"
+run_whiptail_back_smoke "$work_dir" "$work_dir/whiptail-back.out"
+run_whiptail_secret_smoke "$work_dir" "$work_dir/whiptail-secret.out"
 run_terminal_size_smoke "$work_dir"
 
 printf 'UI smoke tests passed.\n'

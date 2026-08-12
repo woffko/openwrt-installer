@@ -7,6 +7,7 @@ UI_HEIGHT=25
 UI_INNER_WIDTH=76
 UI_CURSOR_HIDDEN=0
 UI_DIALOGRC=""
+UI_DIALOG_CMD=""
 UI_MOUSE_ENABLED=0
 UI_MENU_FIRST_ROW=0
 UI_MENU_LAST_ROW=0
@@ -34,12 +35,6 @@ ui_trunc() {
 		return 0
 	fi
 	printf '%s' "$text" | cut -c 1-"$max"
-}
-
-ui_shell_quote() {
-	printf "'"
-	printf '%s' "$1" | sed "s/'/'\\\\''/g"
-	printf "'"
 }
 
 ui_print_padded() {
@@ -84,6 +79,11 @@ ui_is_serial() {
 	return 1
 }
 
+ui_command_usable() {
+	command -v "$1" >/dev/null 2>&1 || return 1
+	"$1" --version >/dev/null 2>&1
+}
+
 setup_ui() {
 	C_RESET=""
 	C_BOLD=""
@@ -113,11 +113,37 @@ setup_ui() {
 			;;
 		dialog)
 			if [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] &&
-				command -v dialog >/dev/null 2>&1; then
+				ui_command_usable dialog; then
 				UI_MODE_ACTUAL="dialog"
+				UI_DIALOG_CMD="dialog"
 				ui_dialog_setup_theme
 			elif [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
 				UI_MODE_ACTUAL="ansi"
+			fi
+			;;
+		whiptail)
+			if [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] &&
+				ui_command_usable whiptail; then
+				UI_MODE_ACTUAL="whiptail"
+				UI_DIALOG_CMD="whiptail"
+				ui_dialog_setup_theme
+			elif [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+				UI_MODE_ACTUAL="ansi"
+			fi
+			;;
+		curses)
+			if [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+				if ui_command_usable dialog; then
+					UI_MODE_ACTUAL="dialog"
+					UI_DIALOG_CMD="dialog"
+					ui_dialog_setup_theme
+				elif ui_command_usable whiptail; then
+					UI_MODE_ACTUAL="whiptail"
+					UI_DIALOG_CMD="whiptail"
+					ui_dialog_setup_theme
+				else
+					UI_MODE_ACTUAL="ansi"
+				fi
 			fi
 			;;
 		ansi)
@@ -128,11 +154,23 @@ setup_ui() {
 		auto|"")
 			if [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] &&
 				! ui_is_serial && [ "$UI_WIDTH" -ge 80 ] && [ "$UI_HEIGHT" -ge 24 ]; then
-				if command -v dialog >/dev/null 2>&1; then
+				if ui_command_usable dialog; then
 					UI_MODE_ACTUAL="dialog"
+					UI_DIALOG_CMD="dialog"
 					ui_dialog_setup_theme
 				else
-					UI_MODE_ACTUAL="ansi"
+					case "${TERM:-dumb}" in
+						linux*)
+							if ui_command_usable whiptail; then
+								UI_MODE_ACTUAL="whiptail"
+								UI_DIALOG_CMD="whiptail"
+								ui_dialog_setup_theme
+							else
+								UI_MODE_ACTUAL="ansi"
+							fi
+							;;
+						*) UI_MODE_ACTUAL="ansi" ;;
+					esac
 				fi
 			fi
 			;;
@@ -147,11 +185,38 @@ ui_ansi_active() {
 }
 
 ui_dialog_active() {
-	[ "$UI_MODE_ACTUAL" = "dialog" ]
+	[ "$UI_MODE_ACTUAL" = "dialog" ] || [ "$UI_MODE_ACTUAL" = "whiptail" ]
 }
 
 ui_dialog_mouse_arg() {
+	[ "$UI_MODE_ACTUAL" = "dialog" ] || return 0
 	[ "${OWRT_UI_NO_MOUSE:-0}" = "1" ] || printf '%s\n' "--mouse"
+}
+
+ui_dialog_run() {
+	mouse_arg="$(ui_dialog_mouse_arg)"
+	if [ "$UI_MODE_ACTUAL" = "whiptail" ]; then
+		set -- --fb "$@"
+	fi
+	if [ -n "$mouse_arg" ]; then
+		"$UI_DIALOG_CMD" "$mouse_arg" "$@"
+	else
+		"$UI_DIALOG_CMD" "$@"
+	fi
+}
+
+ui_dialog_capture() {
+	# Both programs normally return widget values on stderr. Keep the terminal
+	# rendering on the original stdout and capture only the selected value.
+	mouse_arg="$(ui_dialog_mouse_arg)"
+	if [ "$UI_MODE_ACTUAL" = "whiptail" ]; then
+		set -- --fb "$@"
+	fi
+	if [ -n "$mouse_arg" ]; then
+		"$UI_DIALOG_CMD" "$mouse_arg" "$@" 3>&1 1>&2 2>&3
+	else
+		"$UI_DIALOG_CMD" "$@" 3>&1 1>&2 2>&3
+	fi
 }
 
 ui_ansi_mouse_supported() {
@@ -180,6 +245,11 @@ ui_mouse_disable() {
 }
 
 ui_dialog_setup_theme() {
+	if [ "$UI_MODE_ACTUAL" = "whiptail" ]; then
+		NEWT_COLORS="${NEWT_COLORS:-root=white,black;window=white,black;border=cyan,black;shadow=black,black;title=yellow,black;button=white,black;actbutton=black,yellow;compactbutton=white,black;checkbox=yellow,black;actcheckbox=black,yellow;entry=white,black;label=white,black;listbox=white,black;actlistbox=black,yellow;sellistbox=white,black;actsellistbox=black,yellow;textbox=white,black;acttextbox=black,yellow;helpline=white,black;roottext=white,black;emptyscale=white,black;fullscale=yellow,black;disentry=gray,black}"
+		export NEWT_COLORS
+		return 0
+	fi
 	UI_DIALOGRC="${DIALOGRC:-/tmp/owrt-installer.dialogrc}"
 	if [ ! -s "$UI_DIALOGRC" ]; then
 		{
@@ -209,7 +279,11 @@ ui_leave() {
 		UI_CURSOR_HIDDEN=0
 	fi
 	if ui_dialog_active; then
-		dialog --clear 2>/dev/null || true
+		if [ "$UI_MODE_ACTUAL" = "dialog" ]; then
+			ui_dialog_run --clear 2>/dev/null || true
+		else
+			printf '\033[0m\033[?25h'
+		fi
 	fi
 }
 
@@ -704,18 +778,28 @@ select_from_menu() {
 	[ "$count" -gt 0 ] || die "No choices available for $prompt"
 
 	if ui_dialog_active; then
-		args=""
+		if [ "$UI_MODE_ACTUAL" = "whiptail" ]; then
+			set -- --notags
+		else
+			set --
+		fi
+		set -- "$@" \
+			--backtitle "OpenWrt Hellforge Installer" \
+			--title "$title" \
+			--menu "${MENU_NOTE:-Select $prompt.}" 0 0 0
 		number=0
 		while IFS='|' read -r value label; do
 			[ -n "$value" ] || continue
 			number=$((number + 1))
-			args="$args $(ui_shell_quote "$value") $(ui_shell_quote "$label")"
+			set -- "$@" "$value" "$label"
 		done < "$MENU_LIST"
-		dialog_body="${MENU_NOTE:-Select $prompt.}"
-		mouse_arg="$(ui_dialog_mouse_arg)"
-		# shellcheck disable=SC2086
-		SELECTED_VALUE="$(eval "dialog --stdout $mouse_arg --backtitle 'OpenWrt Hellforge Installer' --title $(ui_shell_quote "$title") --menu $(ui_shell_quote "$dialog_body") 0 0 0 $args")" ||
-			die "Selection cancelled"
+		dialog_status=0
+		SELECTED_VALUE="$(ui_dialog_capture "$@")" || dialog_status=$?
+		case "$dialog_status" in
+			0) ;;
+			1|255) die "Selection cancelled" ;;
+			*) die "Selection dialog failed with status $dialog_status" ;;
+		esac
 		MENU_NOTE=""
 		return 0
 	fi
@@ -810,10 +894,8 @@ prompt_default() {
 		[ -n "$error" ] && body="${body}${body:+
 }ERROR: $error"
 		[ -n "$body" ] || body="Type a new value or press Enter to keep the default."
-		mouse_arg="$(ui_dialog_mouse_arg)"
 		dialog_status=0
-		# shellcheck disable=SC2086
-		SELECTED_INPUT="$(dialog --stdout $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --inputbox "$body" 0 0 "$default")" || dialog_status=$?
+		SELECTED_INPUT="$(ui_dialog_capture --backtitle "OpenWrt Hellforge Installer" --title "$title" --inputbox "$body" 0 0 "$default")" || dialog_status=$?
 		case "$dialog_status" in
 			0) UI_INPUT_ACTION="submit" ;;
 			1|255)
@@ -868,10 +950,8 @@ prompt_secret() {
 A value is already set; submit an empty value to keep it."
 		[ -n "$error" ] && body="${body}${body:+
 }ERROR: $error"
-		mouse_arg="$(ui_dialog_mouse_arg)"
 		dialog_status=0
-		# shellcheck disable=SC2086
-		SELECTED_INPUT="$(dialog --stdout $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --passwordbox "$body" 0 0)" || dialog_status=$?
+		SELECTED_INPUT="$(ui_dialog_capture --backtitle "OpenWrt Hellforge Installer" --title "$title" --passwordbox "$body" 0 0)" || dialog_status=$?
 		case "$dialog_status" in
 			0) UI_INPUT_ACTION="submit" ;;
 			1|255)
@@ -941,9 +1021,7 @@ ui_notice() {
 	title="$1"
 	message="$2"
 	if ui_dialog_active; then
-		mouse_arg="$(ui_dialog_mouse_arg)"
-		# shellcheck disable=SC2086
-		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "$title" --msgbox "$message" 0 0 ||
+		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "$title" --msgbox "$message" 0 0 ||
 			die "Notice cancelled"
 		return 0
 	fi
@@ -989,9 +1067,7 @@ NAT: enabled"
 		body="$body
 
 ALL DATA ON $TARGET WILL BE ERASED."
-		mouse_arg="$(ui_dialog_mouse_arg)"
-		# shellcheck disable=SC2086
-		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Review installation" --msgbox "$body" 0 0 ||
+		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Review installation" --msgbox "$body" 0 0 ||
 			die "Review cancelled"
 		return 0
 	fi
@@ -1023,9 +1099,7 @@ ALL DATA ON $TARGET WILL BE ERASED."
 ui_confirm_erase_screen() {
 	expected="$1"
 	if ui_dialog_active; then
-		mouse_arg="$(ui_dialog_mouse_arg)"
-		# shellcheck disable=SC2086
-		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Final erase confirmation" --msgbox "DESTRUCTIVE ACTION
+		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Final erase confirmation" --msgbox "DESTRUCTIVE ACTION
 
 Type this exact confirmation string in the next prompt:
 
@@ -1064,9 +1138,7 @@ $log_tail"
 		body="$body
 
 Do not power off the machine while this step is running."
-		mouse_arg="$(ui_dialog_mouse_arg)"
-		# shellcheck disable=SC2086
-		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Install" --infobox "$body" 14 76 2>/dev/null || true
+		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Install" --infobox "$body" 14 76 2>/dev/null || true
 		return 0
 	fi
 	if ui_ansi_active; then
@@ -1114,9 +1186,7 @@ $log_tail"
 		body="$body
 
 Return to shell and inspect the log before retrying."
-		mouse_arg="$(ui_dialog_mouse_arg)"
-		# shellcheck disable=SC2086
-		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Installation failed" --msgbox "$body" 0 0 2>/dev/null || true
+		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Installation failed" --msgbox "$body" 0 0 2>/dev/null || true
 		return 0
 	fi
 	if ui_ansi_active; then
@@ -1148,9 +1218,7 @@ Return to shell and inspect the log before retrying."
 ui_success_screen() {
 	message="$1"
 	if ui_dialog_active; then
-		mouse_arg="$(ui_dialog_mouse_arg)"
-		# shellcheck disable=SC2086
-		dialog $mouse_arg --backtitle "OpenWrt Hellforge Installer" --title "Installation completed" --msgbox "$message" 0 0 ||
+		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Installation completed" --msgbox "$message" 0 0 ||
 			true
 		return 0
 	fi
