@@ -130,7 +130,7 @@ cleanup() {
 
 trap 'cleanup; exit 130' INT TERM
 
-UI_LIB="/usr/libexec/owrt-installer-ui"
+UI_LIB="${UI_LIB:-/usr/libexec/owrt-installer-ui}"
 if [ -r "$UI_LIB" ]; then
 	# shellcheck source=/dev/null
 	. "$UI_LIB"
@@ -1058,128 +1058,142 @@ run_install() {
 	fi
 }
 
-if [ "$#" -eq 0 ]; then
-	run_install
+parse_args() {
+	action=install
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--help|-h)
+				usage
+				exit 0
+				;;
+			--list-disks)
+				action=list-disks
+				shift
+				;;
+			--list-nics)
+				action=list-nics
+				shift
+				;;
+			--target)
+				[ "$#" -ge 2 ] || die "--target requires a disk path"
+				TARGET="$2"
+				shift 2
+				;;
+			--lan-mac)
+				[ "$#" -ge 2 ] || die "--lan-mac requires an address"
+				LAN_MAC="$2"
+				shift 2
+				;;
+			--wan-mac)
+				[ "$#" -ge 2 ] || die "--wan-mac requires an address"
+				WAN_MAC="$2"
+				shift 2
+				;;
+			--lan-ip)
+				[ "$#" -ge 2 ] || die "--lan-ip requires IPv4/CIDR"
+				parse_cidr_address "$2" "$LAN_CIDR" || die "Invalid --lan-ip value: $2"
+				LAN_IP="$PARSED_IP"
+				LAN_CIDR="$PARSED_CIDR"
+				LAN_NETMASK="$PARSED_NETMASK"
+				shift 2
+				;;
+			--wan-proto)
+				[ "$#" -ge 2 ] || die "--wan-proto requires dhcp, pppoe, static, or disabled"
+				case "$2" in
+					dhcp|pppoe|static|disabled) WAN_PROTO="$2" ;;
+					*) die "Invalid --wan-proto value: $2" ;;
+				esac
+				[ "$WAN_PROTO" = "disabled" ] && WAN6_PROTO="disabled"
+				shift 2
+				;;
+			--wan6-proto)
+				[ "$#" -ge 2 ] || die "--wan6-proto requires dhcpv6 or disabled"
+				case "$2" in
+					dhcpv6|disabled) WAN6_PROTO="$2" ;;
+					*) die "Invalid --wan6-proto value: $2" ;;
+				esac
+				shift 2
+				;;
+			--pppoe-username)
+				[ "$#" -ge 2 ] || die "--pppoe-username requires a value"
+				WAN_PPP_USERNAME="$2"
+				shift 2
+				;;
+			--pppoe-password)
+				[ "$#" -ge 2 ] || die "--pppoe-password requires a value"
+				WAN_PPP_PASSWORD="$2"
+				shift 2
+				;;
+			--wan-ip)
+				[ "$#" -ge 2 ] || die "--wan-ip requires IPv4/CIDR"
+				parse_cidr_address "$2" "$WAN_CIDR" || die "Invalid --wan-ip value: $2"
+				WAN_IPADDR="$PARSED_IP"
+				WAN_CIDR="$PARSED_CIDR"
+				WAN_NETMASK="$PARSED_NETMASK"
+				shift 2
+				;;
+			--wan-gateway)
+				[ "$#" -ge 2 ] || die "--wan-gateway requires an IPv4 address"
+				is_ipv4 "$2" || die "Invalid --wan-gateway value: $2"
+				WAN_GATEWAY="$2"
+				shift 2
+				;;
+			--wan-dns)
+				[ "$#" -ge 2 ] || die "--wan-dns requires a value"
+				WAN_DNS="$2"
+				shift 2
+				;;
+			--skip-network-wizard)
+				SKIP_NETWORK=1
+				shift
+				;;
+			--autostart)
+				AUTO_STARTED=1
+				shift
+				;;
+			--allow-removable)
+				ALLOW_REMOVABLE=1
+				shift
+				;;
+			--yes-i-know-this-will-erase-data)
+				ASSUME_YES=1
+				shift
+				;;
+			--dry-run)
+				DRY_RUN=1
+				shift
+				;;
+			*)
+				die "Unknown option: $1"
+				;;
+		esac
+	done
+}
+
+main() {
+	if [ "$#" -eq 0 ]; then
+		run_install
+		cleanup
+		exit 0
+	fi
+
+	parse_args "$@"
+	setup_ui
+
+	case "$action" in
+		list-disks) show_disks ;;
+		list-nics) show_nics ;;
+		install) run_install ;;
+	esac
+
 	cleanup
+}
+
+if [ "${OWRT_INSTALL_TEST_SOURCE_ONLY:-0}" = "1" ]; then
+	if (return 0 2>/dev/null); then
+		return 0
+	fi
 	exit 0
 fi
 
-action=install
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--help|-h)
-			usage
-			exit 0
-			;;
-		--list-disks)
-			action=list-disks
-			shift
-			;;
-		--list-nics)
-			action=list-nics
-			shift
-			;;
-		--target)
-			[ "$#" -ge 2 ] || die "--target requires a disk path"
-			TARGET="$2"
-			shift 2
-			;;
-		--lan-mac)
-			[ "$#" -ge 2 ] || die "--lan-mac requires an address"
-			LAN_MAC="$2"
-			shift 2
-			;;
-		--wan-mac)
-			[ "$#" -ge 2 ] || die "--wan-mac requires an address"
-			WAN_MAC="$2"
-			shift 2
-			;;
-		--lan-ip)
-			[ "$#" -ge 2 ] || die "--lan-ip requires IPv4/CIDR"
-			parse_cidr_address "$2" "$LAN_CIDR" || die "Invalid --lan-ip value: $2"
-			LAN_IP="$PARSED_IP"
-			LAN_CIDR="$PARSED_CIDR"
-			LAN_NETMASK="$PARSED_NETMASK"
-			shift 2
-			;;
-		--wan-proto)
-			[ "$#" -ge 2 ] || die "--wan-proto requires dhcp, pppoe, static, or disabled"
-			case "$2" in
-				dhcp|pppoe|static|disabled) WAN_PROTO="$2" ;;
-				*) die "Invalid --wan-proto value: $2" ;;
-			esac
-			[ "$WAN_PROTO" = "disabled" ] && WAN6_PROTO="disabled"
-			shift 2
-			;;
-		--wan6-proto)
-			[ "$#" -ge 2 ] || die "--wan6-proto requires dhcpv6 or disabled"
-			case "$2" in
-				dhcpv6|disabled) WAN6_PROTO="$2" ;;
-				*) die "Invalid --wan6-proto value: $2" ;;
-			esac
-			shift 2
-			;;
-		--pppoe-username)
-			[ "$#" -ge 2 ] || die "--pppoe-username requires a value"
-			WAN_PPP_USERNAME="$2"
-			shift 2
-			;;
-		--pppoe-password)
-			[ "$#" -ge 2 ] || die "--pppoe-password requires a value"
-			WAN_PPP_PASSWORD="$2"
-			shift 2
-			;;
-		--wan-ip)
-			[ "$#" -ge 2 ] || die "--wan-ip requires IPv4/CIDR"
-			parse_cidr_address "$2" "$WAN_CIDR" || die "Invalid --wan-ip value: $2"
-			WAN_IPADDR="$PARSED_IP"
-			WAN_CIDR="$PARSED_CIDR"
-			WAN_NETMASK="$PARSED_NETMASK"
-			shift 2
-			;;
-		--wan-gateway)
-			[ "$#" -ge 2 ] || die "--wan-gateway requires an IPv4 address"
-			is_ipv4 "$2" || die "Invalid --wan-gateway value: $2"
-			WAN_GATEWAY="$2"
-			shift 2
-			;;
-		--wan-dns)
-			[ "$#" -ge 2 ] || die "--wan-dns requires a value"
-			WAN_DNS="$2"
-			shift 2
-			;;
-		--skip-network-wizard)
-			SKIP_NETWORK=1
-			shift
-			;;
-		--autostart)
-			AUTO_STARTED=1
-			shift
-			;;
-		--allow-removable)
-			ALLOW_REMOVABLE=1
-			shift
-			;;
-		--yes-i-know-this-will-erase-data)
-			ASSUME_YES=1
-			shift
-			;;
-		--dry-run)
-			DRY_RUN=1
-			shift
-			;;
-		*)
-			die "Unknown option: $1"
-			;;
-	esac
-done
-
-setup_ui
-
-case "$action" in
-	list-disks) show_disks ;;
-	list-nics) show_nics ;;
-	install) run_install ;;
-esac
-
-cleanup
+main "$@"

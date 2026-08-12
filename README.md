@@ -205,6 +205,12 @@ Run fast UI regression smoke tests:
 make ui-smoke
 ```
 
+Run safe install-flow smoke tests for CLI flags and dry-run guards:
+
+```sh
+make install-flow-smoke
+```
+
 Run automated BIOS/UEFI hybrid ISO boot smoke tests after `make iso`:
 
 ```sh
