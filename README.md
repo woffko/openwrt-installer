@@ -205,6 +205,12 @@ Run fast UI regression smoke tests:
 make ui-smoke
 ```
 
+Run automated BIOS/UEFI hybrid ISO boot smoke tests after `make iso`:
+
+```sh
+make iso-smoke
+```
+
 QEMU scripts are semi-manual smoke tests:
 
 ```sh
