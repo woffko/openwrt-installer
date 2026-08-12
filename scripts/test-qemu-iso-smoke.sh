@@ -375,7 +375,7 @@ run_install_smoke() {
 	wait_for_log_marker "$boot_serial_log" "Please press Enter to activate this console." "$boot_pid" "$QEMU_INSTALL_WAIT"
 	{ printf '\r'; sleep 1; printf 'cat /etc/openwrt-installer-release\r'; } |
 		nc -N -U "$boot_serial_socket" >/dev/null 2>&1 || die "Could not query installed system console"
-	wait_for_log_marker "$boot_serial_log" "installer_version=v1.0-alpha.7" "$boot_pid" "$QEMU_INSTALL_WAIT"
+	wait_for_log_marker "$boot_serial_log" "installer_version=$INSTALLER_VERSION" "$boot_pid" "$QEMU_INSTALL_WAIT"
 	hmp_command "$boot_monitor_socket" quit
 	wait "$boot_pid" || true
 	assert_log_contains "$boot_serial_log" "installed_by=openwrt-x86-installer"

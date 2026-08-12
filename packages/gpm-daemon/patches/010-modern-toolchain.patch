@@ -1,0 +1,88 @@
+diff --git a/src/headers/daemon.h b/src/headers/daemon.h
+--- a/src/headers/daemon.h
++++ b/src/headers/daemon.h
+@@ -183 +183 @@
+-time_t                  last_selection_time;
++extern time_t           last_selection_time;
+diff --git a/src/daemon/add_mouse.c b/src/daemon/add_mouse.c
+--- a/src/daemon/add_mouse.c
++++ b/src/daemon/add_mouse.c
+@@ -28 +28,2 @@
+ #include <stdlib.h> /* malloc() */
++#include <string.h> /* strcmp() */
+diff --git a/src/headers/gpmInt.h b/src/headers/gpmInt.h
+--- a/src/headers/gpmInt.h
++++ b/src/headers/gpmInt.h
+@@ -94,2 +94,3 @@
+        /* mice.c */
++extern int M_listMice(void);
+ extern int M_listTypes(void);
+diff --git a/src/daemon/old_main.c b/src/daemon/old_main.c
+--- a/src/daemon/old_main.c
++++ b/src/daemon/old_main.c
+@@ -28 +28,3 @@
+ #include <sys/stat.h>               /* chmod             */
++#include <string.h>
++#include <strings.h>
+diff --git a/src/daemon/open_console.c b/src/daemon/open_console.c
+--- a/src/daemon/open_console.c
++++ b/src/daemon/open_console.c
+@@ -23 +23,2 @@
+ #include <sys/stat.h>               /* stat()            */
++#include <sys/sysmacros.h>          /* major()           */
+diff --git a/src/daemon/old_main.c b/src/daemon/old_main.c
+--- a/src/daemon/old_main.c
++++ b/src/daemon/old_main.c
+@@ -100 +100 @@
+-   chmod(GPM_NODE_CTL,0777);
++   chmod(GPM_NODE_CTL,0600);
+diff --git a/src/daemon/do_selection.c b/src/daemon/do_selection.c
+--- a/src/daemon/do_selection.c
++++ b/src/daemon/do_selection.c
+@@ -28,0 +29,5 @@
++   /* Installer builds use GPM only as a Newt event transport. Never expose
++    * the kernel console selection or paste path. */
++   (void)event;
++   return 0;
++
+diff --git a/src/Makefile.in b/src/Makefile.in
+--- a/src/Makefile.in
++++ b/src/Makefile.in
+@@ -25 +25 @@
+-		daemon/processrequest.c daemon/selection_copy.c daemon/selection_paste.c\
++		daemon/processrequest.c\
+diff --git a/src/mice.c b/src/mice.c
+--- a/src/mice.c
++++ b/src/mice.c
+@@ -241,0 +242,2 @@
++   state->dx = state->dy = 0;
++   state->wdx = state->wdy = 0;
+@@ -244 +246 @@
+-         state->dx = (signed char) thisevent.value;
++         state->dx = thisevent.value;
+@@ -246 +248 @@
+-         state->dy = (signed char) thisevent.value;
++         state->dy = thisevent.value;
+@@ -249,4 +251,12 @@
+-         case BTN_LEFT:    state->buttons ^= GPM_B_LEFT;    break;
+-         case BTN_MIDDLE:  state->buttons ^= GPM_B_MIDDLE;  break;
+-         case BTN_RIGHT:   state->buttons ^= GPM_B_RIGHT;   break;
+-         case BTN_SIDE:    state->buttons ^= GPM_B_MIDDLE;  break;
++         case BTN_LEFT:
++            state->buttons = thisevent.value ? (state->buttons | GPM_B_LEFT) : (state->buttons & ~GPM_B_LEFT);
++            break;
++         case BTN_MIDDLE:
++            state->buttons = thisevent.value ? (state->buttons | GPM_B_MIDDLE) : (state->buttons & ~GPM_B_MIDDLE);
++            break;
++         case BTN_RIGHT:
++            state->buttons = thisevent.value ? (state->buttons | GPM_B_RIGHT) : (state->buttons & ~GPM_B_RIGHT);
++            break;
++         case BTN_SIDE:
++            state->buttons = thisevent.value ? (state->buttons | GPM_B_MIDDLE) : (state->buttons & ~GPM_B_MIDDLE);
++            break;
+@@ -2404,3 +2411,4 @@
+    {"evdev", "Linux Event Device",
+             "", M_evdev, I_empty, STD_FLG,
+-                        {0x00, 0x00, 0x00, 0x00} , 16, 16, 0, 0, NULL},
++                        {0x00, 0x00, 0x00, 0x00}, sizeof(struct input_event),
++                        sizeof(struct input_event), 0, 0, NULL},

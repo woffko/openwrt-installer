@@ -1,0 +1,223 @@
+#!/bin/sh
+
+set -eu
+
+STATE_DIR="${OWRT_LOCAL_MOUSE_STATE_DIR:-/tmp/owrt-installer-mouse}"
+STATE_FILE="$STATE_DIR/state"
+GPM_PID_FILE="${OWRT_LOCAL_MOUSE_GPM_PID_FILE:-/var/run/gpm.pid}"
+GPM_SOCKET="${OWRT_LOCAL_MOUSE_GPM_SOCKET:-/dev/gpmctl}"
+INPUT_CLASS="${OWRT_LOCAL_MOUSE_INPUT_CLASS:-/sys/class/input}"
+INPUT_DEV_ROOT="${OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT:-/dev/input}"
+GPM_BIN="${OWRT_LOCAL_MOUSE_GPM_BIN:-/usr/sbin/gpm}"
+
+log() {
+	printf '[owrt-installer-mouse] %s\n' "$*" >&2
+}
+
+is_local_installer_console() {
+	if [ "${OWRT_LOCAL_MOUSE_TEST_MODE:-0}" = "1" ]; then
+		return 0
+	fi
+	# Diagnostics are redirected to the installer log, so stdin is the
+	# controlling console that must be trusted here.
+	[ -t 0 ] || {
+		log "stdin is not a terminal"
+		return 1
+	}
+	console="$(readlink "/proc/$$/fd/0" 2>/dev/null || true)"
+	[ "$console" = "/dev/tty1" ] || {
+		log "stdin console is ${console:-unknown}, expected /dev/tty1"
+		return 1
+	}
+}
+
+mouse_feature_enabled() {
+	[ "${OWRT_LOCAL_MOUSE_TEST_MODE:-0}" = "1" ] && return 0
+	[ "${OWRT_LOCAL_MOUSE_ENABLE:-0}" = "1" ] && return 0
+	[ -r /proc/cmdline ] || return 1
+	case " $(cat /proc/cmdline) " in
+		*" owrt.mouse=1 "*) return 0 ;;
+	esac
+	return 1
+}
+
+process_is_gpm() {
+	pid="$1"
+	case "$pid" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	[ -r "/proc/$pid/comm" ] || return 1
+	[ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = "gpm" ]
+}
+
+process_start_time() {
+	pid="$1"
+	awk '{ print $22 }' "/proc/$pid/stat" 2>/dev/null
+}
+
+process_is_owned_gpm() {
+	pid="$1"
+	expected_start="$2"
+	process_is_gpm "$pid" || return 1
+	[ "$(process_start_time "$pid" || true)" = "$expected_start" ]
+}
+
+find_relative_pointer() {
+	for event_path in "$INPUT_CLASS"/event*; do
+		[ -d "$event_path" ] || continue
+		rel_file="$event_path/device/capabilities/rel"
+		[ -r "$rel_file" ] || continue
+		rel_word="$(awk '{ print $NF }' "$rel_file" 2>/dev/null || true)"
+		case "$rel_word" in
+			''|*[!0-9a-fA-F]*) continue ;;
+		esac
+		rel_value="$(printf '%d' "0x$rel_word" 2>/dev/null || true)"
+		case "$rel_value" in
+			''|*[!0-9]*) continue ;;
+		esac
+		[ $((rel_value & 3)) -eq 3 ] || continue
+		device="$INPUT_DEV_ROOT/${event_path##*/}"
+		[ -c "$device" ] || [ "${OWRT_LOCAL_MOUSE_TEST_MODE:-0}" = "1" ] || continue
+		printf '%s\n' "$device"
+		return 0
+	done
+	return 1
+}
+
+read_state_pid() {
+	[ -r "$STATE_FILE" ] || return 1
+	IFS=' ' read -r state_pid state_start _ < "$STATE_FILE" || return 1
+	process_is_owned_gpm "$state_pid" "$state_start" || return 1
+	printf '%s\n' "$state_pid"
+}
+
+stop_gpm_pid() {
+	pid="$1"
+	process_is_gpm "$pid" || return 1
+	kill "$pid" 2>/dev/null || true
+	tries=0
+	while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 5 ]; do
+		tries=$((tries + 1))
+		sleep 1
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -KILL "$pid" 2>/dev/null || true
+	fi
+	return 0
+}
+
+abort_start() {
+	pid="${1:-}"
+	if ! process_is_gpm "$pid" && [ -r "$GPM_PID_FILE" ]; then
+		pid="$(sed -n '1p' "$GPM_PID_FILE" 2>/dev/null || true)"
+	fi
+	stop_gpm_pid "$pid" 2>/dev/null || true
+	rm -f "$STATE_FILE" "$GPM_SOCKET" "$GPM_PID_FILE"
+}
+
+start_mouse() {
+	mouse_feature_enabled || {
+		log "experimental local mouse is disabled; keyboard input remains active"
+		return 1
+	}
+	is_local_installer_console || {
+		log "not running on local tty1; keyboard input remains active"
+		return 1
+	}
+	[ "${OWRT_UI_NO_MOUSE:-0}" != "1" ] || return 1
+	[ -x "$GPM_BIN" ] || {
+		log "GPM binary is unavailable"
+		return 1
+	}
+	if pid="$(read_state_pid 2>/dev/null)"; then
+		log "already active with PID $pid"
+		return 0
+	fi
+	if [ -e "$GPM_SOCKET" ] || [ -e "$GPM_PID_FILE" ]; then
+		log "refusing to replace an unowned GPM instance or stale socket"
+		return 1
+	fi
+	device="$(find_relative_pointer)" || {
+		log "no relative REL_X/REL_Y pointer found; keyboard input remains active"
+		return 1
+	}
+
+	umask 077
+	mkdir -p "$STATE_DIR"
+	"$GPM_BIN" -m "$device" -t evdev -A
+
+	pid=""
+	tries=0
+	while [ "$tries" -lt 5 ]; do
+		if [ -r "$GPM_PID_FILE" ]; then
+			pid="$(sed -n '1p' "$GPM_PID_FILE" 2>/dev/null || true)"
+			if process_is_gpm "$pid" && [ -S "$GPM_SOCKET" ]; then
+				break
+			fi
+		fi
+		pid=""
+		tries=$((tries + 1))
+		sleep 1
+	done
+	if [ -z "$pid" ]; then
+		abort_start
+		log "GPM did not create its PID file and control socket"
+		return 1
+	fi
+	chmod 0600 "$GPM_SOCKET" || {
+		abort_start "$pid"
+		return 1
+	}
+	mode="$(stat -c '%a' "$GPM_SOCKET" 2>/dev/null || true)"
+	[ "$mode" = "600" ] || {
+		abort_start "$pid"
+		log "GPM control socket has unsafe mode $mode"
+		return 1
+	}
+	start_time="$(process_start_time "$pid")" || {
+		abort_start "$pid"
+		return 1
+	}
+	printf '%s %s %s\n' "$pid" "$start_time" "$device" > "$STATE_FILE"
+	log "active on $device with PID $pid"
+}
+
+stop_mouse() {
+	[ -r "$STATE_FILE" ] || return 0
+	IFS=' ' read -r pid start_time device < "$STATE_FILE" || return 1
+	if ! process_is_owned_gpm "$pid" "$start_time"; then
+		current_pid=""
+		[ ! -r "$GPM_PID_FILE" ] ||
+			current_pid="$(sed -n '1p' "$GPM_PID_FILE" 2>/dev/null || true)"
+		if process_is_gpm "$pid" ||
+			{ [ -n "$current_pid" ] && [ "$current_pid" != "$pid" ]; }
+		then
+			log "GPM ownership changed; refusing to signal or remove runtime files"
+			return 1
+		fi
+		rm -f "$STATE_FILE" "$GPM_SOCKET" "$GPM_PID_FILE"
+		log "removed stale runtime files after owned GPM exit"
+		return 0
+	fi
+	stop_gpm_pid "$pid" || return 1
+	rm -f "$STATE_FILE" "$GPM_SOCKET" "$GPM_PID_FILE"
+	log "stopped"
+}
+
+status_mouse() {
+	pid="$(read_state_pid)" || return 1
+	mode="$(stat -c '%a' "$GPM_SOCKET" 2>/dev/null || true)"
+	[ "$mode" = "600" ] || return 1
+	printf 'active pid=%s mode=%s\n' "$pid" "$mode"
+}
+
+case "${1:-}" in
+	start) start_mouse ;;
+	stop) stop_mouse ;;
+	status) status_mouse ;;
+	device) find_relative_pointer ;;
+	*)
+		printf 'Usage: %s {start|stop|status|device}\n' "$0" >&2
+		exit 2
+		;;
+esac

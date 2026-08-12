@@ -2,7 +2,7 @@
 
 set -eu
 
-INSTALLER_VERSION="v1.0-alpha.7"
+INSTALLER_VERSION="v1.0-alpha.8-dev"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 TARGET_MOUNT="/mnt/target"
@@ -47,6 +47,8 @@ TARGET_MOUNTED=0
 TTY_STATE=""
 MENU_NOTE=""
 CLEANED_UP=0
+LOCAL_MOUSE_ACTIVE=0
+LOCAL_MOUSE_HELPER="${OWRT_LOCAL_MOUSE_HELPER:-/usr/libexec/owrt-installer-local-mouse}"
 WRITE_GZIP_PID=""
 WRITE_PV_PID=""
 WRITE_DD_PID=""
@@ -125,10 +127,31 @@ run_or_die() {
 	"$@" >> "$INSTALL_LOG" 2>&1 || die "$error"
 }
 
+local_mouse_start() {
+	[ "${OWRT_UI_NO_MOUSE:-0}" != "1" ] || return 0
+	[ -x "$LOCAL_MOUSE_HELPER" ] || return 0
+	if "$LOCAL_MOUSE_HELPER" start >> "$INSTALL_LOG" 2>&1; then
+		LOCAL_MOUSE_ACTIVE=1
+		autostart_serial_marker "OWRT_INSTALLER_LOCAL_MOUSE=active"
+		autostart_serial_marker "OWRT_INSTALLER_LOCAL_MOUSE_SOCKET_MODE=600"
+	else
+		LOCAL_MOUSE_ACTIVE=0
+		autostart_serial_marker "OWRT_INSTALLER_LOCAL_MOUSE=keyboard-fallback"
+	fi
+}
+
+local_mouse_stop() {
+	[ "$LOCAL_MOUSE_ACTIVE" = "1" ] || return 0
+	"$LOCAL_MOUSE_HELPER" stop >> "$INSTALL_LOG" 2>&1 || true
+	LOCAL_MOUSE_ACTIVE=0
+	autostart_serial_marker "OWRT_INSTALLER_LOCAL_MOUSE=stopped"
+}
+
 cleanup() {
 	[ "$CLEANED_UP" = "0" ] || return 0
 	CLEANED_UP=1
 	WAN_PPP_PASSWORD=""
+	local_mouse_stop
 	for write_pid in "$WRITE_GZIP_PID" "$WRITE_PV_PID" "$WRITE_DD_PID"; do
 		case "$write_pid" in
 			''|*[!0-9]*) ;;
@@ -1149,10 +1172,14 @@ confirm_erase() {
 	[ "$ASSUME_YES" = "1" ] && return 0
 	expected="ERASE $TARGET"
 	ui_confirm_erase_screen "$expected"
+	# The exact destructive phrase must remain keyboard-only. Previous Newt
+	# widgets have exited before the daemon and its socket are removed here.
+	local_mouse_stop
 	autostart_serial_marker "OWRT_INSTALLER_UI_READY=exact-erase"
 	printf 'Type exactly "%s" to continue: ' "$expected"
 	IFS= read -r answer
 	[ "$answer" = "$expected" ] || die "Confirmation did not match; installation cancelled"
+	local_mouse_start
 }
 
 review_and_confirm() {
@@ -1217,8 +1244,9 @@ post_install_menu() {
 }
 
 run_install() {
-	setup_ui
 	: > "$INSTALL_LOG" 2>/dev/null || true
+	local_mouse_start
+	setup_ui
 	append_install_log "INFO: Installer session started"
 	append_install_log "INFO: UI backend: ${UI_MODE_ACTUAL:-line}"
 	autostart_serial_marker "OWRT_INSTALLER_UI_BACKEND=${UI_MODE_ACTUAL:-line}"

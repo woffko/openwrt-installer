@@ -1,0 +1,11 @@
+--- a/form.c
++++ b/form.c
+@@ -19,6 +19,8 @@
+ #include <sys/stat.h>      /* stat() */
+ #include <termios.h>       /* winsize */
+ #include <unistd.h>
++#include <string.h>
++#include <strings.h>
+ #include <sys/kd.h>        /* KDGETMODE */
+ #include <signal.h>
+ #include <stdio.h>

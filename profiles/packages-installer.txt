@@ -24,3 +24,9 @@ gzip
 ca-bundle
 whiptail
 pv
+coreutils-stat
+gpm-daemon
+kmod-input-evdev
+kmod-input-mouse-ps2
+kmod-hid-generic
+kmod-usb-hid

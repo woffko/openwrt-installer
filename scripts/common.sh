@@ -10,7 +10,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 PATH="$BUILD_DIR/host-tools/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 OPENWRT_VERSION="${OPENWRT_VERSION:-25.12.4}"
-INSTALLER_VERSION="${INSTALLER_VERSION:-0.1.0}"
+INSTALLER_VERSION="${INSTALLER_VERSION:-v1.0-alpha.8-dev}"
 PROFILE="generic"
 IMAGE_TYPE="ext4-combined-efi"
 IMAGEBUILDER_ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
@@ -97,7 +97,9 @@ available_packages_file() {
 package_exists() {
 	pkg="$1"
 	index="$2"
-	grep -Fx "$pkg" "$index" >/dev/null 2>&1
+	grep -Fx "$pkg" "$index" >/dev/null 2>&1 && return 0
+	find "$IMAGEBUILDER_DIR/packages" -maxdepth 1 -type f \
+		-name "$pkg-*.apk" -print -quit 2>/dev/null | grep -q .
 }
 
 resolve_packages() {

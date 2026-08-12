@@ -52,6 +52,7 @@ Build individual stages:
 ```sh
 make download
 make target
+make mouse-packages
 make installer
 make iso
 ```
@@ -131,9 +132,23 @@ In SSH and xterm-compatible terminal emulators, ANSI menus also accept direct
 mouse clicks and wheel scrolling through the standard SGR mouse protocol. The
 same menus always remain usable with Up/Down and Enter. Mouse tracking is
 enabled only while a menu is open and is disabled during cleanup. Set
-`OWRT_UI_NO_MOUSE=1` to force keyboard-only operation. The packaged `whiptail`
-backend on the local Linux VGA console (`TERM=linux`) and serial consoles are
-keyboard-only.
+`OWRT_UI_NO_MOUSE=1` to force keyboard-only operation.
+
+Local VGA mouse input is available as an experimental, disabled-by-default
+mode. Append `owrt.mouse=1` to the installer kernel command line, or use
+`OWRT_LOCAL_MOUSE_ENABLE=1 owrt-install` for a manual session on `tty1`. The
+image contains GPM-enabled Newt/whiptail packages built by the pinned OpenWrt
+SDK and a daemon restricted to relative evdev pointers. Absolute-only tablets,
+serial consoles, and SSH do not activate this path. Failure or termination of
+the mouse daemon leaves all menus usable by keyboard. Connect the pointer
+before the installer starts; this prototype does not retry device discovery
+after hotplug.
+
+The mouse daemon is stopped and its private `0600` socket is removed before
+the exact `ERASE /dev/...` phrase. That destructive phrase is always entered
+with the keyboard. This local-console mode has passed the automated QEMU USB,
+PS/2, crash, cleanup, and fallback matrix, but remains experimental until a
+physical x86 machine test is completed.
 
 UI mode can be forced for debugging:
 
@@ -209,10 +224,8 @@ The installed system also contains `/etc/openwrt-installer-release`.
 
 - Add an OpenWrt configuration import step after target disk selection: choose
   between a clean install or importing configs/backups from a USB drive.
-- Investigate local VGA mouse input as a separate helper/package. The standard
-  keyboard flow remains the supported local-console path until an evdev-based
-  implementation has a threat model, QEMU USB mouse coverage, and hardware
-  validation.
+- Validate experimental local VGA mouse input on physical x86 hardware before
+  enabling it by default or documenting it as a supported input path.
 
 ## Checks
 
@@ -247,6 +260,16 @@ Run safe install-flow smoke tests for CLI flags and dry-run guards:
 ```sh
 make install-flow-smoke
 ```
+
+Run the experimental local-console mouse QEMU matrix after `make iso`:
+
+```sh
+make mouse-qemu-smoke
+```
+
+It covers USB relative click navigation, PS/2 activation, absolute-only tablet
+rejection, daemon-crash keyboard fallback, and cleanup before the exact erase
+confirmation.
 
 Run the full automated hybrid ISO gate after `make iso`. It covers BIOS, UEFI,
 the VGA curses framebuffer, a destructive install to a disposable qcow2 disk,
