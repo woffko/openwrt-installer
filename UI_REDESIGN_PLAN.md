@@ -37,7 +37,7 @@ Mouse support не должен быть базовым требованием �
 
 ```text
 +------------------------------------------------------------------------------+
-| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.2 |
+| OPENWRT HELLFORGE INSTALLER                                      v1.0-alpha.3 |
 +------------------------------------------------------------------------------+
 | Steps: [1 Disk] -> [2 LAN] -> [3 WAN] -> [4 Review] -> [5 Install]            |
 +------------------------------------------------------------------------------+
@@ -269,7 +269,7 @@ progress без надежного счетчика вроде `pv`.
 
 Цель: не выпускать красивый, но хрупкий installer.
 
-Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`. Текущий локальный ISO SHA-256: `a2ef9ef1fd969ed236158caaa38c6f9e473ce42f218f4efb0913aa7ec6ab2fef`; release `v1.0-alpha.2` не обновлялся. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Добавлен быстрый повторяемый `make ui-smoke` для line menu/stage/failure, ANSI stage, ANSI snapshot после strip ANSI/CR, red warning menu note, Ctrl+C cleanup, Esc cancel, dialog fallback и terminal-size checks. Auto-mode ANSI включается только при терминале минимум `80x24`. Добавлен `make install-flow-smoke` для `--dry-run`/`--skip-network-wizard` guards. Добавлен `make smoke` как быстрый non-ISO aggregate для syntax-check, shellcheck, ui-smoke и install-flow-smoke. Добавлен автоматический `make iso-smoke`, который bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
+Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`, runtime `INSTALLER_VERSION=v1.0-alpha.3`. Текущий локальный ISO SHA-256: `63a2067d01e1e8fb435a2ec9966155df2eedea5d1e5ad30442ff066f11e0f3ad`; `v1.0-alpha.3` публикуется отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Добавлен быстрый повторяемый `make ui-smoke` для line menu/stage/failure, ANSI stage, ANSI snapshot после strip ANSI/CR, red warning menu note, Ctrl+C cleanup, Esc cancel, dialog fallback и terminal-size checks. Auto-mode ANSI включается только при терминале минимум `80x24`. Добавлен `make install-flow-smoke` для `--dry-run`/`--skip-network-wizard` guards. Добавлен `make smoke` как быстрый non-ISO aggregate для syntax-check, shellcheck, ui-smoke и install-flow-smoke. Добавлен автоматический `make iso-smoke`, который bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
 
 Минимальная матрица:
 
@@ -344,5 +344,6 @@ progress без надежного счетчика вроде `pv`.
 18. [done] Добавить `menu_warning` и красную warning-секцию на выборе диска, покрытую ANSI snapshot smoke.
 19. [done] Уточнить auto-mode threshold до `80x24` и добавить terminal-size smoke для `80x24`/`80x23`.
 20. [done] Пересобрать актуальный локальный hybrid ISO после UI/runtime изменений и прогнать hash/initramfs/fdisk/xorriso/QEMU smoke checks.
-21. [pending] Добавить GitHub Actions `make smoke` gate на push/PR, когда доступный GitHub token/connection сможет записывать `.github/workflows/*` с `workflow` scope.
-22. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.
+21. [done] Подготовить `v1.0-alpha.3` как отдельный alpha release tag, не двигая старые alpha tags.
+22. [pending] Добавить GitHub Actions `make smoke` gate на push/PR, когда доступный GitHub token/connection сможет записывать `.github/workflows/*` с `workflow` scope.
+23. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.

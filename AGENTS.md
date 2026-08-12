@@ -11,10 +11,10 @@
 
 ## Current Artifacts
 
-- Current alpha release: `v1.0-alpha.2`.
+- Current alpha release: `v1.0-alpha.3`.
 - Current hybrid ISO: `output/openwrt-x86-64-installer-hybrid.iso`.
-- Current local ISO SHA-256: `a2ef9ef1fd969ed236158caaa38c6f9e473ce42f218f4efb0913aa7ec6ab2fef`.
-- Published `v1.0-alpha.2` release assets are older; do not move that tag.
+- Current local ISO SHA-256: `63a2067d01e1e8fb435a2ec9966155df2eedea5d1e5ad30442ff066f11e0f3ad`.
+- Older alpha release tags are preserved; do not move them.
 
 ## Semantic Navigation With LSP MCP
 

@@ -2,7 +2,7 @@
 
 set -eu
 
-INSTALLER_VERSION="0.1.0"
+INSTALLER_VERSION="v1.0-alpha.3"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 TARGET_MOUNT="/mnt/target"
