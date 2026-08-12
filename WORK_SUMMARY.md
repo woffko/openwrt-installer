@@ -10,10 +10,10 @@
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
 - Последняя функциональная правка: Hellforge install progress/log screen and failure screen.
-- Последний опубликованный release: `v1.0-alpha.1`.
-- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.1`.
+- Последний опубликованный release: `v1.0-alpha.2`.
+- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.2`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
-- Новый Hellforge ISO собран локально; для публикации нужен отдельный следующий alpha tag, старые release assets не двигать.
+- Старый release `v1.0-alpha.1` оставлен без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, ANSI-first, optional `dialog`/mouse later).

@@ -136,7 +136,7 @@ run_xorrisofs \
 	-no-emul-boot \
 	"$iso_root"
 
-sha256sum "$iso_image" > "$iso_image.sha256"
+write_sidecar_checksum "$iso_image"
 update_output_checksums
 
 log "Hybrid ISO ready: $iso_image"

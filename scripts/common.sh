@@ -144,6 +144,16 @@ find_imagebuilder_artifact() {
 	printf '%s\n' "$artifact"
 }
 
+write_sidecar_checksum() {
+	file="$1"
+	dir="$(dirname "$file")"
+	name="$(basename "$file")"
+	(
+		cd "$dir"
+		sha256sum "$name"
+	) > "$file.sha256"
+}
+
 update_output_checksums() {
 	mkdir -p "$OUTPUT_DIR"
 	tmp="$OUTPUT_DIR/sha256sums.txt.tmp"

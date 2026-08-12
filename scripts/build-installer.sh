@@ -55,8 +55,7 @@ make -C "$IMAGEBUILDER_DIR" image \
 
 artifact="$(find_imagebuilder_artifact)"
 cp "$artifact" "$OUTPUT_DIR/openwrt-x86-64-installer.img.gz"
-sha256sum "$OUTPUT_DIR/openwrt-x86-64-installer.img.gz" > \
-	"$OUTPUT_DIR/openwrt-x86-64-installer.img.gz.sha256"
+write_sidecar_checksum "$OUTPUT_DIR/openwrt-x86-64-installer.img.gz"
 update_output_checksums
 
 log "Installer image ready: $OUTPUT_DIR/openwrt-x86-64-installer.img.gz"
