@@ -114,9 +114,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-08bf401e0454169e9ad7f80e71b78aa67b1ad0ffc82940a78bf3c77fbdddba8d  openwrt-x86-64-installer.img.gz
-4cbf708683f9aa55a9303e8503cdd467661c0263a748bb176b9177bf1191a0ed  openwrt-x86-64-installer-hybrid.iso
-d1bf004c9608bbecde118f355a41d1860fce32529aecd542bab2c5628b8f47fc  manifest.json
+e7b64af24c6b36dc88be71988868d3818b0e271ba45ef20def9feaa5930a4589  openwrt-x86-64-installer.img.gz
+c7bf2e45910184f9402e50ddbb65e23947a1e3cebd7fb3895520a690f20cef1b  openwrt-x86-64-installer-hybrid.iso
+ac898d815376f7e4a35c06a0fcba465bea16892bdadf03d4357a79b05e22c26e  manifest.json
 ```
 
 ## Проверки
@@ -148,9 +148,10 @@ d1bf004c9608bbecde118f355a41d1860fce32529aecd542bab2c5628b8f47fc  manifest.json
 - line smoke для static WAN invalid IP/gateway/DNS retry и WAN6 disabled;
 - line smoke для PPPoE + DHCPv6/PD с проверкой, что password не появляется в review;
 - ANSI pseudo-TTY smoke для LAN form error screen через `script`;
-- сборка нового hybrid ISO после Hellforge TUI;
+- сборка нового hybrid ISO после Hellforge TUI и structured network forms;
 - проверка `sha256sum -c output/sha256sums.txt`;
 - проверка initramfs через `cpio`, что внутри есть `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`;
+- проверка строк structured forms внутри initramfs: `LAN IPv4 settings`, `Static WAN IPv4 settings`, `Disabled / no WAN IPv6`, note про отсутствие отдельного PPPoE IPv6 режима;
 - BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
 - UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
 - на serial видно, что live installer управляется `/etc/inittab` на `tty1`; полноэкранный TUI проверяется на локальной VGA/tty1, а serial остается fallback/login каналом.
