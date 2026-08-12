@@ -278,7 +278,7 @@ ui_screen_begin() {
 
 ui_footer() {
 	ui_rule
-	ui_line "Up/Down Move  Enter Select  q Cancel"
+	ui_line "Up/Down Move  Enter Select  Esc/q Cancel"
 	ui_rule
 }
 
@@ -452,6 +452,15 @@ read_one_key() {
 	dd bs=1 count=1 2>/dev/null || true
 }
 
+read_optional_key() {
+	current_state="$(stty -g 2>/dev/null || true)"
+	stty min 0 time 1 2>/dev/null || true
+	dd bs=1 count=1 2>/dev/null || true
+	if [ -n "$current_state" ]; then
+		stty "$current_state" 2>/dev/null || true
+	fi
+}
+
 ui_restore_tty() {
 	if [ -n "$TTY_STATE" ]; then
 		stty "$TTY_STATE" 2>/dev/null || true
@@ -492,8 +501,12 @@ select_from_menu() {
 			render_arrow_menu "$title" "$selected"
 			key="$(read_one_key)"
 			if [ "$key" = "$esc" ]; then
-				key2="$(read_one_key)"
-				key3="$(read_one_key)"
+				key2="$(read_optional_key)"
+				if [ -z "$key2" ]; then
+					ui_restore_tty
+					die "Selection cancelled"
+				fi
+				key3="$(read_optional_key)"
 				case "$key2$key3" in
 					"[A")
 						[ "$selected" -gt 1 ] && selected=$((selected - 1))

@@ -154,6 +154,51 @@ run_ansi_menu_ctrl_c_smoke() {
 	assert_not_contains "$out_file" "unexpected-success"
 }
 
+run_ansi_menu_esc_smoke() {
+	work_dir="$1"
+	out_file="$2"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; ANSI Esc cancel smoke skipped.\n'
+		return 0
+	fi
+
+	if ! script -q -e -c true "$work_dir/script-esc-return.out" >/dev/null 2>&1; then
+		printf 'SKIP: script(1) has no usable -e support; ANSI Esc cancel smoke skipped.\n'
+		return 0
+	fi
+
+	harness="$work_dir/ansi-menu-esc.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf 'OWRT_INSTALL_TEST_SOURCE_ONLY=1 UI_LIB=%s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'export OWRT_INSTALL_TEST_SOURCE_ONLY UI_LIB'
+		printf '. %s\n' "$(shell_quote "$INSTALLER")"
+		printf '%s\n' 'INSTALLER_VERSION=smoke'
+		printf 'MENU_LIST=%s\n' "$(shell_quote "$work_dir/menu-esc")"
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'menu_reset'
+		printf '%s\n' 'menu_add "one" "One"'
+		printf '%s\n' 'menu_add "two" "Two"'
+		printf '%s\n' 'select_from_menu "Esc cancel" "value"'
+		printf '%s\n' 'printf "unexpected-success\n"'
+	} > "$harness"
+	chmod +x "$harness"
+
+	set +e
+	( sleep 1; printf '\033'; sleep 1; printf '\n' ) |
+		OWRT_UI_MODE=ansi TERM=xterm script -q -e -c "$harness" "$out_file" >/dev/null 2>&1
+	status="$?"
+	set -e
+
+	[ "$status" -eq 1 ] || fail "ANSI Esc cancel smoke exited with $status instead of 1"
+	assert_contains "$out_file" "Esc cancel"
+	assert_contains "$out_file" "ERROR: Selection cancelled"
+	assert_contains "$out_file" "$(printf '\033[?25h')"
+	assert_not_contains "$out_file" "unexpected-success"
+}
+
 run_dialog_mode_smoke() {
 	work_dir="$1"
 	out_file="$2"
@@ -250,6 +295,7 @@ run_line_stage_smoke "$log_file" "$work_dir/line-stage.out"
 run_line_menu_smoke "$work_dir" "$work_dir/line-menu.out"
 run_ansi_stage_smoke "$work_dir" "$log_file" "$work_dir/ansi-stage.out"
 run_ansi_menu_ctrl_c_smoke "$work_dir" "$work_dir/ansi-menu-ctrl-c.out"
+run_ansi_menu_esc_smoke "$work_dir" "$work_dir/ansi-menu-esc.out"
 run_dialog_mode_smoke "$work_dir" "$work_dir/dialog-mode.out"
 run_terminal_size_smoke "$work_dir"
 
