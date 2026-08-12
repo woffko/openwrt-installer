@@ -171,6 +171,8 @@ OWRT_UI_DEBUG=1
 
 Текущий статус на 2026-08-12: первая итерация structured forms реализована без новых зависимостей. `prompt_default` и `prompt_secret` умеют показывать context, example, current/default и error zone. LAN IPv4/CIDR, PPPoE username/password, static WAN IPv4/gateway/DNS и WAN IPv6 выбор используют этот слой. Ошибки валидации возвращают только к текущему полю; PPPoE password не попадает в review. Полноценный Back/Edit flow остается future work.
 
+Дополнение на 2026-08-12: добавлен безопасный review action loop перед финальным `ERASE`. Пользователь может продолжить к точному destructive confirmation, заново пройти выбор LAN/WAN и network settings или отменить установку. Это не запускает запись диска с review screen напрямую.
+
 Работы:
 
 - Заменить отдельные prompts на structured form screens:
@@ -319,5 +321,5 @@ OWRT_UI_DEBUG=1
 5. [done] Прогнать QEMU BIOS/UEFI smoke на ISO после следующей сборки.
 6. [done] После стабилизации глубже перевести network wizard forms.
 7. [done] Только после этого заниматься `dialog --mouse`.
-8. [pending] Добавить настоящий Back/Edit flow для network forms без риска случайного destructive continue.
+8. [done] Добавить настоящий Back/Edit flow для network forms без риска случайного destructive continue.
 9. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.

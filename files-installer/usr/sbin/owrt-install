@@ -882,6 +882,39 @@ confirm_erase() {
 	[ "$answer" = "$expected" ] || die "Confirmation did not match; installation cancelled"
 }
 
+review_and_confirm() {
+	while :; do
+		show_summary
+		[ "$ASSUME_YES" = "1" ] && return 0
+
+		menu_reset
+		menu_note "No disk write starts from this screen. Continue only opens the final exact ERASE confirmation."
+		menu_add "continue" "Continue to final ERASE confirmation"
+		if [ "$SKIP_NETWORK" != "1" ]; then
+			menu_add "edit-network" "Edit LAN/WAN interfaces and network settings"
+		fi
+		menu_add "cancel" "Cancel and return to shell"
+		select_from_menu "Review action" "review action"
+
+		case "$SELECTED_VALUE" in
+			continue)
+				confirm_erase
+				return 0
+				;;
+			edit-network)
+				select_network
+				validate_network_settings
+				;;
+			cancel)
+				die "Installation cancelled"
+				;;
+			*)
+				die "Unsupported review action: $SELECTED_VALUE"
+				;;
+		esac
+	done
+}
+
 post_install_menu() {
 	if ui_ansi_active || ui_dialog_active; then
 		menu_reset
@@ -933,8 +966,7 @@ run_install() {
 		fi
 	fi
 
-	show_summary
-	confirm_erase
+	review_and_confirm
 
 	if [ "$DRY_RUN" = "1" ]; then
 		log "Dry run complete; no changes were made"

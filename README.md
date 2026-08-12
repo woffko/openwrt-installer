@@ -132,6 +132,10 @@ events. The standard build currently falls back to ANSI because the OpenWrt
 `25.12.4` ImageBuilder used here does not provide the optional `dialog`
 package. Use `OWRT_UI_NO_MOUSE=1` to force keyboard-only `dialog` mode.
 
+Before the final destructive confirmation, the review screen offers a safe
+action menu: continue to the exact `ERASE /dev/...` prompt, edit LAN/WAN
+interfaces and network settings, or cancel back to the shell.
+
 Unattended-style invocation still requires the explicit destructive flag:
 
 ```sh
