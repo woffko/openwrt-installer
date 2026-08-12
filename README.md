@@ -117,7 +117,8 @@ arrow-key menus, `Esc`/`q` cancel, framed review screens, red destructive
 warnings, and install-stage status screens. Network forms show context,
 examples, defaults, and local validation errors before the final review.
 Serial, dumb terminals, pipes, and narrow terminals fall back to the plain
-numbered line UI.
+numbered line UI. Auto mode uses the ANSI TUI only when the terminal is at
+least `80x24`.
 
 UI mode can be forced for debugging:
 

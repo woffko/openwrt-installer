@@ -122,7 +122,7 @@ setup_ui() {
 			;;
 		auto|"")
 			if [ -t 0 ] && [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] &&
-				! ui_is_serial && [ "$UI_WIDTH" -ge 80 ] && [ "$UI_HEIGHT" -ge 20 ]; then
+				! ui_is_serial && [ "$UI_WIDTH" -ge 80 ] && [ "$UI_HEIGHT" -ge 24 ]; then
 				if command -v dialog >/dev/null 2>&1; then
 					UI_MODE_ACTUAL="dialog"
 					ui_dialog_setup_theme

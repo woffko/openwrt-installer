@@ -269,7 +269,7 @@ progress без надежного счетчика вроде `pv`.
 
 Цель: не выпускать красивый, но хрупкий installer.
 
-Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Добавлен быстрый повторяемый `make ui-smoke` для line menu/stage/failure, ANSI stage, ANSI snapshot после strip ANSI/CR, red warning menu note, Ctrl+C cleanup, Esc cancel, dialog fallback и terminal-size checks. Добавлен `make install-flow-smoke` для `--dry-run`/`--skip-network-wizard` guards. Добавлен `make smoke` как быстрый non-ISO aggregate для syntax-check, shellcheck, ui-smoke и install-flow-smoke. Добавлен автоматический `make iso-smoke`, который bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
+Текущий статус на 2026-08-12: базовая матрица для первой Hellforge ANSI итерации пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install` и `usr/libexec/owrt-installer-ui`. BIOS и UEFI QEMU smoke-test доходят до GRUB, kernel/initramfs и OpenWrt serial console; логи сохранены в `build/qemu-iso-smoke/bios-iso.log` и `build/qemu-iso-smoke/uefi-iso.log`. Добавлен быстрый повторяемый `make ui-smoke` для line menu/stage/failure, ANSI stage, ANSI snapshot после strip ANSI/CR, red warning menu note, Ctrl+C cleanup, Esc cancel, dialog fallback и terminal-size checks. Auto-mode ANSI включается только при терминале минимум `80x24`. Добавлен `make install-flow-smoke` для `--dry-run`/`--skip-network-wizard` guards. Добавлен `make smoke` как быстрый non-ISO aggregate для syntax-check, shellcheck, ui-smoke и install-flow-smoke. Добавлен автоматический `make iso-smoke`, который bounded-запуском QEMU проверяет BIOS и UEFI boot текущего hybrid ISO по лог-маркерам.
 
 Минимальная матрица:
 
@@ -289,7 +289,7 @@ progress без надежного счетчика вроде `pv`.
 Дополнительно:
 
 - ANSI snapshot test: рендер меню в temp TTY или captured output, затем strip ANSI и проверка ключевых строк.
-- Проверка terminal size: 80x25, 100x30, слишком узкий экран.
+- Проверка terminal size: 80x25, 80x24, 80x23, 100x30, слишком узкий экран.
 - Проверка dialog backend только если package реально есть в live image.
 
 ## Фаза 6: Документация И Release
@@ -342,5 +342,6 @@ progress без надежного счетчика вроде `pv`.
 16. [done] Добавить bare Esc cancel для ANSI menu и smoke-test: pseudo-TTY, delayed Enter на cancel screen, без случайного выбора.
 17. [done] Добавить ANSI snapshot smoke: render menu в pseudo-TTY, strip ANSI/CR, проверить header/steps/items/footer без escape-мусора.
 18. [done] Добавить `menu_warning` и красную warning-секцию на выборе диска, покрытую ANSI snapshot smoke.
-19. [pending] Добавить GitHub Actions `make smoke` gate на push/PR, когда доступный GitHub token/connection сможет записывать `.github/workflows/*` с `workflow` scope.
-20. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.
+19. [done] Уточнить auto-mode threshold до `80x24` и добавить terminal-size smoke для `80x24`/`80x23`.
+20. [pending] Добавить GitHub Actions `make smoke` gate на push/PR, когда доступный GitHub token/connection сможет записывать `.github/workflows/*` с `workflow` scope.
+21. [pending] Проверить настоящий `dialog --mouse` внутри live image, когда пакет `dialog` станет доступен в OpenWrt feeds или будет добавлен отдельным opkg/apk artifact.

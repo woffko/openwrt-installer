@@ -322,6 +322,8 @@ run_terminal_size_smoke() {
 	work_dir="$1"
 
 	run_terminal_size_smoke_case "$work_dir" 25 80 tui
+	run_terminal_size_smoke_case "$work_dir" 24 80 tui
+	run_terminal_size_smoke_case "$work_dir" 23 80 line
 	run_terminal_size_smoke_case "$work_dir" 30 100 tui
 	run_terminal_size_smoke_case "$work_dir" 19 79 line
 }
