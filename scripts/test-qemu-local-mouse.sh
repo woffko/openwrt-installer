@@ -16,6 +16,7 @@ QEMU_MEMORY="${QEMU_MEMORY:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
 LOCAL_QEMU_ROOT="$BUILD_DIR/qemu-local/root"
 QEMU_PID=""
+VM_DISK=""
 SERIAL_LOG=""
 SERIAL_SOCKET=""
 MONITOR_SOCKET=""
@@ -59,6 +60,24 @@ wait_for_marker() {
 	done
 	tail -n 100 "$SERIAL_LOG" >&2 2>/dev/null || true
 	die "Timed out waiting for marker: $marker"
+}
+
+wait_for_marker_count() {
+	marker="$1"
+	expected_count="$2"
+	elapsed=0
+	while [ "$elapsed" -lt "$QEMU_WAIT" ]; do
+		count="$(grep -F -c "$marker" "$SERIAL_LOG" 2>/dev/null || true)"
+		[ "$count" -ge "$expected_count" ] && return 0
+		if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+			wait "$QEMU_PID" || true
+			tail -n 100 "$SERIAL_LOG" >&2 2>/dev/null || true
+			die "QEMU exited before marker count $expected_count: $marker"
+		fi
+		sleep 1
+		elapsed=$((elapsed + 1))
+	done
+	die "Timed out waiting for marker count $expected_count: $marker"
 }
 
 assert_marker() {
@@ -112,6 +131,7 @@ start_vm() {
 	MONITOR_SOCKET="$SMOKE_DIR/$name-monitor.sock"
 	qemu_log="$SMOKE_DIR/$name-qemu.log"
 	disk="$SMOKE_DIR/$name.raw"
+	VM_DISK="$disk"
 
 	stop_vm
 	rm -f "$SERIAL_LOG" "$SERIAL_SOCKET" "$MONITOR_SOCKET" "$qemu_log" "$disk"
@@ -198,9 +218,11 @@ run_absolute_rejection() {
 }
 
 run_exact_confirmation_cleanup() {
-	log "Testing GPM shutdown before exact ERASE confirmation"
-	start_vm exact-confirm "" -device qemu-xhci -device usb-mouse
+	log "Testing hardware dry-run, exact-confirmation cleanup, and disk immutability"
+	start_vm exact-confirm "owrt.hardware-test=1" -device qemu-xhci -device usb-mouse
 	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE=active"
+	assert_marker "OWRT_INSTALLER_HARDWARE_TEST=active"
+	before_hash="$(sha256sum "$VM_DISK" | awk '{ print $1 }')"
 	hmp_keys ret
 	wait_for_marker "OWRT_INSTALLER_UI_READY=lan-interface"
 	hmp_keys ret
@@ -227,7 +249,15 @@ run_exact_confirmation_cleanup() {
 
 	serial_command "if [ ! -S /dev/gpmctl ] && [ ! -e /var/run/gpm.pid ] && [ ! -e /tmp/owrt-installer-mouse/state ]; then echo OWRT_MOUSE_RUNTIME_CLEAN; else echo OWRT_MOUSE_RUNTIME_DIRTY; fi"
 	wait_for_marker "OWRT_MOUSE_RUNTIME_CLEAN"
+	hmp_keys shift-e shift-r shift-a shift-s shift-e spc slash d e v slash v d a ret
+	wait_for_marker "OWRT_INSTALLER_DRY_RUN_COMPLETE=1"
+	hmp_keys ret
+	wait_for_marker_count "OWRT_INSTALLER_LOCAL_MOUSE=stopped" 2
+	serial_command "if [ ! -S /dev/gpmctl ] && [ ! -e /var/run/gpm.pid ] && [ ! -e /tmp/owrt-installer-mouse/state ]; then echo OWRT_MOUSE_DRY_RUN_CLEAN; else echo OWRT_MOUSE_DRY_RUN_DIRTY; fi"
+	wait_for_marker "OWRT_MOUSE_DRY_RUN_CLEAN"
 	stop_vm
+	after_hash="$(sha256sum "$VM_DISK" | awk '{ print $1 }')"
+	[ "$before_hash" = "$after_hash" ] || die "Hardware dry-run changed the target disk"
 }
 
 cleanup() {
@@ -242,6 +272,7 @@ require_cmd timeout
 require_cmd nc
 require_cmd truncate
 require_cmd seq
+require_cmd sha256sum
 mkdir -p "$SMOKE_DIR"
 
 QEMU_SYSTEM="$(find_qemu_system)" || die "qemu-system-x86_64 is required"

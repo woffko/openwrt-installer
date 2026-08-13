@@ -11,6 +11,20 @@ clear_console() {
 	[ -t 1 ] && printf '\033[2J\033[H'
 }
 
+kernel_arg_enabled() {
+	needle="$1"
+	[ -r /proc/cmdline ] || return 1
+	case " $(cat /proc/cmdline) " in
+		*" $needle "*) return 0 ;;
+	esac
+	return 1
+}
+
+serial_marker() {
+	[ -w /dev/ttyS0 ] || return 0
+	printf '%s\n' "$1" > /dev/ttyS0 2>/dev/null || true
+}
+
 quiet_kernel_console() {
 	if [ -w /proc/sys/kernel/printk ]; then
 		printf '4 4 1 7\n' > /proc/sys/kernel/printk
@@ -85,6 +99,10 @@ fi
 
 if mkdir /tmp/owrt-installer-autostart.lock 2>/dev/null; then
 	prepare_for_installer
+	if kernel_arg_enabled owrt.hardware-test=1 || kernel_arg_enabled owrt.dryrun=1; then
+		serial_marker "OWRT_INSTALLER_HARDWARE_TEST=active"
+		exec /usr/sbin/owrt-install --autostart --dry-run
+	fi
 	exec /usr/sbin/owrt-install --autostart
 fi
 

@@ -1101,16 +1101,25 @@ ui_welcome_screen() {
 		if [ "$auto_started" = "1" ]; then
 			ui_line "Autostart mode: installer launched from the boot console."
 		fi
-		ui_line "This installer writes a prebuilt OpenWrt image to a disk."
-		ui_line "The selected disk will be erased only after final confirmation."
+		if [ "${DRY_RUN:-0}" = "1" ]; then
+			ui_line_warning "HARDWARE TEST / DRY RUN"
+			ui_line "The full wizard and confirmation gate will run without disk writes."
+		else
+			ui_line "This installer writes a prebuilt OpenWrt image to a disk."
+			ui_line "The selected disk will be erased only after final confirmation."
+		fi
 		ui_rule
 		ui_show_cursor
 	else
 		clear_screen
 		printf '\nOpenWrt x86 Installer %s\n\n' "$version"
 		[ "$auto_started" = "1" ] && printf 'Autostart mode: installer launched from boot console.\n\n'
-		printf 'This installer writes a prebuilt OpenWrt image to a disk.\n'
-		printf 'The selected disk will be erased completely.\n\n'
+		if [ "${DRY_RUN:-0}" = "1" ]; then
+			printf 'HARDWARE TEST / DRY RUN: the wizard will not write any disk.\n\n'
+		else
+			printf 'This installer writes a prebuilt OpenWrt image to a disk.\n'
+			printf 'The selected disk will be erased completely.\n\n'
+		fi
 	fi
 }
 
@@ -1163,9 +1172,15 @@ WAN IPv6: $(wan6_label "$WAN6_PROTO")"
 			[ "$WAN_PROTO" = "disabled" ] || body="$body
 NAT: enabled"
 		fi
-		body="$body
+		if [ "${DRY_RUN:-0}" = "1" ]; then
+			body="$body
+
+HARDWARE TEST / DRY RUN: $TARGET WILL NOT BE WRITTEN."
+		else
+			body="$body
 
 ALL DATA ON $TARGET WILL BE ERASED."
+		fi
 		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Review installation" --msgbox "$body" 0 0 ||
 			die "Review cancelled"
 		return 0
@@ -1189,7 +1204,11 @@ ALL DATA ON $TARGET WILL BE ERASED."
 		[ "$WAN_PROTO" = "disabled" ] || ui_line "NAT: enabled"
 	fi
 	ui_blank
-	ui_line_warning "ALL DATA ON $TARGET WILL BE ERASED."
+	if [ "${DRY_RUN:-0}" = "1" ]; then
+		ui_line_warning "HARDWARE TEST / DRY RUN: $TARGET WILL NOT BE WRITTEN."
+	else
+		ui_line_warning "ALL DATA ON $TARGET WILL BE ERASED."
+	fi
 	ui_rule
 	ui_show_cursor
 	return 0
@@ -1198,10 +1217,17 @@ ALL DATA ON $TARGET WILL BE ERASED."
 ui_confirm_erase_screen() {
 	expected="$1"
 	ui_ready_marker "Final erase confirmation"
+	if [ "${DRY_RUN:-0}" = "1" ]; then
+		heading="SAFE DRY RUN"
+		detail="Type the exact string to test the keyboard-only gate. No disk write follows."
+	else
+		heading="DESTRUCTIVE ACTION"
+		detail="Type this exact confirmation string in the next prompt:"
+	fi
 	if ui_dialog_active; then
-		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Final erase confirmation" --msgbox "DESTRUCTIVE ACTION
+		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Final erase confirmation" --msgbox "$heading
 
-Type this exact confirmation string in the next prompt:
+$detail
 
 $expected" 0 0 ||
 			die "Confirmation cancelled"
@@ -1209,8 +1235,8 @@ $expected" 0 0 ||
 	fi
 	if ui_ansi_active; then
 		ui_screen_begin "Final erase confirmation"
-		ui_line_warning "DESTRUCTIVE ACTION"
-		ui_line "Type the exact confirmation string to start writing the image."
+		ui_line_warning "$heading"
+		ui_line "$detail"
 		ui_blank
 		ui_line "$expected"
 		ui_rule

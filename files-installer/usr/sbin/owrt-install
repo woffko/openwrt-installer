@@ -519,7 +519,11 @@ validate_target_disk() {
 
 select_target_disk() {
 	build_disk_menu
-	menu_warning "WARNING: selected disk will be erased after final confirmation."
+	if [ "$DRY_RUN" = "1" ]; then
+		menu_warning "HARDWARE TEST: the selected disk will not be written."
+	else
+		menu_warning "WARNING: selected disk will be erased after final confirmation."
+	fi
 	select_from_menu "Select target disk" "target disk"
 	TARGET="$SELECTED_VALUE"
 }
@@ -1165,7 +1169,11 @@ show_summary() {
 		printf '  WAN6:        %s\n' "$(wan6_label "$WAN6_PROTO")"
 		[ "$WAN_PROTO" = "disabled" ] || printf '  NAT:         enabled\n'
 	fi
-	printf '\nALL DATA ON %s WILL BE ERASED.\n\n' "$TARGET"
+	if [ "$DRY_RUN" = "1" ]; then
+		printf '\nHARDWARE TEST / DRY RUN: %s WILL NOT BE WRITTEN.\n\n' "$TARGET"
+	else
+		printf '\nALL DATA ON %s WILL BE ERASED.\n\n' "$TARGET"
+	fi
 }
 
 confirm_erase() {
@@ -1188,7 +1196,11 @@ review_and_confirm() {
 		[ "$ASSUME_YES" = "1" ] && return 0
 
 		menu_reset
-		menu_note "No disk write starts from this screen. Continue only opens the final exact ERASE confirmation."
+		if [ "$DRY_RUN" = "1" ]; then
+			menu_note "Hardware test: continue exercises the exact ERASE gate, but no disk write is permitted."
+		else
+			menu_note "No disk write starts from this screen. Continue only opens the final exact ERASE confirmation."
+		fi
 		menu_add "continue" "Continue to final ERASE confirmation"
 		if [ "$SKIP_NETWORK" != "1" ]; then
 			menu_add "edit-network" "Edit LAN/WAN interfaces and network settings"
@@ -1275,6 +1287,8 @@ run_install() {
 
 	if [ "$DRY_RUN" = "1" ]; then
 		log "Dry run complete; no changes were made"
+		autostart_serial_marker "OWRT_INSTALLER_DRY_RUN_COMPLETE=1"
+		ui_notice "Dry run complete" "Hardware test passed the installer flow. No disk changes were made."
 		return 0
 	fi
 

@@ -10,6 +10,7 @@ for script in \
 	"$project_dir"/files-installer/usr/libexec/owrt-installer-autostart \
 	"$project_dir"/files-installer/usr/libexec/owrt-installer-local-mouse \
 	"$project_dir"/files-installer/usr/libexec/owrt-installer-ui \
+	"$project_dir"/files-installer/usr/sbin/owrt-hardware-report \
 	"$project_dir"/files-installer/usr/sbin/owrt-install \
 	"$project_dir"/files-target/etc/uci-defaults/98-installer-network
 do

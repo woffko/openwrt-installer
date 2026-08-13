@@ -150,6 +150,14 @@ with the keyboard. This local-console mode has passed the automated QEMU USB,
 PS/2, crash, cleanup, and fallback matrix, but remains experimental until a
 physical x86 machine test is completed.
 
+For bare-metal validation, GRUB also provides **Mouse hardware test (no disk
+writes)**. It runs the real disk and network wizard, including the exact erase
+gate, with `--dry-run` forced from the kernel command line. A successful flow
+ends with an explicit no-changes dialog. Run `owrt-hardware-report` afterward
+to create a privacy-safe acceptance report. Follow
+[PHYSICAL_X86_MOUSE_TEST.md](PHYSICAL_X86_MOUSE_TEST.md); use a disposable test
+machine and non-essential target disk even in dry-run mode.
+
 UI mode can be forced for debugging:
 
 ```sh
@@ -268,8 +276,8 @@ make mouse-qemu-smoke
 ```
 
 It covers USB relative click navigation, PS/2 activation, absolute-only tablet
-rejection, daemon-crash keyboard fallback, and cleanup before the exact erase
-confirmation.
+rejection, daemon-crash keyboard fallback, cleanup before the exact erase
+confirmation, the forced hardware dry-run flow, and target-disk immutability.
 
 Run the full automated hybrid ISO gate after `make iso`. It covers BIOS, UEFI,
 the VGA curses framebuffer, a destructive install to a disposable qcow2 disk,

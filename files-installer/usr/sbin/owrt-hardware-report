@@ -1,0 +1,166 @@
+#!/bin/sh
+
+set -eu
+
+OUTPUT="${1:-/tmp/owrt-hardware-report.txt}"
+CMDLINE_FILE="${OWRT_HW_CMDLINE_FILE:-/proc/cmdline}"
+INPUT_CLASS="${OWRT_HW_INPUT_CLASS:-/sys/class/input}"
+APK_DB="${OWRT_HW_APK_DB:-/lib/apk/db/installed}"
+INSTALL_LOG="${OWRT_HW_INSTALL_LOG:-/tmp/owrt-installer.log}"
+INSTALLER_BIN="${OWRT_HW_INSTALLER_BIN:-/usr/sbin/owrt-install}"
+PROC_ROOT="${OWRT_HW_PROC_ROOT:-/proc}"
+GPM_PID_FILE="${OWRT_HW_GPM_PID_FILE:-/var/run/gpm.pid}"
+GPM_SOCKET="${OWRT_HW_GPM_SOCKET:-/dev/gpmctl}"
+MOUSE_STATE="${OWRT_HW_MOUSE_STATE:-/tmp/owrt-installer-mouse/state}"
+
+has_cmdline_arg() {
+	needle="$1"
+	[ -r "$CMDLINE_FILE" ] || return 1
+	case " $(cat "$CMDLINE_FILE") " in
+		*" $needle "*) return 0 ;;
+	esac
+	return 1
+}
+
+package_version() {
+	package="$1"
+	[ -r "$APK_DB" ] || {
+		printf 'unknown\n'
+		return
+	}
+	awk -F: -v package="$package" '
+		$1 == "P" { current = $2 }
+		current == package && $1 == "V" { print $2; exit }
+	' "$APK_DB"
+}
+
+installer_version() {
+	[ -r "$INSTALLER_BIN" ] || {
+		printf 'unknown\n'
+		return
+	}
+	sed -n 's/^INSTALLER_VERSION="\([^"]*\)"/\1/p' "$INSTALLER_BIN" | head -n 1
+}
+
+log_has() {
+	pattern="$1"
+	[ -r "$INSTALL_LOG" ] && grep -F "$pattern" "$INSTALL_LOG" >/dev/null 2>&1
+}
+
+gpm_is_running() {
+	for comm in "$PROC_ROOT"/[0-9]*/comm; do
+		[ -r "$comm" ] || continue
+		[ "$(cat "$comm" 2>/dev/null || true)" = "gpm" ] && return 0
+	done
+	return 1
+}
+
+ask_result() {
+	prompt="$1"
+	if [ "${OWRT_HW_REPORT_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
+		printf 'skipped\n'
+		return
+	fi
+	while :; do
+		printf '%s [p=pass/f=fail/s=skip]: ' "$prompt" >&2
+		IFS= read -r answer || answer=s
+		case "$answer" in
+			p|P|pass|PASS) printf 'pass\n'; return ;;
+			f|F|fail|FAIL) printf 'fail\n'; return ;;
+			s|S|skip|SKIP|'') printf 'skipped\n'; return ;;
+		esac
+	done
+}
+
+value_or_unknown() {
+	value="$1"
+	[ -n "$value" ] && printf '%s' "$value" || printf 'unknown'
+}
+
+umask 077
+tmp_output="$OUTPUT.tmp.$$"
+trap 'rm -f "$tmp_output"' EXIT INT TERM
+: > "$tmp_output"
+
+if [ -d /sys/firmware/efi ]; then
+	boot_mode=uefi
+else
+	boot_mode=bios
+fi
+
+mouse_flag=no
+has_cmdline_arg owrt.mouse=1 && mouse_flag=yes
+hardware_test_flag=no
+has_cmdline_arg owrt.hardware-test=1 && hardware_test_flag=yes
+
+mouse_started=no
+log_has "[owrt-installer-mouse] active on " && mouse_started=yes
+mouse_stopped=no
+log_has "[owrt-installer-mouse] stopped" && mouse_stopped=yes
+dry_run_complete=no
+log_has "Dry run complete; no changes were made" && dry_run_complete=yes
+
+runtime_clean=yes
+gpm_is_running && runtime_clean=no
+[ ! -e "$GPM_PID_FILE" ] || runtime_clean=no
+[ ! -e "$GPM_SOCKET" ] || runtime_clean=no
+[ ! -e "$MOUSE_STATE" ] || runtime_clean=no
+
+manual_move="$(ask_result "Pointer movement was stable in the installer")"
+manual_click="$(ask_result "Click selected and submitted the intended UI control")"
+manual_wheel="$(ask_result "Wheel changed the highlighted menu item")"
+manual_keyboard="$(ask_result "Arrow keys and Enter remained usable")"
+manual_exact="$(ask_result "Mouse input stopped before the exact ERASE prompt")"
+
+{
+	printf 'report_schema=1\n'
+	printf 'installer_version=%s\n' "$(value_or_unknown "$(installer_version)")"
+	printf 'architecture=%s\n' "$(uname -m 2>/dev/null || printf unknown)"
+	printf 'kernel=%s\n' "$(uname -r 2>/dev/null || printf unknown)"
+	printf 'boot_mode=%s\n' "$boot_mode"
+	printf 'kernel_mouse_flag=%s\n' "$mouse_flag"
+	printf 'kernel_hardware_test_flag=%s\n' "$hardware_test_flag"
+	printf 'gpm_daemon_version=%s\n' "$(value_or_unknown "$(package_version gpm-daemon)")"
+	printf 'libnewt_version=%s\n' "$(value_or_unknown "$(package_version libnewt)")"
+	printf 'whiptail_version=%s\n' "$(value_or_unknown "$(package_version whiptail)")"
+	printf 'mouse_started=%s\n' "$mouse_started"
+	printf 'mouse_stopped=%s\n' "$mouse_stopped"
+	printf 'dry_run_complete=%s\n' "$dry_run_complete"
+	printf 'runtime_cleanup=%s\n' "$runtime_clean"
+	printf 'manual_pointer_move=%s\n' "$manual_move"
+	printf 'manual_click=%s\n' "$manual_click"
+	printf 'manual_wheel=%s\n' "$manual_wheel"
+	printf 'manual_keyboard=%s\n' "$manual_keyboard"
+	printf 'manual_exact_prompt_mouse_stop=%s\n' "$manual_exact"
+} >> "$tmp_output"
+
+pointer_count=0
+for event_path in "$INPUT_CLASS"/event*; do
+	[ -d "$event_path" ] || continue
+	rel_file="$event_path/device/capabilities/rel"
+	[ -r "$rel_file" ] || continue
+	rel_word="$(awk '{ print $NF }' "$rel_file" 2>/dev/null || true)"
+	case "$rel_word" in
+		''|*[!0-9a-fA-F]*) continue ;;
+	esac
+	rel_value="$(printf '%d' "0x$rel_word" 2>/dev/null || true)"
+	case "$rel_value" in
+		''|*[!0-9]*) continue ;;
+	esac
+	[ $((rel_value & 3)) -eq 3 ] || continue
+	pointer_count=$((pointer_count + 1))
+	id_dir="$event_path/device/id"
+	bus="$(cat "$id_dir/bustype" 2>/dev/null || true)"
+	vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
+	product="$(cat "$id_dir/product" 2>/dev/null || true)"
+	printf 'relative_pointer_%s=%s,bus=%s,vendor=%s,product=%s\n' \
+		"$pointer_count" "${event_path##*/}" \
+		"$(value_or_unknown "$bus")" "$(value_or_unknown "$vendor")" \
+		"$(value_or_unknown "$product")" >> "$tmp_output"
+done
+printf 'relative_pointer_count=%s\n' "$pointer_count" >> "$tmp_output"
+
+mv "$tmp_output" "$OUTPUT"
+trap - EXIT INT TERM
+printf 'Hardware report written to %s\n' "$OUTPUT" >&2
+cat "$OUTPUT"

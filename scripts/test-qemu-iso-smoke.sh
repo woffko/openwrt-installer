@@ -13,6 +13,7 @@ QEMU_ACCEL="${QEMU_ACCEL:-tcg}"
 QEMU_MEMORY="${QEMU_MEMORY:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
 QEMU_VGA_WAIT="${QEMU_VGA_WAIT:-100}"
+QEMU_HARDWARE_WAIT="${QEMU_HARDWARE_WAIT:-100}"
 QEMU_INSTALL_WAIT="${QEMU_INSTALL_WAIT:-300}"
 QEMU_INSTALL_TIMEOUT="${QEMU_INSTALL_TIMEOUT:-360s}"
 QEMU_UI_SETTLE="${QEMU_UI_SETTLE:-1}"
@@ -190,6 +191,57 @@ assert_common_boot_markers() {
 	assert_log_contains "$log_file" "Please press Enter to activate this console."
 	assert_log_contains "$log_file" "OpenWrt disk installer is managed by /etc/inittab on tty1."
 	assert_log_contains "$log_file" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+}
+
+run_hardware_menu_smoke() {
+	serial_log="$SMOKE_DIR/hardware-menu-iso.log"
+	qemu_log="$SMOKE_DIR/hardware-menu-qemu.log"
+	monitor_socket="$SMOKE_DIR/hardware-menu-monitor.sock"
+	target_disk="$SMOKE_DIR/target-hardware-menu.qcow2"
+
+	case "$QEMU_HARDWARE_WAIT" in
+		''|*[!0-9]*) die "QEMU_HARDWARE_WAIT must be an integer number of seconds" ;;
+	esac
+	ensure_qcow2 "$target_disk"
+	rm -f "$serial_log" "$qemu_log" "$monitor_socket"
+
+	log "Starting GRUB hardware-test menu smoke test"
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$QEMU_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" -L "$QEMU_L_ARG" \
+			-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+			-display none -vga std -serial "file:$serial_log" \
+			-monitor "unix:$monitor_socket,server=on,wait=off" \
+			-cdrom "$ISO_IMAGE" -boot d \
+			-drive "file=$target_disk,format=qcow2,if=virtio" \
+			-device qemu-xhci -device usb-mouse \
+			-nic user,model=e1000 -nic user,model=e1000 > "$qemu_log" 2>&1 &
+	else
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$QEMU_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" \
+			-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+			-display none -vga std -serial "file:$serial_log" \
+			-monitor "unix:$monitor_socket,server=on,wait=off" \
+			-cdrom "$ISO_IMAGE" -boot d \
+			-drive "file=$target_disk,format=qcow2,if=virtio" \
+			-device qemu-xhci -device usb-mouse \
+			-nic user,model=e1000 -nic user,model=e1000 > "$qemu_log" 2>&1 &
+	fi
+	qemu_pid=$!
+
+	wait_for_log_marker "$serial_log" "Mouse hardware test (no disk writes)" "$qemu_pid" 30
+	[ -S "$monitor_socket" ] || die "QEMU monitor socket was not created"
+	hmp_send_keys "$monitor_socket" down ret
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_HARDWARE_TEST=active" "$qemu_pid" "$QEMU_HARDWARE_WAIT"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" "$qemu_pid" "$QEMU_HARDWARE_WAIT"
+	hmp_command "$monitor_socket" quit
+	wait "$qemu_pid" || true
+
+	assert_log_contains "$serial_log" "owrt.mouse=1"
+	assert_log_contains "$serial_log" "owrt.hardware-test=1"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+	assert_log_not_contains "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS="
+	log "GRUB hardware-test menu smoke passed"
 }
 
 run_vga_smoke() {
@@ -452,8 +504,8 @@ run_uefi_smoke() {
 }
 
 case "$MODE" in
-	all|bios|uefi|vga|install) ;;
-	*) die "Usage: $0 [all|bios|uefi|vga|install]" ;;
+	all|bios|uefi|hardware|vga|install) ;;
+	*) die "Usage: $0 [all|bios|uefi|hardware|vga|install]" ;;
 esac
 
 [ -s "$ISO_IMAGE" ] || die "Hybrid ISO is missing. Run: make iso"
@@ -461,8 +513,12 @@ require_cmd timeout
 require_cmd grep
 require_cmd tail
 case "$MODE" in
-	all|vga|install)
+	all|hardware|vga|install)
 		require_cmd nc
+		;;
+	esac
+case "$MODE" in
+	all|vga|install)
 		require_cmd od
 		;;
 esac
@@ -476,6 +532,7 @@ case "$MODE" in
 	all)
 		run_bios_smoke
 		run_uefi_smoke
+		run_hardware_menu_smoke
 		run_vga_smoke
 		run_install_smoke
 		;;
@@ -484,6 +541,9 @@ case "$MODE" in
 		;;
 	uefi)
 		run_uefi_smoke
+		;;
+	hardware)
+		run_hardware_menu_smoke
 		;;
 	vga)
 		run_vga_smoke

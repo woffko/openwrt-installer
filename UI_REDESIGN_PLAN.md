@@ -335,13 +335,21 @@ x86_64 evdev ABI (`sizeof(struct input_event)` вместо hard-coded 16 bytes)
 поэтому физическую мышь нужно подключить до запуска.
 
 Финальный local artifact после полной пересборки имеет SHA-256
-`1718ad0e84ac083cabeaf6145f8d40eca10b9d1f694dc9fa13f17e900353d2be`.
+`1574d904d60d7c09fca76961a81e17610ac8c4d5c406b3d05a33c97e16ed19a0`.
 На нем повторно прошли `make smoke`, `make mouse-qemu-smoke` и полный
 `make iso-smoke`: BIOS, UEFI, VGA framebuffer, весь wizard, запись на
 одноразовый target disk и загрузка установленного `v1.0-alpha.8-dev` OpenWrt.
 Daemon-crash path дополнительно удаляет stale socket/PID/state внутри гостевой
 OpenWrt и сохраняет keyboard flow. Публикация release намеренно отложена до
 задачи 37.
+
+Безопасная подготовка к physical gate завершена: второй GRUB entry принудительно
+передает `owrt.mouse=1 owrt.hardware-test=1`, autostart преобразует его в
+`--dry-run`, UI явно маркирует все опасные экраны как safe dry-run, а
+`owrt-hardware-report` собирает privacy-safe результат. QEMU выбирает этот пункт
+в настоящем ISO, проходит exact confirmation и подтверждает полную неизменность
+target disk по SHA-256. Обычный default entry и destructive install-to-disk
+после изменения также повторно прошли acceptance.
 
 Минимальная матрица:
 
@@ -434,3 +442,5 @@ OpenWrt и сохраняет keyboard flow. Публикация release нам
 35. [done] Добавить pinned OpenWrt SDK-сборку GPM-enabled `libnewt`/`whiptail` и hardened daemon-only `gpm-daemon`; включить input/HID modules и `coreutils-stat` только в installer profile.
 36. [done] Добавить QEMU acceptance: `/dev/input/event*`, PS/2 и USB relative mouse, rejection USB absolute-only tablet, click selection, daemon crash, exact-confirmation shutdown, cleanup socket/process и полный keyboard fallback.
 37. [pending] После QEMU gate проверить local mouse на физической x86 машине; до этого не публиковать ее как поддерживаемую функцию и не включать автоматический runtime path по умолчанию.
+38. [done] Подготовить безопасный bare-metal acceptance path: отдельный GRUB hardware-test entry с forced dry-run, явные safe-mode screens, QEMU disk-immutability proof, privacy-safe `owrt-hardware-report` и `PHYSICAL_X86_MOUSE_TEST.md`.
+39. [pending] Закрыть physical alpha gate одним успешным wired USB HID report; перед включением mouse path по умолчанию получить второй pass на другом platform/input-controller class.

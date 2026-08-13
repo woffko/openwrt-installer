@@ -16,12 +16,14 @@
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
 - Старые releases `v1.0-alpha.1`...`v1.0-alpha.6` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
 - Опубликованный `v1.0-alpha.7` ISO содержит обязательные `whiptail` и `pv`; SHA-256: `89f9e2c89df7fe27f882d1d2db7114caefff226ad840b70b92b1205458ddfa7c`.
-- Локальный `v1.0-alpha.8-dev` ISO полностью пересобран и проверен; SHA-256: `1718ad0e84ac083cabeaf6145f8d40eca10b9d1f694dc9fa13f17e900353d2be`. Он не опубликован как release до physical x86 gate.
+- Локальный `v1.0-alpha.8-dev` ISO полностью пересобран и проверен; SHA-256: `1574d904d60d7c09fca76961a81e17610ac8c4d5c406b3d05a33c97e16ed19a0`. Он не опубликован как release до physical x86 gate.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, packaged `whiptail` на local console, ANSI SGR mouse для terminal emulators, line fallback и optional `dialog`).
 - Local VGA mouse prototype: pinned SDK packages `libnewt`/`whiptail`, daemon-only `gpm-daemon`, relative evdev selection, private `0600` socket и отдельный `make mouse-qemu-smoke`.
 - QEMU local-mouse matrix пройдена: USB click, PS/2, absolute-only tablet rejection, daemon crash keyboard fallback, cleanup stale runtime-файлов внутри OpenWrt и cleanup до exact `ERASE`; публикация/default ждут physical x86 test.
+- Для physical gate добавлен отдельный GRUB-пункт `Mouse hardware test (no disk writes)`: kernel flag принудительно включает `--dry-run`, UI явно показывает safe mode, а `owrt-hardware-report` создает ограниченный отчет без сетевых и аппаратных серийных идентификаторов.
+- Реальный GRUB-путь hardware-test проверен в QEMU; полный wizard до exact `ERASE` завершился в dry-run, GPM был остановлен перед подтверждением, а SHA-256 всего target disk до и после совпал.
 - На финальном `v1.0-alpha.8-dev` ISO повторно прошли `make smoke`, `make mouse-qemu-smoke`, BIOS/UEFI/VGA boot и полный install-to-disk/installed-system boot через `make iso-smoke`.
 - Реализованы `OWRT_UI_MODE=auto|line|ansi|whiptail|curses|dialog`, общий curses adapter и Hellforge frame/menu/review/confirm/install-stage screens.
 - Network wizard теперь использует form-aware prompt screens для LAN IPv4, PPPoE и static WAN settings: на экране показываются context, example, current/default и error zone.
@@ -129,9 +131,9 @@ SHA-256:
 
 ```text
 18036cf685520a7328378eac6af15b12fd84eab0cc814f8b8510c7893312fbd6  openwrt-x86-64-target.img.gz
-75ae68ea11c5e709b757ae2512aebdd2863c0f6b7097e7d3eb10ce6230e9a688  openwrt-x86-64-installer.img.gz
-107140e9c8bbd0b5dc52810b21866d66a5ba5fc2b5f81934a5796d0230068571  openwrt-x86-64-installer-hybrid.iso
-fbb1376168991db821088f0265d393c7e36ac53b4a83b3d720d453c65013eaed  manifest.json
+fddb0ac61320dcfafc444a4962c679d8e92569446a930bdbde1310ae9206e553  openwrt-x86-64-installer.img.gz
+1574d904d60d7c09fca76961a81e17610ac8c4d5c406b3d05a33c97e16ed19a0  openwrt-x86-64-installer-hybrid.iso
+f860a72e1e2598748064206a9dd90e5da25df71a41f9319ea73d9e77c783962d  manifest.json
 ```
 
 ## Проверки
@@ -188,11 +190,13 @@ fbb1376168991db821088f0265d393c7e36ac53b4a83b3d720d453c65013eaed  manifest.json
 - добавлен и пройден native ANSI mouse smoke внутри `make ui-smoke`: pseudo-TTY получает SGR click по второй строке, выбирает второй пункт и подтверждает enable/disable `1000`/`1006` tracking;
 - добавлен и пройден безопасный `make install-flow-smoke`: source-only проверка CLI parsing, `--dry-run`, `--skip-network-wizard` и запрет destructive write path;
 - добавлен и пройден быстрый `make smoke`: syntax-check, shellcheck, ui-smoke и install-flow-smoke без пересборки ISO/QEMU;
+- добавлен и пройден `hardware-report-smoke`: проверка privacy-safe отчета, kernel flags, lifecycle markers, relative evdev inventory и cleanup state;
 - добавлен автоматический `make iso-smoke`: bounded QEMU BIOS/UEFI/VGA boot текущего hybrid ISO с проверкой GRUB, kernel/initramfs, OpenWrt console, backend/ready markers и framebuffer;
+- `make iso-smoke` выбирает второй GRUB entry и подтверждает `owrt.mouse=1`, `owrt.hardware-test=1`, forced dry-run и отсутствие write-progress marker;
 - BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
 - UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
 - VGA QEMU smoke-test дождался target-disk menu на `tty1`, подтвердил `OWRT_INSTALLER_UI_BACKEND=whiptail` и сохранил непустой framebuffer `build/qemu-iso-smoke/vga-installer.ppm`;
-- QEMU install smoke автоматически прошел disk/LAN/WAN/WAN6/review/erase flow, увидел `OWRT_INSTALLER_WRITE_PROGRESS=100`, загрузил записанный qcow2 и подтвердил `installer_version=v1.0-alpha.7`, `installed_by=openwrt-x86-installer`, `target_disk=/dev/vda`;
+- QEMU install smoke автоматически прошел disk/LAN/WAN/WAN6/review/erase flow, увидел `OWRT_INSTALLER_WRITE_PROGRESS=100`, загрузил записанный qcow2 и подтвердил `installer_version=v1.0-alpha.8-dev`, `installed_by=openwrt-x86-installer`, `target_disk=/dev/vda`;
 - для локального `v1.0-alpha.8-dev` повторно пройдены BIOS/UEFI/VGA и полный install smoke; установленная система подтвердила актуальный runtime marker, а local-mouse matrix отдельно проверила USB/PS2/fallback/cleanup;
 - `make smoke` и единый `make iso-smoke` прошли перед публикацией; checksum manifest, GPT, BIOS/UEFI El Torito entries, source/initramfs compare и embedded `pv 1.9.31` проверены;
 - real pseudo-TTY smoke управляет настоящим host `whiptail`: Down/Enter, input edit, Esc/Back, password hiding, theme, shell-metacharacter safety и backend precedence/fallback;

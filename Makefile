@@ -1,6 +1,6 @@
 SHELLCHECK ?= $(if $(wildcard build/host-tools/usr/bin/shellcheck),build/host-tools/usr/bin/shellcheck,shellcheck)
 
-.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke ui-smoke local-mouse-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke shellcheck syntax-check
+.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke ui-smoke local-mouse-smoke hardware-report-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke shellcheck syntax-check
 
 all: target installer
 
@@ -31,6 +31,7 @@ smoke:
 	$(MAKE) shellcheck
 	$(MAKE) ui-smoke
 	$(MAKE) local-mouse-smoke
+	$(MAKE) hardware-report-smoke
 	$(MAKE) install-flow-smoke
 
 ui-smoke:
@@ -38,6 +39,9 @@ ui-smoke:
 
 local-mouse-smoke:
 	./tests/smoke/test-local-mouse-smoke.sh
+
+hardware-report-smoke:
+	./tests/smoke/test-hardware-report-smoke.sh
 
 mouse-qemu-smoke:
 	./scripts/test-qemu-local-mouse.sh
@@ -58,6 +62,7 @@ shellcheck:
 	$(SHELLCHECK) -x scripts/*.sh files-installer/usr/sbin/owrt-install \
 		files-installer/usr/libexec/owrt-installer-ui \
 		files-installer/usr/libexec/owrt-installer-local-mouse \
+		files-installer/usr/sbin/owrt-hardware-report \
 		files-installer/etc/rc.local \
 		files-installer/usr/libexec/owrt-installer-autostart \
 		files-target/etc/uci-defaults/98-installer-network \
