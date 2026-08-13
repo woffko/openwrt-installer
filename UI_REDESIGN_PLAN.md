@@ -427,7 +427,7 @@ target disk по SHA-256. Обычный default entry и destructive install-to
 19. [done] Уточнить auto-mode threshold до `80x24` и добавить terminal-size smoke для `80x24`/`80x23`.
 20. [done] Пересобрать актуальный локальный hybrid ISO после UI/runtime изменений и прогнать hash/initramfs/fdisk/xorriso/QEMU smoke checks.
 21. [done] Подготовить `v1.0-alpha.3` как отдельный alpha release tag, не двигая старые alpha tags.
-22. [in progress] Добавить GitHub Actions `make smoke` gate на push/PR: workflow локально прошел `actionlint` и полный gate без `SKIP`; публикация ожидает подтверждения OAuth `workflow` scope, потому что GitHub App не имеет repository contents write access.
+22. [done] Добавить GitHub Actions `make smoke` gate на push/PR: workflow опубликован в `main`, OAuth-токен получил минимально необходимый `workflow` scope, а первый push run `31657834111` для commit `9e63814` прошел без `SKIP` за 43 секунды.
 23. [deferred] Проверить настоящий `dialog --mouse` внутри live image после появления пакета: свежий официальный индекс OpenWrt `25.12.4` от 2026-08-13 содержит 11 180 packages, но `dialog` отсутствует; отдельный дублирующий artifact не добавлять, пока GPM-enabled `whiptail` закрывает local-console mouse path.
 24. [done] Добавить native SGR mouse в ANSI menus для SSH/xterm-compatible terminals: click selection, wheel navigation, `OWRT_UI_NO_MOUSE=1`, terminal gating, cleanup и pseudo-TTY smoke.
 25. [done] Исправить POSIX shell variable collision в `ui_repeat`, из-за которой render обнулял menu item count; добавить отдельный pseudo-TTY regression smoke для Down + Enter.
