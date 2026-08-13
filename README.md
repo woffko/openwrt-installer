@@ -1,5 +1,7 @@
 # OpenWrt x86_64 Installer
 
+[![Smoke](https://github.com/woffko/openwrt-installer/actions/workflows/smoke.yml/badge.svg)](https://github.com/woffko/openwrt-installer/actions/workflows/smoke.yml)
+
 Minimal OpenWrt-based disk installer for x86_64 routers. The project builds an
 OpenWrt `25.12.4` live USB image containing a prebuilt target image. The
 `owrt-install` wizard writes that payload to an SSD, NVMe, SATA, or virtual

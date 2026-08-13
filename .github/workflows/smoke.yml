@@ -1,0 +1,38 @@
+name: Smoke
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell-smoke:
+    name: Shell and UI smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y shellcheck util-linux whiptail
+
+      - name: Run smoke gate
+        shell: bash
+        run: |
+          set -o pipefail
+          make smoke 2>&1 | tee /tmp/owrt-installer-smoke.log
+          if grep -Fq 'SKIP:' /tmp/owrt-installer-smoke.log; then
+            echo 'Smoke gate skipped one or more checks.' >&2
+            exit 1
+          fi
