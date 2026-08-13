@@ -329,7 +329,7 @@ PS/2 activation, rejection absolute-only USB tablet, продолжение keyb
 после принудительного завершения GPM, остановка daemon до exact `ERASE`, mode
 `0600` и удаление socket/pid/state. Downstream GPM patch также исправляет
 x86_64 evdev ABI (`sizeof(struct input_event)` вместо hard-coded 16 bytes) и
-явно обрабатывает press/release state. Runtime остается `v1.0-alpha.8-dev`,
+явно обрабатывает press/release state. Runtime заморожен как `v1.0-alpha.8`,
 выключен по умолчанию и не готов к release до physical x86 gate. Устройство
 определяется только при старте installer; hotplug retry в prototype отсутствует,
 поэтому физическую мышь нужно подключить до запуска.
@@ -338,7 +338,7 @@ x86_64 evdev ABI (`sizeof(struct input_event)` вместо hard-coded 16 bytes)
 `1574d904d60d7c09fca76961a81e17610ac8c4d5c406b3d05a33c97e16ed19a0`.
 На нем повторно прошли `make smoke`, `make mouse-qemu-smoke` и полный
 `make iso-smoke`: BIOS, UEFI, VGA framebuffer, весь wizard, запись на
-одноразовый target disk и загрузка установленного `v1.0-alpha.8-dev` OpenWrt.
+одноразовый target disk и загрузка установленного `v1.0-alpha.8` OpenWrt.
 Daemon-crash path дополнительно удаляет stale socket/PID/state внутри гостевой
 OpenWrt и сохраняет keyboard flow. Публикация release намеренно отложена до
 задачи 37.
@@ -444,3 +444,5 @@ target disk по SHA-256. Обычный default entry и destructive install-to
 37. [pending] После QEMU gate проверить local mouse на физической x86 машине; до этого не публиковать ее как поддерживаемую функцию и не включать автоматический runtime path по умолчанию.
 38. [done] Подготовить безопасный bare-metal acceptance path: отдельный GRUB hardware-test entry с forced dry-run, явные safe-mode screens, QEMU disk-immutability proof, privacy-safe `owrt-hardware-report` и `PHYSICAL_X86_MOUSE_TEST.md`.
 39. [pending] Закрыть physical alpha gate одним успешным wired USB HID report; перед включением mouse path по умолчанию получить второй pass на другом platform/input-controller class.
+40. [done] Сделать physical gate машинно проверяемым: report schema v2, безопасный enum подключения, итоговый `physical_flow_result`, file mode `0600` и host-side verifier, который принимает первый alpha gate только для полного wired USB HID pass.
+41. [in progress] До physical run зафиксировать точную `v1.0-alpha.8` release-candidate версию, пересобрать ISO и считать gate действительным только для этого неизмененного SHA-256; любое runtime-изменение требует новой сборки и повторного physical pass.

@@ -156,7 +156,9 @@ For bare-metal validation, GRUB also provides **Mouse hardware test (no disk
 writes)**. It runs the real disk and network wizard, including the exact erase
 gate, with `--dry-run` forced from the kernel command line. A successful flow
 ends with an explicit no-changes dialog. Run `owrt-hardware-report` afterward
-to create a privacy-safe acceptance report. Follow
+to create a privacy-safe acceptance report with a machine-readable verdict.
+After preserving that report, validate the wired USB alpha gate on the build
+host with `./scripts/verify-physical-report.sh REPORT`. Follow
 [PHYSICAL_X86_MOUSE_TEST.md](PHYSICAL_X86_MOUSE_TEST.md); use a disposable test
 machine and non-essential target disk even in dry-run mode.
 

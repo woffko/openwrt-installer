@@ -57,6 +57,12 @@ gpm_is_running() {
 
 ask_result() {
 	prompt="$1"
+	override="${2:-}"
+	case "$override" in
+		pass|fail|skipped) printf '%s\n' "$override"; return ;;
+		'') ;;
+		*) printf 'Invalid report result override: %s\n' "$override" >&2; exit 2 ;;
+	esac
 	if [ "${OWRT_HW_REPORT_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
 		printf 'skipped\n'
 		return
@@ -68,6 +74,51 @@ ask_result() {
 			p|P|pass|PASS) printf 'pass\n'; return ;;
 			f|F|fail|FAIL) printf 'fail\n'; return ;;
 			s|S|skip|SKIP|'') printf 'skipped\n'; return ;;
+		esac
+	done
+}
+
+ask_pointer_connection() {
+	override="${OWRT_HW_POINTER_CONNECTION:-}"
+	case "$override" in
+		usb-wired|usb-receiver|ps2|other) printf '%s\n' "$override"; return ;;
+		'') ;;
+		*) printf 'Invalid pointer connection override: %s\n' "$override" >&2; exit 2 ;;
+	esac
+	if [ "${OWRT_HW_REPORT_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
+		printf 'unknown\n'
+		return
+	fi
+	while :; do
+		printf '%s\n' 'Pointer connection: 1=wired USB, 2=USB receiver, 3=PS/2, 4=other' >&2
+		printf 'Select connection type [1-4]: ' >&2
+		IFS= read -r answer || answer=
+		case "$answer" in
+			1) printf 'usb-wired\n'; return ;;
+			2) printf 'usb-receiver\n'; return ;;
+			3) printf 'ps2\n'; return ;;
+			4) printf 'other\n'; return ;;
+		esac
+	done
+}
+
+ask_wheel_skip_reason() {
+	override="${OWRT_HW_WHEEL_SKIP_REASON:-}"
+	case "$override" in
+		no-scrollable-list|unavailable) printf '%s\n' "$override"; return ;;
+		'') ;;
+		*) printf 'Invalid wheel skip reason override: %s\n' "$override" >&2; exit 2 ;;
+	esac
+	if [ "${OWRT_HW_REPORT_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
+		printf 'unknown\n'
+		return
+	fi
+	while :; do
+		printf 'Wheel skip reason [n=no scrollable list/u=unavailable]: ' >&2
+		IFS= read -r answer || answer=
+		case "$answer" in
+			n|N) printf 'no-scrollable-list\n'; return ;;
+			u|U) printf 'unavailable\n'; return ;;
 		esac
 	done
 }
@@ -106,14 +157,19 @@ gpm_is_running && runtime_clean=no
 [ ! -e "$GPM_SOCKET" ] || runtime_clean=no
 [ ! -e "$MOUSE_STATE" ] || runtime_clean=no
 
-manual_move="$(ask_result "Pointer movement was stable in the installer")"
-manual_click="$(ask_result "Click selected and submitted the intended UI control")"
-manual_wheel="$(ask_result "Wheel changed the highlighted menu item")"
-manual_keyboard="$(ask_result "Arrow keys and Enter remained usable")"
-manual_exact="$(ask_result "Mouse input stopped before the exact ERASE prompt")"
+pointer_connection="$(ask_pointer_connection)"
+manual_move="$(ask_result "Pointer movement was stable in the installer" "${OWRT_HW_MANUAL_MOVE:-}")"
+manual_click="$(ask_result "Click selected and submitted the intended UI control" "${OWRT_HW_MANUAL_CLICK:-}")"
+manual_wheel="$(ask_result "Wheel changed the highlighted menu item" "${OWRT_HW_MANUAL_WHEEL:-}")"
+wheel_skip_reason=not-applicable
+if [ "$manual_wheel" = "skipped" ]; then
+	wheel_skip_reason="$(ask_wheel_skip_reason)"
+fi
+manual_keyboard="$(ask_result "Arrow keys and Enter remained usable" "${OWRT_HW_MANUAL_KEYBOARD:-}")"
+manual_exact="$(ask_result "Mouse input stopped before the exact ERASE prompt" "${OWRT_HW_MANUAL_EXACT:-}")"
 
 {
-	printf 'report_schema=1\n'
+	printf 'report_schema=2\n'
 	printf 'installer_version=%s\n' "$(value_or_unknown "$(installer_version)")"
 	printf 'architecture=%s\n' "$(uname -m 2>/dev/null || printf unknown)"
 	printf 'kernel=%s\n' "$(uname -r 2>/dev/null || printf unknown)"
@@ -127,9 +183,11 @@ manual_exact="$(ask_result "Mouse input stopped before the exact ERASE prompt")"
 	printf 'mouse_stopped=%s\n' "$mouse_stopped"
 	printf 'dry_run_complete=%s\n' "$dry_run_complete"
 	printf 'runtime_cleanup=%s\n' "$runtime_clean"
+	printf 'pointer_connection=%s\n' "$pointer_connection"
 	printf 'manual_pointer_move=%s\n' "$manual_move"
 	printf 'manual_click=%s\n' "$manual_click"
 	printf 'manual_wheel=%s\n' "$manual_wheel"
+	printf 'manual_wheel_skip_reason=%s\n' "$wheel_skip_reason"
 	printf 'manual_keyboard=%s\n' "$manual_keyboard"
 	printf 'manual_exact_prompt_mouse_stop=%s\n' "$manual_exact"
 } >> "$tmp_output"
@@ -160,7 +218,39 @@ for event_path in "$INPUT_CLASS"/event*; do
 done
 printf 'relative_pointer_count=%s\n' "$pointer_count" >> "$tmp_output"
 
+physical_result=pass
+for automatic_gate in \
+	"$mouse_flag" "$hardware_test_flag" "$mouse_started" "$mouse_stopped" \
+	"$dry_run_complete" "$runtime_clean"
+do
+	[ "$automatic_gate" = "yes" ] || physical_result=fail
+done
+[ "$pointer_count" -ge 1 ] || physical_result=fail
+
+case "$manual_move:$manual_click:$manual_keyboard:$manual_exact" in
+	*fail*) physical_result=fail ;;
+	*skipped*) [ "$physical_result" = "fail" ] || physical_result=incomplete ;;
+esac
+case "$manual_wheel" in
+	fail) physical_result=fail ;;
+	skipped)
+		if [ "$wheel_skip_reason" != "no-scrollable-list" ] && [ "$physical_result" != "fail" ]; then
+			physical_result=incomplete
+		fi
+		;;
+esac
+[ "$pointer_connection" != "unknown" ] || {
+	[ "$physical_result" = "fail" ] || physical_result=incomplete
+}
+printf 'physical_flow_result=%s\n' "$physical_result" >> "$tmp_output"
+
 mv "$tmp_output" "$OUTPUT"
 trap - EXIT INT TERM
 printf 'Hardware report written to %s\n' "$OUTPUT" >&2
 cat "$OUTPUT"
+
+case "$physical_result" in
+	pass) exit 0 ;;
+	fail) exit 1 ;;
+	*) exit 2 ;;
+esac

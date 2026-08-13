@@ -10,7 +10,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 PATH="$BUILD_DIR/host-tools/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 OPENWRT_VERSION="${OPENWRT_VERSION:-25.12.4}"
-INSTALLER_VERSION="${INSTALLER_VERSION:-v1.0-alpha.8-dev}"
+INSTALLER_VERSION="${INSTALLER_VERSION:-v1.0-alpha.8}"
 PROFILE="generic"
 IMAGE_TYPE="ext4-combined-efi"
 IMAGEBUILDER_ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"

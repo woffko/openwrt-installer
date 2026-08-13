@@ -55,6 +55,11 @@ or a different USB receiver/controller.
 
 10. Answer each manual gate with `p`, `f`, or `s`. Preserve the resulting
     `/tmp/owrt-hardware-report.txt` before rebooting the RAM-root system.
+11. On the build host, validate the preserved report before release:
+
+    ```sh
+    ./scripts/verify-physical-report.sh /path/to/owrt-hardware-report.txt
+    ```
 
 ## Pass Criteria
 
@@ -71,13 +76,19 @@ manual_pointer_move=pass
 manual_click=pass
 manual_keyboard=pass
 manual_exact_prompt_mouse_stop=pass
+pointer_connection=usb-wired
 relative_pointer_count=1
+physical_flow_result=pass
 ```
 
 `relative_pointer_count` may be greater than one. `manual_wheel=skipped` is
 acceptable only when the available lists cannot scroll; otherwise it must be
-`pass`. Any `fail`, missing automatic `yes`, or remaining GPM runtime file
-keeps the physical gate open.
+`pass`. The report records this exception as
+`manual_wheel_skip_reason=no-scrollable-list`. Any `fail`, missing automatic
+`yes`, unknown connection type, or remaining GPM runtime file keeps the
+physical gate open. The alpha gate verifier additionally requires
+`pointer_connection=usb-wired`; receiver and PS/2 reports remain useful as
+secondary-platform evidence but cannot close the first gate.
 
 Record the machine model, firmware mode, and pointer connection type next to
 the report after reviewing them. Do not include DMI serial numbers, disk

@@ -12,7 +12,7 @@
 ## Current Artifacts
 
 - Current published alpha release: `v1.0-alpha.7`.
-- Current local development runtime: `v1.0-alpha.8-dev`.
+- Current local release-candidate runtime: `v1.0-alpha.8` (not published before the physical x86 gate).
 - Current hybrid ISO: `output/openwrt-x86-64-installer-hybrid.iso`.
 - Current local ISO SHA-256: `1574d904d60d7c09fca76961a81e17610ac8c4d5c406b3d05a33c97e16ed19a0`.
 - Older alpha release tags are preserved; do not move them.

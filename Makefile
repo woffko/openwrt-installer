@@ -63,6 +63,7 @@ shellcheck:
 		files-installer/usr/libexec/owrt-installer-ui \
 		files-installer/usr/libexec/owrt-installer-local-mouse \
 		files-installer/usr/sbin/owrt-hardware-report \
+		scripts/verify-physical-report.sh \
 		files-installer/etc/rc.local \
 		files-installer/usr/libexec/owrt-installer-autostart \
 		files-target/etc/uci-defaults/98-installer-network \
