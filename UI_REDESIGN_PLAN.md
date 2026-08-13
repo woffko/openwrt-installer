@@ -334,8 +334,9 @@ x86_64 evdev ABI (`sizeof(struct input_event)` вместо hard-coded 16 bytes)
 определяется только при старте installer; hotplug retry в prototype отсутствует,
 поэтому физическую мышь нужно подключить до запуска.
 
-Финальный local artifact после полной пересборки имеет SHA-256
-`1574d904d60d7c09fca76961a81e17610ac8c4d5c406b3d05a33c97e16ed19a0`.
+Финальный frozen `v1.0-alpha.8` release candidate из runtime commit `964fed6`
+имеет SHA-256
+`f1131d7587d49b5accf0e1e6b96fc378114fd1f9293a7e1e1a0e5dc1772a22e5`.
 На нем повторно прошли `make smoke`, `make mouse-qemu-smoke` и полный
 `make iso-smoke`: BIOS, UEFI, VGA framebuffer, весь wizard, запись на
 одноразовый target disk и загрузка установленного `v1.0-alpha.8` OpenWrt.
@@ -445,4 +446,4 @@ target disk по SHA-256. Обычный default entry и destructive install-to
 38. [done] Подготовить безопасный bare-metal acceptance path: отдельный GRUB hardware-test entry с forced dry-run, явные safe-mode screens, QEMU disk-immutability proof, privacy-safe `owrt-hardware-report` и `PHYSICAL_X86_MOUSE_TEST.md`.
 39. [pending] Закрыть physical alpha gate одним успешным wired USB HID report; перед включением mouse path по умолчанию получить второй pass на другом platform/input-controller class.
 40. [done] Сделать physical gate машинно проверяемым: report schema v2, безопасный enum подключения, итоговый `physical_flow_result`, file mode `0600` и host-side verifier, который принимает первый alpha gate только для полного wired USB HID pass.
-41. [in progress] До physical run зафиксировать точную `v1.0-alpha.8` release-candidate версию, пересобрать ISO и считать gate действительным только для этого неизмененного SHA-256; любое runtime-изменение требует новой сборки и повторного physical pass.
+41. [done] До physical run зафиксировать точную `v1.0-alpha.8` release-candidate версию, пересобрать ISO и считать gate действительным только для этого неизмененного SHA-256; любое runtime-изменение требует новой сборки и повторного physical pass.

@@ -3,6 +3,20 @@
 This procedure validates the experimental local-console mouse path on bare
 metal without allowing the installer to write a disk.
 
+## Release Candidate
+
+The physical alpha gate applies only to this frozen candidate:
+
+```text
+installer_version=v1.0-alpha.8
+runtime_commit=964fed6
+iso_sha256=f1131d7587d49b5accf0e1e6b96fc378114fd1f9293a7e1e1a0e5dc1772a22e5
+```
+
+Any runtime or image change invalidates the result and requires a rebuilt ISO
+and a new physical pass. The eventual release asset must be byte-identical to
+this candidate.
+
 ## Safety
 
 Use a disposable test machine and a non-essential target disk. The dedicated
@@ -16,6 +30,8 @@ Verify the ISO before writing it to USB:
 cd output
 sha256sum -c sha256sums.txt
 ```
+
+The hybrid ISO line must match the candidate SHA-256 above.
 
 ## Required Hardware
 
