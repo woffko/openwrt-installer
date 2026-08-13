@@ -1,6 +1,6 @@
 SHELLCHECK ?= $(if $(wildcard build/host-tools/usr/bin/shellcheck),build/host-tools/usr/bin/shellcheck,shellcheck)
 
-.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke ui-smoke local-mouse-smoke hardware-report-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke shellcheck syntax-check
+.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke ui-smoke local-mouse-smoke hardware-report-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke release-gate release-gate-smoke shellcheck syntax-check
 
 all: target installer
 
@@ -57,6 +57,12 @@ vga-smoke:
 
 install-smoke:
 	./scripts/test-qemu-iso-smoke.sh install
+
+release-gate:
+	./scripts/verify-release-candidate.sh "$(REPORT)"
+
+release-gate-smoke:
+	./tests/smoke/test-release-candidate-smoke.sh
 
 shellcheck:
 	$(SHELLCHECK) -x scripts/*.sh files-installer/usr/sbin/owrt-install \

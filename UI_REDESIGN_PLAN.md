@@ -447,3 +447,4 @@ target disk по SHA-256. Обычный default entry и destructive install-to
 39. [pending] Закрыть physical alpha gate одним успешным wired USB HID report; перед включением mouse path по умолчанию получить второй pass на другом platform/input-controller class.
 40. [done] Сделать physical gate машинно проверяемым: report schema v2, безопасный enum подключения, итоговый `physical_flow_result`, file mode `0600` и host-side verifier, который принимает первый alpha gate только для полного wired USB HID pass.
 41. [done] До physical run зафиксировать точную `v1.0-alpha.8` release-candidate версию, пересобрать ISO и считать gate действительным только для этого неизмененного SHA-256; любое runtime-изменение требует новой сборки и повторного physical pass.
+42. [done] Добавить единый pre-release gate: tracked candidate metadata, full runtime commit, ISO/manifest SHA-256, manifest version, runtime-diff guard и обязательный wired USB physical report verifier.

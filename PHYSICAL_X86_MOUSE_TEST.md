@@ -75,7 +75,11 @@ or a different USB receiver/controller.
 
     ```sh
     ./scripts/verify-physical-report.sh /path/to/owrt-hardware-report.txt
+    make release-gate REPORT=/path/to/owrt-hardware-report.txt
     ```
+
+    The second command also verifies the frozen runtime commit, ISO SHA-256,
+    manifest SHA-256, manifest version, and absence of later runtime changes.
 
 ## Pass Criteria
 

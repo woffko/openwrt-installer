@@ -303,6 +303,17 @@ Run only the VGA backend/framebuffer check:
 make vga-smoke
 ```
 
+After completing the documented physical wired USB test, run the immutable
+candidate gate before creating the alpha release:
+
+```sh
+make release-gate REPORT=/path/to/owrt-hardware-report.txt
+```
+
+This verifies the report, frozen runtime commit, ISO and manifest hashes,
+manifest version, and that no tracked runtime file changed after the candidate
+was built.
+
 QEMU scripts are semi-manual smoke tests:
 
 ```sh
