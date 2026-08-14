@@ -137,14 +137,16 @@ enabled only while a menu is open and is disabled during cleanup. Set
 `OWRT_UI_NO_MOUSE=1` to force keyboard-only operation.
 
 Local VGA mouse input is available as an experimental, disabled-by-default
-mode. Append `owrt.mouse=1` to the installer kernel command line, or use
+mode. Select **Installer (experimental mouse)** in GRUB, append `owrt.mouse=1`
+to the installer kernel command line, or use
 `OWRT_LOCAL_MOUSE_ENABLE=1 owrt-install` for a manual session on `tty1`. The
 image contains GPM-enabled Newt/whiptail packages built by the pinned OpenWrt
-SDK and a daemon restricted to relative evdev pointers. Absolute-only tablets,
-serial consoles, and SSH do not activate this path. Failure or termination of
-the mouse daemon leaves all menus usable by keyboard. Connect the pointer
-before the installer starts; this prototype does not retry device discovery
-after hotplug.
+SDK. Its hardened evdev daemon supports relative PS/2/USB pointers and
+absolute VMware/QEMU-style tablets, preferring relative axes on hybrid
+devices. Serial consoles and SSH do not activate this path. Failure or
+termination of the mouse daemon leaves all menus usable by keyboard. Connect
+the pointer before the installer starts; this prototype does not retry device
+discovery after hotplug.
 
 The mouse daemon is stopped and its private `0600` socket is removed before
 the exact `ERASE /dev/...` phrase. That destructive phrase is always entered
@@ -236,6 +238,11 @@ The installed system also contains `/etc/openwrt-installer-release`.
 
 - Add an OpenWrt configuration import step after target disk selection: choose
   between a clean install or importing configs/backups from a USB drive.
+- Add an opt-in GRUB path that downloads the latest signed official stable
+  OpenWrt x86 `generic-ext4-combined-efi.img.gz` or
+  `generic-ext4-combined.img.gz` into RAM, verifies it, and reuses the existing
+  review and exact erase flow. The embedded payload remains the offline
+  fallback.
 - Validate experimental local VGA mouse input on physical x86 hardware before
   enabling it by default or documenting it as a supported input path.
 
@@ -280,8 +287,9 @@ make mouse-qemu-smoke
 ```
 
 It covers USB relative click navigation, PS/2 activation, absolute-only tablet
-rejection, daemon-crash keyboard fallback, cleanup before the exact erase
-confirmation, the forced hardware dry-run flow, and target-disk immutability.
+click navigation, relative-first hybrid-device selection, daemon-crash keyboard
+fallback, cleanup before the exact erase confirmation, the forced hardware
+dry-run flow, and target-disk immutability.
 
 Run the full automated hybrid ISO gate after `make iso`. It covers BIOS, UEFI,
 the VGA curses framebuffer, a destructive install to a disposable qcow2 disk,

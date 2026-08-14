@@ -26,11 +26,15 @@ run_device_selection_smoke() {
 	mkdir -p \
 		"$work_dir/sys/event0/device/capabilities" \
 		"$work_dir/sys/event1/device/capabilities" \
+		"$work_dir/sys/event2/device/capabilities" \
 		"$work_dir/dev"
 	printf '1\n' > "$work_dir/sys/event0/device/capabilities/rel"
 	printf '103\n' > "$work_dir/sys/event1/device/capabilities/rel"
+	printf '0\n' > "$work_dir/sys/event2/device/capabilities/rel"
+	printf '3\n' > "$work_dir/sys/event2/device/capabilities/abs"
 	: > "$work_dir/dev/event0"
 	: > "$work_dir/dev/event1"
+	: > "$work_dir/dev/event2"
 
 	selected="$(
 		OWRT_LOCAL_MOUSE_TEST_MODE=1 \
@@ -42,12 +46,22 @@ run_device_selection_smoke() {
 		fail "Relative pointer selection returned: $selected"
 
 	printf '0\n' > "$work_dir/sys/event1/device/capabilities/rel"
+	selected="$(
+		OWRT_LOCAL_MOUSE_TEST_MODE=1 \
+		OWRT_LOCAL_MOUSE_INPUT_CLASS="$work_dir/sys" \
+		OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT="$work_dir/dev" \
+			"$HELPER" device
+	)"
+	[ "$selected" = "$work_dir/dev/event2" ] ||
+		fail "Absolute pointer fallback returned: $selected"
+
+	printf '1\n' > "$work_dir/sys/event2/device/capabilities/abs"
 	if OWRT_LOCAL_MOUSE_TEST_MODE=1 \
 		OWRT_LOCAL_MOUSE_INPUT_CLASS="$work_dir/sys" \
 		OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT="$work_dir/dev" \
 		"$HELPER" device >/dev/null 2>&1
 	then
-		fail "Absolute/non-pointer devices must not be selected"
+		fail "Incomplete X/Y devices must not be selected"
 	fi
 }
 
@@ -112,6 +126,9 @@ assert_contains "$GPM_PATCH" "chmod(GPM_NODE_CTL,0600);"
 assert_contains "$GPM_PATCH" "daemon/processrequest.c\\"
 assert_contains "$GPM_PATCH" "sizeof(struct input_event)"
 assert_contains "$GPM_PATCH" "thisevent.value ? (state->buttons | GPM_B_LEFT)"
+assert_contains "$PROJECT_DIR/packages/gpm-daemon/patches/020-evdev-absolute-pointer.patch" "EVIOCGABS(ABS_X)"
+assert_contains "$PROJECT_DIR/packages/gpm-daemon/patches/020-evdev-absolute-pointer.patch" "M_evdev, I_evdev"
+assert_contains "$PROJECT_DIR/packages/gpm-daemon/Makefile" "PKG_RELEASE:=4"
 assert_contains "$PROJECT_DIR/packages/gpm-daemon/Makefile" "DEPENDS:=+libc +libgcc"
 assert_contains "$PROJECT_DIR/profiles/packages-installer.txt" "coreutils-stat"
 

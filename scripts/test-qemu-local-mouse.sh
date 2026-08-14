@@ -20,6 +20,7 @@ VM_DISK=""
 SERIAL_LOG=""
 SERIAL_SOCKET=""
 MONITOR_SOCKET=""
+QMP_SOCKET=""
 QEMU_ENV_PREFIX=""
 QEMU_L_ARG=""
 
@@ -129,12 +130,13 @@ start_vm() {
 	SERIAL_LOG="$SMOKE_DIR/$name-serial.log"
 	SERIAL_SOCKET="$SMOKE_DIR/$name-serial.sock"
 	MONITOR_SOCKET="$SMOKE_DIR/$name-monitor.sock"
+	QMP_SOCKET="$SMOKE_DIR/$name-qmp.sock"
 	qemu_log="$SMOKE_DIR/$name-qemu.log"
 	disk="$SMOKE_DIR/$name.raw"
 	VM_DISK="$disk"
 
 	stop_vm
-	rm -f "$SERIAL_LOG" "$SERIAL_SOCKET" "$MONITOR_SOCKET" "$qemu_log" "$disk"
+	rm -f "$SERIAL_LOG" "$SERIAL_SOCKET" "$MONITOR_SOCKET" "$QMP_SOCKET" "$qemu_log" "$disk"
 	truncate -s 1G "$disk"
 
 	if [ -n "$QEMU_L_ARG" ]; then
@@ -145,6 +147,7 @@ start_vm() {
 			-append "console=tty1 console=ttyS0,115200n8 rdinit=/init owrt.mouse=1 $extra_cmdline" \
 			-chardev "socket,id=serial0,path=$SERIAL_SOCKET,server=on,wait=off,logfile=$SERIAL_LOG" \
 			-serial chardev:serial0 -monitor "unix:$MONITOR_SOCKET,server=on,wait=off" \
+			-qmp "unix:$QMP_SOCKET,server=on,wait=off" \
 			-drive "file=$disk,format=raw,if=virtio" \
 			-nic user,model=e1000 -nic user,model=e1000 "$@" > "$qemu_log" 2>&1 &
 	else
@@ -155,6 +158,7 @@ start_vm() {
 			-append "console=tty1 console=ttyS0,115200n8 rdinit=/init owrt.mouse=1 $extra_cmdline" \
 			-chardev "socket,id=serial0,path=$SERIAL_SOCKET,server=on,wait=off,logfile=$SERIAL_LOG" \
 			-serial chardev:serial0 -monitor "unix:$MONITOR_SOCKET,server=on,wait=off" \
+			-qmp "unix:$QMP_SOCKET,server=on,wait=off" \
 			-drive "file=$disk,format=raw,if=virtio" \
 			-nic user,model=e1000 -nic user,model=e1000 "$@" > "$qemu_log" 2>&1 &
 	fi
@@ -177,6 +181,26 @@ click_target_ok() {
 		printf 'mouse_button 0\n'
 	} | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
 		die "Could not send calibrated USB mouse click"
+}
+
+click_target_ok_absolute() {
+	# The target-disk OK button is centered around cell 65x26 on the 160x50
+	# console. QMP absolute axes use a stable 0..32767 coordinate range.
+	response="$({
+		sleep 0.1
+		printf '%s\n' '{"execute":"qmp_capabilities"}'
+		sleep 0.1
+		printf '%s\n' '{"execute":"input-send-event","arguments":{"events":[{"type":"abs","data":{"axis":"x","value":13312}},{"type":"abs","data":{"axis":"y","value":17367}}]}}'
+		sleep 0.3
+		printf '%s\n' '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"button":"left","down":true}}]}}'
+		sleep 0.2
+		printf '%s\n' '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"button":"left","down":false}}]}}'
+		sleep 0.2
+	} | nc -w 1 -U "$QMP_SOCKET")" ||
+		die "Could not send calibrated USB tablet click"
+	if printf '%s\n' "$response" | grep -F '"error"' >/dev/null 2>&1; then
+		die "QMP rejected calibrated USB tablet click"
+	fi
 }
 
 run_usb_click_and_crash() {
@@ -204,15 +228,13 @@ run_ps2_activation() {
 	stop_vm
 }
 
-run_absolute_rejection() {
-	log "Testing absolute-only USB tablet rejection"
+run_absolute_click() {
+	log "Testing absolute-only USB tablet activation and click"
 	start_vm usb-tablet "module_blacklist=psmouse" -device qemu-xhci -device usb-tablet
 	assert_marker "QEMU QEMU USB Tablet"
-	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE=keyboard-fallback"
-	if grep -F "OWRT_INSTALLER_LOCAL_MOUSE=active" "$SERIAL_LOG" >/dev/null 2>&1; then
-		die "Absolute-only tablet unexpectedly enabled local mouse"
-	fi
-	hmp_keys ret
+	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE=active"
+	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE_SOCKET_MODE=600"
+	click_target_ok_absolute
 	wait_for_marker "OWRT_INSTALLER_UI_READY=lan-interface"
 	stop_vm
 }
@@ -280,7 +302,7 @@ configure_qemu_env
 
 run_usb_click_and_crash
 run_ps2_activation
-run_absolute_rejection
+run_absolute_click
 run_exact_confirmation_cleanup
 
 log "QEMU local-console mouse acceptance passed"

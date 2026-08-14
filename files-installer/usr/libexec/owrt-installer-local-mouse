@@ -62,24 +62,38 @@ process_is_owned_gpm() {
 	[ "$(process_start_time "$pid" || true)" = "$expected_start" ]
 }
 
-find_relative_pointer() {
+capability_has_xy() {
+	capability_file="$1"
+	[ -r "$capability_file" ] || return 1
+	capability_word="$(awk '{ print $NF }' "$capability_file" 2>/dev/null || true)"
+	case "$capability_word" in
+		''|*[!0-9a-fA-F]*) return 1 ;;
+	esac
+	capability_value="$(printf '%d' "0x$capability_word" 2>/dev/null || true)"
+	case "$capability_value" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	[ $((capability_value & 3)) -eq 3 ]
+}
+
+pointer_device_path() {
+	event_path="$1"
+	device="$INPUT_DEV_ROOT/${event_path##*/}"
+	[ -c "$device" ] || [ "${OWRT_LOCAL_MOUSE_TEST_MODE:-0}" = "1" ] || return 1
+	printf '%s\n' "$device"
+}
+
+find_pointer() {
+	# Prefer relative mice when a VM or physical machine exposes both kinds.
 	for event_path in "$INPUT_CLASS"/event*; do
 		[ -d "$event_path" ] || continue
-		rel_file="$event_path/device/capabilities/rel"
-		[ -r "$rel_file" ] || continue
-		rel_word="$(awk '{ print $NF }' "$rel_file" 2>/dev/null || true)"
-		case "$rel_word" in
-			''|*[!0-9a-fA-F]*) continue ;;
-		esac
-		rel_value="$(printf '%d' "0x$rel_word" 2>/dev/null || true)"
-		case "$rel_value" in
-			''|*[!0-9]*) continue ;;
-		esac
-		[ $((rel_value & 3)) -eq 3 ] || continue
-		device="$INPUT_DEV_ROOT/${event_path##*/}"
-		[ -c "$device" ] || [ "${OWRT_LOCAL_MOUSE_TEST_MODE:-0}" = "1" ] || continue
-		printf '%s\n' "$device"
-		return 0
+		capability_has_xy "$event_path/device/capabilities/rel" || continue
+		pointer_device_path "$event_path" && return 0
+	done
+	for event_path in "$INPUT_CLASS"/event*; do
+		[ -d "$event_path" ] || continue
+		capability_has_xy "$event_path/device/capabilities/abs" || continue
+		pointer_device_path "$event_path" && return 0
 	done
 	return 1
 }
@@ -137,8 +151,8 @@ start_mouse() {
 		log "refusing to replace an unowned GPM instance or stale socket"
 		return 1
 	fi
-	device="$(find_relative_pointer)" || {
-		log "no relative REL_X/REL_Y pointer found; keyboard input remains active"
+	device="$(find_pointer)" || {
+		log "no relative or absolute X/Y pointer found; keyboard input remains active"
 		return 1
 	}
 
@@ -215,7 +229,7 @@ case "${1:-}" in
 	start) start_mouse ;;
 	stop) stop_mouse ;;
 	status) status_mouse ;;
-	device) find_relative_pointer ;;
+	device) find_pointer ;;
 	*)
 		printf 'Usage: %s {start|stop|status|device}\n' "$0" >&2
 		exit 2

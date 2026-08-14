@@ -283,7 +283,8 @@ Threat model local mouse:
 - mouse events считаются недоверенным локальным navigation input, эквивалентным
   стрелкам/Enter, и не могут ввести обязательную строку `ERASE /dev/...`;
 - daemon открывает выбранный event device read-only; helper проверяет sysfs
-  REL capabilities и не принимает device path из network/user input;
+  REL/ABS X/Y capabilities, предпочитает relative axes на hybrid device и не
+  принимает device path из network/user input;
 - `/dev/gpmctl` принудительно создается с mode `0600` и повторно проверяется
   helper после старта;
 - GPM полностью останавливается после выхода предыдущего Newt widget и до
@@ -323,16 +324,19 @@ Threat model local mouse:
 
 Текущий статус на 2026-08-12: матрица Hellforge ANSI/whiptail пройдена. Новый hybrid ISO собран через `make iso`, `sha256sum -c output/sha256sums.txt` проходит, initramfs содержит актуальные `usr/sbin/owrt-install`, `usr/libexec/owrt-installer-ui`, исполняемые `whiptail 0.52.24` и `pv 1.9.31`; runtime `INSTALLER_VERSION=v1.0-alpha.7`. Текущий локальный ISO SHA-256: `89f9e2c89df7fe27f882d1d2db7114caefff226ad840b70b92b1205458ddfa7c`; `v1.0-alpha.7` опубликован отдельным alpha tag, старые alpha tags не двигаются. BIOS и UEFI QEMU smoke-test проверяют GRUB, kernel/initramfs, OpenWrt serial console, backend marker и автозапуск wizard. VGA smoke дожидается реального target-disk menu, делает PPM framebuffer dump и проверяет, что экран не пуст. Автоматический install smoke проходит весь wizard, проверяет numeric write-progress до `100`, устанавливает образ на одноразовый qcow2, загружает установленный OpenWrt и сверяет `/etc/openwrt-installer-release`. `make ui-smoke` дополнительно управляет настоящим host `whiptail` через pseudo-TTY: arrow selection, input editing, Esc/Back, скрытый password, shell-metacharacter safety, theme и backend fallback/precedence. `make install-flow-smoke` проверяет destructive guards, network state machine, byte-identical payload write, failure status и очистку FIFO, а `make smoke` объединяет быстрые non-ISO проверки.
 
-Дополнение на 2026-08-13: local VGA mouse prototype прошел отдельный
+Дополнение на 2026-08-14: local VGA mouse prototype прошел отдельный
 `make mouse-qemu-smoke`. Проверены USB relative click от target disk до LAN,
-PS/2 activation, rejection absolute-only USB tablet, продолжение keyboard flow
-после принудительного завершения GPM, остановка daemon до exact `ERASE`, mode
-`0600` и удаление socket/pid/state. Downstream GPM patch также исправляет
-x86_64 evdev ABI (`sizeof(struct input_event)` вместо hard-coded 16 bytes) и
-явно обрабатывает press/release state. Runtime заморожен как `v1.0-alpha.8`,
-выключен по умолчанию и не готов к release до physical x86 gate. Устройство
-определяется только при старте installer; hotplug retry в prototype отсутствует,
-поэтому физическую мышь нужно подключить до запуска.
+PS/2 activation, absolute-only USB tablet click, relative-first hybrid-device
+selection, продолжение keyboard flow после принудительного завершения GPM,
+остановка daemon до exact `ERASE`, mode `0600` и удаление socket/pid/state.
+Downstream GPM patches исправляют x86_64 evdev ABI (`sizeof(struct input_event)`
+вместо hard-coded 16 bytes), явно обрабатывают press/release и масштабируют
+`EV_ABS` по `EVIOCGABS` в размеры VGA terminal. Для VMware/QEMU добавлен
+отдельный opt-in GRUB entry `Installer (experimental mouse)`; default entry
+остается keyboard-first. Runtime теперь `v1.0-alpha.9-dev` и не готов к release
+до нового physical x86 gate. Устройство определяется только при старте
+installer; hotplug retry в prototype отсутствует, поэтому физическую мышь нужно
+подключить до запуска.
 
 Финальный frozen `v1.0-alpha.8` release candidate из runtime commit `964fed6`
 имеет SHA-256
@@ -385,6 +389,43 @@ target disk по SHA-256. Обычный default entry и destructive install-to
 - Обновить `LOCAL_CONTEXT.md` без секретов.
 - После сборки ISO обновить SHA-256.
 - Новый release делать отдельным тегом, не двигать старые alpha tags.
+
+## Future: Online Combined Image Install
+
+Добавить отдельный GRUB-пункт `Download latest OpenWrt x86 image and install`.
+Он не заменяет встроенный payload и не меняет default boot path. Пункт передает
+`owrt.netinstall=1`, после чего installer выполняет отдельный network-bootstrap
+до выбора и стирания target disk:
+
+1. Проверить уже существующий маршрут, DNS и HTTPS-доступ к официальному
+   OpenWrt download host. Если сети нет, предложить выбрать uplink и повторно
+   использовать текущие DHCP/static/PPPoE primitives; любой отказ возвращает к
+   встроенному payload.
+2. Получить подписанные official stable release metadata. Не использовать
+   snapshot и не доверять одному только слову `latest` или checksum, полученной
+   с того же URL: manifest/checksum signature проверяется встроенным pinned
+   OpenWrt release key и минимальным verifier package.
+3. Выбрать только `x86/64 generic ext4` image по текущему boot mode:
+   `generic-ext4-combined-efi.img.gz` для UEFI и
+   `generic-ext4-combined.img.gz` для BIOS. Не подставлять wildcard, который
+   может выбрать squashfs/targz: ext4 сохраняет ожидаемый post-install
+   configuration path.
+4. До загрузки сравнить `MemAvailable` с размером compressed image плюс
+   фиксированным резервом installer runtime. Download идет в отдельный RAM/tmpfs
+   файл с ограничением размера; при нехватке памяти запись на target disk не
+   начинается и предлагается встроенный payload. Прямая network-to-disk
+   streaming installation остается отдельной будущей задачей.
+5. Проверить TLS, signature, SHA-256, gzip integrity, x86_64 image layout и
+   ожидаемый combined partition table. Только после всех проверок передать
+   локальный RAM payload существующему disk/review/exact `ERASE`/write flow.
+6. На review явно показать source=`downloaded official OpenWrt`, точную версию,
+   filename, SHA-256, boot mode и RAM usage. Любая ошибка сети или проверки
+   должна быть recoverable и не оставлять partial payload или измененный disk.
+
+Acceptance для этой функции: offline fallback, captive portal/DNS/TLS failure,
+bad signature, checksum mismatch, truncated gzip, wrong architecture/layout,
+insufficient RAM, BIOS/UEFI selection, successful QEMU download/install/boot и
+доказательство отсутствия disk writes до exact confirmation.
 
 ## Риски
 
@@ -448,3 +489,5 @@ target disk по SHA-256. Обычный default entry и destructive install-to
 40. [done] Сделать physical gate машинно проверяемым: report schema v2, безопасный enum подключения, итоговый `physical_flow_result`, file mode `0600` и host-side verifier, который принимает первый alpha gate только для полного wired USB HID pass.
 41. [done] До physical run зафиксировать точную `v1.0-alpha.8` release-candidate версию, пересобрать ISO и считать gate действительным только для этого неизмененного SHA-256; любое runtime-изменение требует новой сборки и повторного physical pass.
 42. [done] Добавить единый pre-release gate: tracked candidate metadata, full runtime commit, ISO/manifest SHA-256, manifest version, runtime-diff guard и обязательный wired USB physical report verifier.
+43. [done] Исправить VMware/QEMU absolute pointer: добавить безопасный `EV_ABS` decoder в hardened GPM, relative-first device selection, отдельный opt-in GRUB installer entry с `owrt.mouse=1` и QEMU/QMP click-through regression; default installer оставить keyboard-first до physical gate. Пройдены `make smoke`, `make mouse-qemu-smoke` и полный `make iso-smoke`.
+44. [future] Реализовать boot entry `Download latest OpenWrt x86 image and install` по Online Combined Image Install design: signed official stable metadata, BIOS/UEFI combined image selection, RAM capacity gate, verified local payload и reuse существующего destructive confirmation/write flow.
