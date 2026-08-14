@@ -142,8 +142,10 @@ to the installer kernel command line, or use
 `OWRT_LOCAL_MOUSE_ENABLE=1 owrt-install` for a manual session on `tty1`. The
 image contains GPM-enabled Newt/whiptail packages built by the pinned OpenWrt
 SDK. Its hardened evdev daemon supports relative PS/2/USB pointers and
-absolute VMware/QEMU-style tablets, preferring relative axes on hybrid
-devices. Serial consoles and SSH do not activate this path. Failure or
+absolute VMware/QEMU-style tablets. Ordinary relative mice are preferred, but
+the VMware VMMouse absolute twin is selected instead of its relative twin
+because the Linux driver requests absolute mode and reports pointer motion on
+that device. Serial consoles and SSH do not activate this path. Failure or
 termination of the mouse daemon leaves all menus usable by keyboard. Connect
 the pointer before the installer starts; this prototype does not retry device
 discovery after hotplug.
@@ -151,8 +153,10 @@ discovery after hotplug.
 The mouse daemon is stopped and its private `0600` socket is removed before
 the exact `ERASE /dev/...` phrase. That destructive phrase is always entered
 with the keyboard. This local-console mode has passed the automated QEMU USB,
-PS/2, crash, cleanup, and fallback matrix, but remains experimental until a
-physical x86 machine test is completed.
+PS/2, absolute-tablet, crash, cleanup, and fallback matrix. A VMware test
+exposed and led to a fix for VMMouse twin-device selection, but the rebuilt ISO
+still requires a repeat VMware test before that path is considered verified.
+The mode remains experimental until the physical x86 gate is completed.
 
 For bare-metal validation, GRUB also provides **Mouse hardware test (no disk
 writes)**. It runs the real disk and network wizard, including the exact erase

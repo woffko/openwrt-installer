@@ -338,6 +338,19 @@ Downstream GPM patches исправляют x86_64 evdev ABI (`sizeof(struct inp
 installer; hotplug retry в prototype отсутствует, поэтому физическую мышь нужно
 подключить до запуска.
 
+Реальная проверка в VMware уточнила границу предыдущего QEMU gate: kernel flag,
+поиск `/dev/input/event*` и GPM startup работали, но UI не получал движение.
+Linux `vmmouse` создает relative и absolute twin devices, запрашивает absolute
+mode и в этом режиме отправляет координаты и кнопки через absolute twin. Старый
+relative-first selector открывал формально подходящий, но молчащий relative
+twin. Теперь обычные USB/PS2 relative pointers по-прежнему имеют приоритет, а
+для пары с именем `VMware VMMouse` выбирается ABS_X/ABS_Y twin; при отсутствии
+его сохраняется relative fallback. Поведение покрыто sysfs regression fixture,
+`make smoke`, `make mouse-qemu-smoke` и полный `make iso-smoke` прошли. Новый
+hybrid ISO имеет SHA-256
+`2af192a8427d36c8e5040d069fdb82ad2c45f149da192b312127d4b612400a61` и остается
+VMware retest candidate до ручного подтверждения.
+
 Финальный frozen `v1.0-alpha.8` release candidate из runtime commit `964fed6`
 имеет SHA-256
 `f1131d7587d49b5accf0e1e6b96fc378114fd1f9293a7e1e1a0e5dc1772a22e5`.
@@ -491,3 +504,4 @@ insufficient RAM, BIOS/UEFI selection, successful QEMU download/install/boot и
 42. [done] Добавить единый pre-release gate: tracked candidate metadata, full runtime commit, ISO/manifest SHA-256, manifest version, runtime-diff guard и обязательный wired USB physical report verifier.
 43. [done] Исправить VMware/QEMU absolute pointer: добавить безопасный `EV_ABS` decoder в hardened GPM, relative-first device selection, отдельный opt-in GRUB installer entry с `owrt.mouse=1` и QEMU/QMP click-through regression; default installer оставить keyboard-first до physical gate. Пройдены `make smoke`, `make mouse-qemu-smoke` и полный `make iso-smoke`.
 44. [future] Реализовать boot entry `Download latest OpenWrt x86 image and install` по Online Combined Image Install design: signed official stable metadata, BIOS/UEFI combined image selection, RAM capacity gate, verified local payload и reuse существующего destructive confirmation/write flow.
+45. [done] По реальному VMware failure исправить VMMouse twin-device routing: не выбирать молчащий relative twin при активном absolute mode, добавить sysfs regression fixture, пересобрать ISO и повторить полный QEMU gate. Ручной VMware retest остается частью pending physical gate.

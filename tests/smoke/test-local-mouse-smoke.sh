@@ -32,6 +32,8 @@ run_device_selection_smoke() {
 	printf '103\n' > "$work_dir/sys/event1/device/capabilities/rel"
 	printf '0\n' > "$work_dir/sys/event2/device/capabilities/rel"
 	printf '3\n' > "$work_dir/sys/event2/device/capabilities/abs"
+	printf 'QEMU USB Mouse\n' > "$work_dir/sys/event1/device/name"
+	printf 'QEMU USB Tablet\n' > "$work_dir/sys/event2/device/name"
 	: > "$work_dir/dev/event0"
 	: > "$work_dir/dev/event1"
 	: > "$work_dir/dev/event2"
@@ -45,7 +47,19 @@ run_device_selection_smoke() {
 	[ "$selected" = "$work_dir/dev/event1" ] ||
 		fail "Relative pointer selection returned: $selected"
 
+	printf 'ImExPS/2 VMware VMMouse\n' > "$work_dir/sys/event1/device/name"
+	printf 'VirtualPS/2 VMware VMMouse\n' > "$work_dir/sys/event2/device/name"
+	selected="$(
+		OWRT_LOCAL_MOUSE_TEST_MODE=1 \
+		OWRT_LOCAL_MOUSE_INPUT_CLASS="$work_dir/sys" \
+		OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT="$work_dir/dev" \
+			"$HELPER" device
+	)"
+	[ "$selected" = "$work_dir/dev/event2" ] ||
+		fail "VMware VMMouse absolute twin selection returned: $selected"
+
 	printf '0\n' > "$work_dir/sys/event1/device/capabilities/rel"
+	printf 'QEMU USB Tablet\n' > "$work_dir/sys/event2/device/name"
 	selected="$(
 		OWRT_LOCAL_MOUSE_TEST_MODE=1 \
 		OWRT_LOCAL_MOUSE_INPUT_CLASS="$work_dir/sys" \

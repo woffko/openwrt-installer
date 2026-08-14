@@ -83,8 +83,31 @@ pointer_device_path() {
 	printf '%s\n' "$device"
 }
 
+is_vmware_vmmouse() {
+	event_path="$1"
+	name="$(cat "$event_path/device/name" 2>/dev/null || true)"
+	case "$name" in
+		*"VMware VMMouse"*) return 0 ;;
+	esac
+	return 1
+}
+
 find_pointer() {
-	# Prefer relative mice when a VM or physical machine exposes both kinds.
+	# Prefer ordinary relative mice, but skip the inactive relative twin that
+	# VMware VMMouse exposes while sending motion through its absolute twin.
+	for event_path in "$INPUT_CLASS"/event*; do
+		[ -d "$event_path" ] || continue
+		capability_has_xy "$event_path/device/capabilities/rel" || continue
+		is_vmware_vmmouse "$event_path" && continue
+		pointer_device_path "$event_path" && return 0
+	done
+	for event_path in "$INPUT_CLASS"/event*; do
+		[ -d "$event_path" ] || continue
+		is_vmware_vmmouse "$event_path" || continue
+		capability_has_xy "$event_path/device/capabilities/abs" || continue
+		pointer_device_path "$event_path" && return 0
+	done
+	# Keep a relative-only VMMouse usable if its absolute twin is unavailable.
 	for event_path in "$INPUT_CLASS"/event*; do
 		[ -d "$event_path" ] || continue
 		capability_has_xy "$event_path/device/capabilities/rel" || continue
