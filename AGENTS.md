@@ -12,9 +12,9 @@
 ## Current Artifacts
 
 - Current published alpha release: `v1.0-alpha.7`.
-- Current local release-candidate runtime: `v1.0-alpha.9` (not published before the physical x86 gate).
+- Current frozen local release candidate: `v1.0-alpha.9`, runtime commit `8e8593c5891ff69f98a9ee3ef5fcdd23444d2b51`, metadata `release/v1.0-alpha.9-candidate.env` (not published before the physical x86 gate).
 - Current hybrid ISO: `output/openwrt-x86-64-installer-hybrid.iso`.
-- Current ISO SHA-256 is the pre-candidate development artifact `62653cac2fc7f22f51d48f1a813be45a462d385e3846d2eb2a18bbf585357e21`; replace it after the clean candidate rebuild.
+- Current candidate ISO SHA-256: `2b570a2e5747b0a9f2cd46c8252059dd64f101d35c0e14c06fdb69402cffd851`.
 - Older alpha release tags are preserved; do not move them.
 
 ## Semantic Navigation With LSP MCP

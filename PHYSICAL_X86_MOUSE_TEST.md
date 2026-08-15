@@ -17,14 +17,24 @@ It is retained only as historical evidence. Runtime and image changes after
 that build invalidated it, so it must not be used for a new physical report or
 release.
 
-The `v1.0-alpha.9` mousedev-based runtime was selected for candidate freeze
-after its pre-freeze development build passed the complete QEMU mouse matrix
-and a VMware cursor test on 2026-08-14. The last pre-candidate ISO, including
-the later configuration-import work, has SHA-256
-`62653cac2fc7f22f51d48f1a813be45a462d385e3846d2eb2a18bbf585357e21` and passed
-the full QEMU ISO gate on 2026-08-15. Those virtual-machine results do not close
-the separate bare-metal gate. This SHA is historical and must be replaced by
-the clean `v1.0-alpha.9` candidate rebuild before accepting a physical report.
+## Current Release Candidate
+
+The frozen candidate for the next physical report is:
+
+```text
+installer_version=v1.0-alpha.9
+runtime_commit=8e8593c5891ff69f98a9ee3ef5fcdd23444d2b51
+candidate_metadata=release/v1.0-alpha.9-candidate.env
+iso_sha256=2b570a2e5747b0a9f2cd46c8252059dd64f101d35c0e14c06fdb69402cffd851
+manifest_sha256=2d957a424664e7d6a5f75b0646e226289446d13205c12db83e0a32db4c26bd15
+```
+
+On 2026-08-15 this exact runtime passed `make smoke`, three repeated USB
+relative-mouse runs, the full USB/PS2/tablet mouse matrix, focused
+configuration-import install/boot, and the complete BIOS/UEFI ISO matrix.
+Those virtual-machine results do not close the separate bare-metal gate. Any
+later runtime or ISO change invalidates this candidate and requires a new
+freeze and physical report.
 
 ## Safety
 
@@ -40,8 +50,9 @@ cd output
 sha256sum -c sha256sums.txt
 ```
 
-For an actual gate, the hybrid ISO line must match the newly frozen candidate
-metadata exactly, not the historical `v1.0-alpha.8` block above.
+For an actual gate, the hybrid ISO line must match the current `v1.0-alpha.9`
+candidate block and committed metadata exactly, not the historical
+`v1.0-alpha.8` block above.
 
 ## Required Hardware
 
@@ -89,7 +100,7 @@ supported.
     ```sh
     ./scripts/verify-physical-report.sh /path/to/owrt-hardware-report.txt
     make release-gate \
-      CANDIDATE=release/v1.0-alpha.N-candidate.env \
+      CANDIDATE=release/v1.0-alpha.9-candidate.env \
       REPORT=/path/to/owrt-hardware-report.txt
     ```
 

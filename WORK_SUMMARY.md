@@ -10,19 +10,19 @@
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
 - Последняя опубликованная функциональная версия: обязательный `pv`, честный byte-percent записи payload, раздельный контроль `gzip`/`pv`/`dd`, cleanup FIFO/processes и полный QEMU install+boot smoke; release runtime `v1.0-alpha.7`.
-- Текущий release-candidate runtime: `v1.0-alpha.9`. Unified GRUB installer включает keyboard и experimental local VGA mouse через stock Linux `mousedev`; публикация и заявленная поддержка мыши по-прежнему ждут physical x86 gate.
+- Текущий frozen release-candidate runtime: `v1.0-alpha.9`, commit `8e8593c5891ff69f98a9ee3ef5fcdd23444d2b51`, metadata `release/v1.0-alpha.9-candidate.env`. Unified GRUB installer включает keyboard и experimental local VGA mouse через stock Linux `mousedev`; публикация и заявленная поддержка мыши по-прежнему ждут physical x86 gate.
 - Последний опубликованный release: `v1.0-alpha.7`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.7`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
 - Старые releases `v1.0-alpha.1`...`v1.0-alpha.6` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
 - Опубликованный `v1.0-alpha.7` ISO содержит обязательные `whiptail` и `pv`; SHA-256: `89f9e2c89df7fe27f882d1d2db7114caefff226ad840b70b92b1205458ddfa7c`.
 - Предыдущий замороженный `v1.0-alpha.8` release-candidate ISO собран из runtime commit `964fed6`; SHA-256: `f1131d7587d49b5accf0e1e6b96fc378114fd1f9293a7e1e1a0e5dc1772a22e5`. Он сохранен как исторический candidate, но не покрывает post-import runtime; для следующего release нужен новый physical pass и новая заморозка.
-- Последний проверенный pre-candidate hybrid ISO SHA-256: `62653cac2fc7f22f51d48f1a813be45a462d385e3846d2eb2a18bbf585357e21`; он будет заменен clean `v1.0-alpha.9` build.
+- Текущий frozen `v1.0-alpha.9` hybrid ISO SHA-256: `2b570a2e5747b0a9f2cd46c8252059dd64f101d35c0e14c06fdb69402cffd851`; manifest SHA-256: `2d957a424664e7d6a5f75b0646e226289446d13205c12db83e0a32db4c26bd15`.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, packaged `whiptail` на local console, ANSI SGR mouse для terminal emulators, line fallback и optional `dialog`).
 - Local VGA mouse prototype: pinned SDK packages `libnewt`/`whiptail`, daemon-only `gpm-daemon`, stock Linux `mousedev` aggregate `/dev/input/mice`, private `0600` socket и отдельный `make mouse-qemu-smoke`.
-- QEMU local-mouse matrix пройдена: USB relative click, PS/2, absolute-only QEMU tablet click через QMP, daemon crash keyboard fallback, cleanup stale runtime-файлов внутри OpenWrt и cleanup до exact `ERASE`; публикация/default ждут physical x86 test.
+- QEMU local-mouse matrix пройдена: USB relative click, PS/2, absolute-only QEMU tablet click через QMP, daemon crash keyboard fallback, cleanup stale runtime-файлов внутри OpenWrt и cleanup до exact `ERASE`. USB-relative calibration использует отдельные малые HID reports ниже порога ускорения GPM и изолирует USB от PS/2; три повторных USB-прогона и полный matrix прошли перед freeze.
 - Прежний direct-evdev/VMMouse twin selector удален. Stock `mousedev` aggregate и стандартный Newt console pointer прошли полный QEMU mouse matrix и ручную повторную проверку в VMware.
 - GRUB сведен к трем пунктам без номера OpenWrt в названиях: unified installer с keyboard+mouse, загрузка установленного OpenWrt и keyboard-only failsafe installer.
 - `Boot installed OpenWrt from local disk` становится default, когда GRUB находит раздел `kernel`; иначе default остается unified installer. UEFI ранний config закреплен за `(cd0)`, чтобы подключенный диск не обходил меню ISO.
@@ -31,6 +31,7 @@
 - Реальные QEMU online BIOS и UEFI download/install/installed-boot tests прошли 2026-08-14 с официальной stable версией OpenWrt `25.12.5`.
 - После выбора target disk реализован импорт стандартного OpenWrt `sysupgrade -b` backup с FAT32/exFAT/NTFS3/ext4 USB: read-only mount, private RAM copy, строгая tar validation, config-only/full policy, imported/wizard network choice и повторный post-extract audit.
 - USB backup никогда не распаковывается прямо в target rootfs; unsafe paths, links, special files, mode/size/member bombs и нехватка RAM отклоняются до destructive confirmation. Review и installed metadata содержат provenance и SHA-256, а stale installer-owned network metadata удаляется.
+- Netinstall RAM-workspace больше не меняет process-wide `umask`, а config-import копирует только проверенное содержимое `etc/` и нормализует режим каталога. QEMU post-import boot подтверждает доступные `0755` режимы `/` и `/etc`, импортированные UCI и отсутствие stale installer state.
 - `scripts/common.sh` фиксирует `umask 022`, чтобы ImageBuilder не создавал rootfs с `0700/0600` при запуске из hardened runner; добавлен `make build-env-smoke`.
 - Для physical gate сохранен скрытый kernel flag `owrt.hardware-test=1`: его временно добавляют через GRUB edit к unified entry, он принудительно включает `--dry-run`, а `owrt-hardware-report` создает ограниченный отчет без сетевых и аппаратных серийных идентификаторов.
 - Physical report schema v2 фиксирует безопасный enum подключения, обязательные ручные проверки и итог `physical_flow_result`; `scripts/verify-physical-report.sh` принимает первый alpha gate только для полного wired USB HID pass и отвергает receiver/PS2 или неполный отчет.
@@ -38,7 +39,7 @@
 - `make release-gate CANDIDATE=... REPORT=...` использует data-only parser, требует committed metadata, сверяет physical report, commit, ISO/sidecar/embedded manifest и отвергает tracked/staged/untracked/unexpected-ignored runtime. Изолированный Git smoke покрывает injection, dirty, checksum, hash и embedded-manifest rejection.
 - GitHub Actions smoke gate опубликован в `main`: push/PR workflow запускает `make smoke` без разрешения на запись в repository. Первый run `31657834111` для commit `9e63814` успешно завершен за 43 секунды.
 - Реальный GRUB-путь hardware-test проверен в QEMU; полный wizard до exact `ERASE` завершился в dry-run, GPM был остановлен перед подтверждением, а SHA-256 всего target disk до и после совпал.
-- На замороженном `v1.0-alpha.8` candidate прошли `make smoke`, `make mouse-qemu-smoke`, BIOS/UEFI/VGA boot, выбор hardware-test в реальном GRUB и полный install-to-disk/installed-system boot через `make iso-smoke`.
+- На замороженном `v1.0-alpha.9` candidate прошли `make smoke`, `make mouse-qemu-smoke`, BIOS/UEFI/VGA, local-disk BIOS/UEFI, missing-disk, hardware-test, install-to-disk/installed-system boot и config-import/install/boot через `make iso-smoke`.
 - Реализованы `OWRT_UI_MODE=auto|line|ansi|whiptail|curses|dialog`, общий curses adapter и Hellforge frame/menu/review/confirm/install-stage screens.
 - Network wizard теперь использует form-aware prompt screens для LAN IPv4, PPPoE и static WAN settings: на экране показываются context, example, current/default и error zone.
 - `whiptail 0.52.24` добавлен как обязательный официальный package; local `TERM=linux` console использует его автоматически. `curses` выбирает работающий `dialog`, затем `whiptail`, затем ANSI.
@@ -146,9 +147,9 @@ SHA-256:
 
 ```text
 d405fde7740fb9e2d761c2687d53f74f76bf3484cc07ca91fc43731f65a62c9a  openwrt-x86-64-target.img.gz
-fbdb20ebd9567f00705e3e46aa53998986aa28e2d8b1544b21cbd87b3d82a734  openwrt-x86-64-installer.img.gz
-62653cac2fc7f22f51d48f1a813be45a462d385e3846d2eb2a18bbf585357e21  openwrt-x86-64-installer-hybrid.iso
-6a30b775cae1f599c6114aa905addc558be3f6c1816412c0d8dc26508bc498c1  manifest.json
+5c1bb9e5e08d1b8f8e4e0a36a115236766c6282ed15ebd0aa352f3517b40ab6e  openwrt-x86-64-installer.img.gz
+2b570a2e5747b0a9f2cd46c8252059dd64f101d35c0e14c06fdb69402cffd851  openwrt-x86-64-installer-hybrid.iso
+2d957a424664e7d6a5f75b0646e226289446d13205c12db83e0a32db4c26bd15  manifest.json
 ```
 
 ## Проверки
@@ -211,11 +212,11 @@ fbdb20ebd9567f00705e3e46aa53998986aa28e2d8b1544b21cbd87b3d82a734  openwrt-x86-64
 - BIOS ISO boot smoke-test в QEMU: El Torito BIOS -> GRUB -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/bios-iso.log`;
 - UEFI ISO boot smoke-test в QEMU: OVMF -> UEFI DVD -> GRUB -> EFI stub -> kernel -> initramfs -> OpenWrt console, лог `build/qemu-iso-smoke/uefi-iso.log`;
 - VGA QEMU smoke-test дождался target-disk menu на `tty1`, подтвердил `OWRT_INSTALLER_UI_BACKEND=whiptail` и сохранил непустой framebuffer `build/qemu-iso-smoke/vga-installer.ppm`;
-- QEMU install smoke автоматически прошел disk/LAN/WAN/WAN6/review/erase flow, увидел `OWRT_INSTALLER_WRITE_PROGRESS=100`, загрузил записанный qcow2 и подтвердил `installer_version=v1.0-alpha.9-dev`, `installed_by=openwrt-x86-installer`, `target_disk=/dev/vda`;
+- QEMU install smoke автоматически прошел disk/LAN/WAN/WAN6/review/erase flow, увидел `OWRT_INSTALLER_WRITE_PROGRESS=100`, загрузил записанный qcow2 и подтвердил `installer_version=v1.0-alpha.9`, `installed_by=openwrt-x86-installer`, `target_disk=/dev/vda`;
 - deterministic `make config-import-smoke` проверил valid config-only/full restore, imported/wizard network, cleanup и hostile archive/resource-limit matrix без block-device privileges;
-- финальный полный `make iso-smoke` job `7de4084a8abe` прошел за 578 секунд на ISO `62653cac...`: BIOS/UEFI, local-disk BIOS/UEFI, missing-disk, hardware menu, VGA, clean install+boot и USB config-import+install+boot;
-- checksum manifest прошел; `/manifest.json` извлечен из ISO и совпал с sidecar по SHA-256, dev provenance честно содержит commit `d29d6a949e68150705094432f9b75e52d03cbfbf` и `build_dirty: true`, поэтому freeze отказался. Build log: `/home/w0w/.local/state/codex-longrun/jobs/e947fc40f474.log`; QEMU log: `/home/w0w/.local/state/codex-longrun/jobs/7de4084a8abe.log`; fast smoke log: `/home/w0w/.local/state/codex-longrun/jobs/cda98a2f1a08.log`;
-- для локального `v1.0-alpha.9-dev` повторно пройдены BIOS/UEFI/VGA, hardware-test GRUB path и полный install smoke; установленная система подтвердила runtime marker, а local-mouse matrix отдельно проверила USB/PS2/absolute tablet/fallback/cleanup/disk immutability;
+- финальный полный `make iso-smoke` job `27a90c6a290645c4ab277ed50a21fabe` прошел за 613 секунд на ISO `2b570a2e...`: BIOS/UEFI, local-disk BIOS/UEFI, missing-disk, hardware menu, VGA, clean install+boot и USB config-import+install+boot;
+- checksum manifest прошел; `/manifest.json` в ISO и initramfs совпадает с sidecar byte-for-byte, provenance содержит commit `8e8593c5891ff69f98a9ee3ef5fcdd23444d2b51` и `build_dirty: false`. Build job: `7dc16e75ed8e4aff9730d1fb8739d2df`; fast smoke: `3ab67372c91348c29bdbaf01a54db3cf`; mouse QEMU: `7b4549590cc3470c81379e776716cc7e`; focused config-import: `acec1a31270a4e0ead0a82a5fbb9ccfe`;
+- для frozen `v1.0-alpha.9` повторно пройдены BIOS/UEFI/VGA, hardware-test GRUB path и полный install smoke; установленная система подтвердила runtime marker, а local-mouse matrix отдельно проверила USB/PS2/absolute tablet/fallback/cleanup/disk immutability;
 - online BIOS и UEFI QEMU acceptance скачали официальный OpenWrt `25.12.5`, проверили payload, установили соответствующие combined images и загрузили обе установленные системы с корректным `/etc/openwrt-installer-release`;
 - финальный `make smoke local-disk-boot-smoke` прошел на OpenWrt `25.12.5`: syntax, ShellCheck, UI/PPPoE/online/install-flow и BIOS/UEFI local-disk boot; missing-disk menu path также прошел;
 - VMware VNC-проверка 2026-08-14 визуально подтвердила исправленный скрытый PPPoE passwordbox. После финальной сборки `62653cac...` 2026-08-15 VM была перезагружена через `10.0.77.3:5900`, прошла новый boot cycle и автозапустила installer до выбора `/dev/sda`; установка и запись на диск не запускались;

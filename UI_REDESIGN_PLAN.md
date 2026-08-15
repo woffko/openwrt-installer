@@ -461,10 +461,10 @@ insufficient RAM, BIOS/UEFI selection, successful QEMU download/install/boot и
 
 ## Phase 7: Import OpenWrt Configuration From USB
 
-Статус на 2026-08-15: implemented and verified. Эта фаза не зависит от
-незакрытого physical mouse gate и не меняет его статус. Финальный hybrid ISO
-имеет SHA-256
-`62653cac2fc7f22f51d48f1a813be45a462d385e3846d2eb2a18bbf585357e21`.
+Статус на 2026-08-15: implemented, fixed and verified in frozen
+`v1.0-alpha.9`. Эта фаза не зависит от незакрытого physical mouse gate и не
+меняет его статус. Candidate hybrid ISO имеет SHA-256
+`2b570a2e5747b0a9f2cd46c8252059dd64f101d35c0e14c06fdb69402cffd851`.
 
 После выбора target disk интерактивный wizard предлагает:
 
@@ -522,11 +522,15 @@ Acceptance matrix:
   доказательством отсутствия stale installer network map/applier.
 
 Итоговая проверка: deterministic source matrix прошла после post-extract
-path/type/count/size audit; полный `make iso-smoke` job `7de4084a8abe` за 578
-секунд прошел BIOS, UEFI, local-disk BIOS/UEFI, missing-disk, hardware menu,
-VGA, clean install+boot и USB config-import+install+boot. Checksum manifest
-проходит, а `owrt-install`, UI, config-import helper и manifest внутри
-initramfs совпадают с текущими source artifacts по SHA-256.
+path/type/count/size audit. Исправлена утечка process-wide `umask 077` из
+netinstall workspace; import больше не переносит metadata synthetic staging
+root в установленный `/`, а `/etc` нормализуется до `0755`. Полный
+`make iso-smoke` job `27a90c6a290645c4ab277ed50a21fabe` за 613 секунд прошел
+BIOS, UEFI, local-disk BIOS/UEFI, missing-disk, hardware menu, VGA, clean
+install+boot и USB config-import+install+boot. Post-import guest boot отдельно
+подтвердил доступные режимы `/` и `/etc`. Checksum manifest проходит, а
+`owrt-install`, UI, config-import helper и manifest внутри initramfs совпадают
+с текущими source artifacts.
 
 ## Риски
 
@@ -610,7 +614,10 @@ initramfs совпадают с текущими source artifacts по SHA-256.
 60. [done] Добавить deterministic config-import smoke matrix без block-device privileges.
 61. [done] Добавить QEMU USB backup install/boot acceptance, пересобрать ISO и обновить SHA/docs.
 62. [done] Перезагрузить VMware test VM через VNC после финальной сборки `62653cac...` и подтвердить новый boot cycle, autostart и безопасный экран выбора `/dev/sda` без начала установки.
-63. [in progress] Зафиксировать выбранный `v1.0-alpha.9` post-import runtime в новом immutable candidate commit/metadata, пересобрать release ISO из clean commit и повторить `make smoke`, `make mouse-qemu-smoke`, `make iso-smoke`; любое последующее runtime-изменение аннулирует candidate.
+63. [done] Зафиксировать выбранный `v1.0-alpha.9` post-import runtime в immutable candidate commit `8e8593c5891ff69f98a9ee3ef5fcdd23444d2b51` и metadata `release/v1.0-alpha.9-candidate.env`, пересобрать ISO `2b570a2e...` из clean commit и повторить `make smoke`, `make mouse-qemu-smoke`, focused config-import и полный `make iso-smoke`; любое последующее runtime-изменение аннулирует candidate.
 64. [pending] После успешного wired USB HID report выполнить `make release-gate`, опубликовать следующий immutable alpha tag/assets и не перемещать старые tags; включение mouse path по умолчанию оставить до второго platform/input-controller pass из задачи 39.
 65. [done] Harden candidate freeze/gate: убрать shell `source` и historical default, требовать явный committed metadata path, ловить tracked/staged/untracked/unexpected-ignored runtime, встроить `build_commit`/`build_dirty` manifest в корень ISO и проверять его byte-for-byte; покрыть isolated Git smoke и повторить полный QEMU gate.
-66. [in progress] Свести GRUB к трем пунктам, включить keyboard+mouse в unified installer, автоматически проверять strictly newer stable с embedded fallback и делать local-disk entry условным default; повторить полный QEMU gate до freeze.
+66. [done] Свести GRUB к трем пунктам, включить keyboard+mouse в unified installer, автоматически проверять strictly newer stable с embedded fallback и делать local-disk entry условным default; полный QEMU gate повторен до freeze.
+67. [done] Устранить post-import boot hang из-за утечки `umask 077` и переноса staging-root metadata; добавить source и QEMU regression checks режимов `/`/`/etc` и installed boot.
+68. [done] Сделать USB-relative QEMU mouse acceptance детерминированным: отдельные малые reports ниже GPM acceleration threshold, попадание в активную строку `OK`, USB/PS2 isolation, три повторных USB-прогона и полный mouse matrix.
+69. [pending] Перезагрузить VMware test VM с frozen ISO `2b570a2e...`, подтвердить три GRUB entry, conditional local-disk default и безопасный autostart installer без disk write.
