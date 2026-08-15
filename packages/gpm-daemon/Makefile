@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gpm
 PKG_VERSION:=1.20.7
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 PKG_SOURCE:=$(PKG_NAME)_$(PKG_VERSION).orig.tar.gz
 PKG_SOURCE_URL:=https://deb.debian.org/debian/pool/main/g/gpm
@@ -25,8 +25,8 @@ endef
 
 define Package/gpm-daemon/description
  GPM console mouse server packaged without its legacy client utilities.
- The installer profile supplies the matching input-event kernel module and
- runs the daemon with kernel selection and paste support compiled out.
+ The installer profile supplies the kernel mousedev multiplexer and runs the
+ daemon with kernel selection and paste support compiled out.
 endef
 
 CONFIGURE_ARGS += \

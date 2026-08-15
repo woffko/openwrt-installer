@@ -6,8 +6,8 @@ STATE_DIR="${OWRT_LOCAL_MOUSE_STATE_DIR:-/tmp/owrt-installer-mouse}"
 STATE_FILE="$STATE_DIR/state"
 GPM_PID_FILE="${OWRT_LOCAL_MOUSE_GPM_PID_FILE:-/var/run/gpm.pid}"
 GPM_SOCKET="${OWRT_LOCAL_MOUSE_GPM_SOCKET:-/dev/gpmctl}"
-INPUT_CLASS="${OWRT_LOCAL_MOUSE_INPUT_CLASS:-/sys/class/input}"
 INPUT_DEV_ROOT="${OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT:-/dev/input}"
+MOUSE_DEVICE="${OWRT_LOCAL_MOUSE_DEVICE:-$INPUT_DEV_ROOT/mice}"
 GPM_BIN="${OWRT_LOCAL_MOUSE_GPM_BIN:-/usr/sbin/gpm}"
 
 log() {
@@ -62,63 +62,11 @@ process_is_owned_gpm() {
 	[ "$(process_start_time "$pid" || true)" = "$expected_start" ]
 }
 
-capability_has_xy() {
-	capability_file="$1"
-	[ -r "$capability_file" ] || return 1
-	capability_word="$(awk '{ print $NF }' "$capability_file" 2>/dev/null || true)"
-	case "$capability_word" in
-		''|*[!0-9a-fA-F]*) return 1 ;;
-	esac
-	capability_value="$(printf '%d' "0x$capability_word" 2>/dev/null || true)"
-	case "$capability_value" in
-		''|*[!0-9]*) return 1 ;;
-	esac
-	[ $((capability_value & 3)) -eq 3 ]
-}
-
-pointer_device_path() {
-	event_path="$1"
-	device="$INPUT_DEV_ROOT/${event_path##*/}"
-	[ -c "$device" ] || [ "${OWRT_LOCAL_MOUSE_TEST_MODE:-0}" = "1" ] || return 1
-	printf '%s\n' "$device"
-}
-
-is_vmware_vmmouse() {
-	event_path="$1"
-	name="$(cat "$event_path/device/name" 2>/dev/null || true)"
-	case "$name" in
-		*"VMware VMMouse"*) return 0 ;;
-	esac
-	return 1
-}
-
 find_pointer() {
-	# Prefer ordinary relative mice, but skip the inactive relative twin that
-	# VMware VMMouse exposes while sending motion through its absolute twin.
-	for event_path in "$INPUT_CLASS"/event*; do
-		[ -d "$event_path" ] || continue
-		capability_has_xy "$event_path/device/capabilities/rel" || continue
-		is_vmware_vmmouse "$event_path" && continue
-		pointer_device_path "$event_path" && return 0
-	done
-	for event_path in "$INPUT_CLASS"/event*; do
-		[ -d "$event_path" ] || continue
-		is_vmware_vmmouse "$event_path" || continue
-		capability_has_xy "$event_path/device/capabilities/abs" || continue
-		pointer_device_path "$event_path" && return 0
-	done
-	# Keep a relative-only VMMouse usable if its absolute twin is unavailable.
-	for event_path in "$INPUT_CLASS"/event*; do
-		[ -d "$event_path" ] || continue
-		capability_has_xy "$event_path/device/capabilities/rel" || continue
-		pointer_device_path "$event_path" && return 0
-	done
-	for event_path in "$INPUT_CLASS"/event*; do
-		[ -d "$event_path" ] || continue
-		capability_has_xy "$event_path/device/capabilities/abs" || continue
-		pointer_device_path "$event_path" && return 0
-	done
-	return 1
+	[ -c "$MOUSE_DEVICE" ] ||
+		{ [ "${OWRT_LOCAL_MOUSE_TEST_MODE:-0}" = "1" ] && [ -e "$MOUSE_DEVICE" ]; } ||
+		return 1
+	printf '%s\n' "$MOUSE_DEVICE"
 }
 
 read_state_pid() {
@@ -175,13 +123,13 @@ start_mouse() {
 		return 1
 	fi
 	device="$(find_pointer)" || {
-		log "no relative or absolute X/Y pointer found; keyboard input remains active"
+		log "mousedev aggregate is unavailable; keyboard input remains active"
 		return 1
 	}
 
 	umask 077
 	mkdir -p "$STATE_DIR"
-	"$GPM_BIN" -m "$device" -t evdev -A
+	"$GPM_BIN" -m "$device" -t imps2 -A
 
 	pid=""
 	tries=0

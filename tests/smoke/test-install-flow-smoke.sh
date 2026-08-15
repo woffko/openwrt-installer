@@ -144,6 +144,9 @@ run_parse_args_smoke() {
 		. "$1"
 		parse_args \
 			--target /dev/testdisk \
+			--config-backup /tmp/router-backup.tar.gz \
+			--config-import-policy full \
+			--import-network wizard \
 			--skip-network-wizard \
 			--dry-run \
 			--yes-i-know-this-will-erase-data \
@@ -156,6 +159,9 @@ run_parse_args_smoke() {
 		printf "assume_yes=%s\n" "$ASSUME_YES"
 		printf "lan=%s/%s %s\n" "$LAN_IP" "$LAN_CIDR" "$LAN_NETMASK"
 		printf "wan=%s wan6=%s\n" "$WAN_PROTO" "$WAN6_PROTO"
+		printf "import=%s policy=%s network=%s\n" \
+			"$CONFIG_IMPORT_SOURCE_REQUEST" "$CONFIG_IMPORT_POLICY_REQUEST" \
+			"$CONFIG_IMPORT_NETWORK_REQUEST"
 		cleanup
 	' sh "$INSTALLER" > "$out_file" 2>&1
 
@@ -166,6 +172,7 @@ run_parse_args_smoke() {
 	assert_contains "$out_file" "assume_yes=1"
 	assert_contains "$out_file" "lan=10.10.10.1/24 255.255.255.0"
 	assert_contains "$out_file" "wan=disabled wan6=disabled"
+	assert_contains "$out_file" "import=/tmp/router-backup.tar.gz policy=full network=wizard"
 }
 
 run_dry_run_skip_network_smoke() {

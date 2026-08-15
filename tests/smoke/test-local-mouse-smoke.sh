@@ -7,6 +7,8 @@ HELPER="$PROJECT_DIR/files-installer/usr/libexec/owrt-installer-local-mouse"
 INSTALLER="$PROJECT_DIR/files-installer/usr/sbin/owrt-install"
 UI_LIB="$PROJECT_DIR/files-installer/usr/libexec/owrt-installer-ui"
 GPM_PATCH="$PROJECT_DIR/packages/gpm-daemon/patches/010-modern-toolchain.patch"
+NEWT_POINTER_PATCH="$PROJECT_DIR/packages/newt-gpm/patches/020-gpm-visible-pointer.patch"
+MOUSEDEV_PACKAGE="$PROJECT_DIR/packages/input-mousedev/Makefile"
 TMPDIR="${TMPDIR:-/tmp}"
 
 fail() {
@@ -21,61 +23,25 @@ assert_contains() {
 		fail "Expected $file to contain: $pattern"
 }
 
-run_device_selection_smoke() {
-	work_dir="$1/device-selection"
-	mkdir -p \
-		"$work_dir/sys/event0/device/capabilities" \
-		"$work_dir/sys/event1/device/capabilities" \
-		"$work_dir/sys/event2/device/capabilities" \
-		"$work_dir/dev"
-	printf '1\n' > "$work_dir/sys/event0/device/capabilities/rel"
-	printf '103\n' > "$work_dir/sys/event1/device/capabilities/rel"
-	printf '0\n' > "$work_dir/sys/event2/device/capabilities/rel"
-	printf '3\n' > "$work_dir/sys/event2/device/capabilities/abs"
-	printf 'QEMU USB Mouse\n' > "$work_dir/sys/event1/device/name"
-	printf 'QEMU USB Tablet\n' > "$work_dir/sys/event2/device/name"
-	: > "$work_dir/dev/event0"
-	: > "$work_dir/dev/event1"
-	: > "$work_dir/dev/event2"
+run_aggregate_device_smoke() {
+	work_dir="$1/aggregate-device"
+	mkdir -p "$work_dir/dev"
+	: > "$work_dir/dev/mice"
 
 	selected="$(
 		OWRT_LOCAL_MOUSE_TEST_MODE=1 \
-		OWRT_LOCAL_MOUSE_INPUT_CLASS="$work_dir/sys" \
 		OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT="$work_dir/dev" \
 			"$HELPER" device
 	)"
-	[ "$selected" = "$work_dir/dev/event1" ] ||
-		fail "Relative pointer selection returned: $selected"
+	[ "$selected" = "$work_dir/dev/mice" ] ||
+		fail "Aggregate pointer path returned: $selected"
 
-	printf 'ImExPS/2 VMware VMMouse\n' > "$work_dir/sys/event1/device/name"
-	printf 'VirtualPS/2 VMware VMMouse\n' > "$work_dir/sys/event2/device/name"
-	selected="$(
-		OWRT_LOCAL_MOUSE_TEST_MODE=1 \
-		OWRT_LOCAL_MOUSE_INPUT_CLASS="$work_dir/sys" \
-		OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT="$work_dir/dev" \
-			"$HELPER" device
-	)"
-	[ "$selected" = "$work_dir/dev/event2" ] ||
-		fail "VMware VMMouse absolute twin selection returned: $selected"
-
-	printf '0\n' > "$work_dir/sys/event1/device/capabilities/rel"
-	printf 'QEMU USB Tablet\n' > "$work_dir/sys/event2/device/name"
-	selected="$(
-		OWRT_LOCAL_MOUSE_TEST_MODE=1 \
-		OWRT_LOCAL_MOUSE_INPUT_CLASS="$work_dir/sys" \
-		OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT="$work_dir/dev" \
-			"$HELPER" device
-	)"
-	[ "$selected" = "$work_dir/dev/event2" ] ||
-		fail "Absolute pointer fallback returned: $selected"
-
-	printf '1\n' > "$work_dir/sys/event2/device/capabilities/abs"
+	rm -f "$work_dir/dev/mice"
 	if OWRT_LOCAL_MOUSE_TEST_MODE=1 \
-		OWRT_LOCAL_MOUSE_INPUT_CLASS="$work_dir/sys" \
 		OWRT_LOCAL_MOUSE_INPUT_DEV_ROOT="$work_dir/dev" \
 		"$HELPER" device >/dev/null 2>&1
 	then
-		fail "Incomplete X/Y devices must not be selected"
+		fail "Missing mousedev aggregate must not be accepted"
 	fi
 }
 
@@ -121,7 +87,7 @@ run_crashed_daemon_cleanup_smoke() {
 	pid_file="$work_dir/gpm.pid"
 	socket_file="$work_dir/gpmctl"
 	missing_pid=999999
-	printf '%s 0 /dev/input/event0\n' "$missing_pid" > "$state_dir/state"
+	printf '%s 0 /dev/input/mice\n' "$missing_pid" > "$state_dir/state"
 	printf '%s\n' "$missing_pid" > "$pid_file"
 	: > "$socket_file"
 
@@ -140,16 +106,33 @@ assert_contains "$GPM_PATCH" "chmod(GPM_NODE_CTL,0600);"
 assert_contains "$GPM_PATCH" "daemon/processrequest.c\\"
 assert_contains "$GPM_PATCH" "sizeof(struct input_event)"
 assert_contains "$GPM_PATCH" "thisevent.value ? (state->buttons | GPM_B_LEFT)"
-assert_contains "$PROJECT_DIR/packages/gpm-daemon/patches/020-evdev-absolute-pointer.patch" "EVIOCGABS(ABS_X)"
-assert_contains "$PROJECT_DIR/packages/gpm-daemon/patches/020-evdev-absolute-pointer.patch" "M_evdev, I_evdev"
-assert_contains "$PROJECT_DIR/packages/gpm-daemon/Makefile" "PKG_RELEASE:=4"
+[ ! -e "$PROJECT_DIR/packages/gpm-daemon/patches/020-evdev-absolute-pointer.patch" ] ||
+	fail "Custom GPM EV_ABS decoder must be removed"
+assert_contains "$PROJECT_DIR/packages/gpm-daemon/Makefile" "PKG_RELEASE:=5"
 assert_contains "$PROJECT_DIR/packages/gpm-daemon/Makefile" "DEPENDS:=+libc +libgcc"
+assert_contains "$PROJECT_DIR/packages/newt-gpm/Makefile" "PKG_RELEASE:=3"
+assert_contains "$NEWT_POINTER_PATCH" "GPM_MOVE | GPM_DRAG | GPM_DOWN | GPM_UP"
+assert_contains "$NEWT_POINTER_PATCH" "ioctl(STDIN_FILENO, TIOCLINUX, &selection)"
+assert_contains "$NEWT_POINTER_PATCH" "newtGpmSetPointer(&event, 3)"
+assert_contains "$NEWT_POINTER_PATCH" "newtGpmSetPointer(NULL, 4)"
+assert_contains "$MOUSEDEV_PACKAGE" "PKG_VERSION:=6.12.94"
+assert_contains "$MOUSEDEV_PACKAGE" "mousedev.ko"
+# shellcheck disable=SC2016 # Assert literal OpenWrt make syntax.
+assert_contains "$MOUSEDEV_PACKAGE" 'AUTOLOAD:=$(call AutoProbe,mousedev)'
+# shellcheck disable=SC2016 # Assert literal runtime parameter expansion.
+assert_contains "$HELPER" 'MOUSE_DEVICE="${OWRT_LOCAL_MOUSE_DEVICE:-$INPUT_DEV_ROOT/mice}"'
+# shellcheck disable=SC2016 # Assert literal GPM command construction.
+assert_contains "$HELPER" '"$GPM_BIN" -m "$device" -t imps2 -A'
+assert_contains "$PROJECT_DIR/profiles/packages-installer.txt" "kmod-input-mousedev"
 assert_contains "$PROJECT_DIR/profiles/packages-installer.txt" "coreutils-stat"
+if grep -F 'vt.cur_default=6' "$PROJECT_DIR/iso/boot/grub/grub.cfg" >/dev/null 2>&1; then
+	fail "Local mouse must not reuse the blinking text cursor"
+fi
 
 work_dir="$(mktemp -d "$TMPDIR/owrt-local-mouse-smoke.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT INT TERM
 
-run_device_selection_smoke "$work_dir"
+run_aggregate_device_smoke "$work_dir"
 run_confirmation_lifecycle_smoke "$work_dir"
 run_crashed_daemon_cleanup_smoke "$work_dir"
 

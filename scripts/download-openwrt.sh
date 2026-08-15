@@ -15,7 +15,7 @@ mkdir -p "$BUILD_DIR/cache"
 archive="$BUILD_DIR/cache/$IMAGEBUILDER_ARCHIVE"
 
 case "$OPENWRT_VERSION" in
-	25.12.4) expected="$IMAGEBUILDER_SHA256_25_12_4" ;;
+	25.12.5) expected="$IMAGEBUILDER_SHA256_25_12_5" ;;
 	*) die "No pinned ImageBuilder checksum for OpenWrt $OPENWRT_VERSION" ;;
 esac
 
@@ -28,9 +28,10 @@ fi
 log "Verifying $IMAGEBUILDER_ARCHIVE"
 printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -
 
-if [ ! -d "$IMAGEBUILDER_DIR" ]; then
+if ! imagebuilder_ready; then
 	log "Extracting ImageBuilder"
 	tar --zstd -xf "$archive" -C "$BUILD_DIR"
 fi
 
+imagebuilder_ready || die "Extracted ImageBuilder is incomplete: $IMAGEBUILDER_DIR"
 log "ImageBuilder ready: $IMAGEBUILDER_DIR"

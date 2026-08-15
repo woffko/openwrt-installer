@@ -9,7 +9,7 @@ SDK_NAME="openwrt-sdk-${OPENWRT_VERSION}-x86-64_gcc-14.3.0_musl.Linux-x86_64"
 SDK_ARCHIVE="$BUILD_DIR/cache/$SDK_NAME.tar.zst"
 SDK_DIR="$BUILD_DIR/$SDK_NAME"
 SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/$SDK_NAME.tar.zst"
-SDK_SHA256="28e004c1be4d215d19c1f12a6aa4c8d8f80689549eb707d0ff5a71f16fa8d05f"
+SDK_SHA256="0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c"
 CUSTOM_PACKAGE_DIR="$BUILD_DIR/custom-packages"
 IMAGEBUILDER_PACKAGE_DIR="$IMAGEBUILDER_DIR/packages"
 ZSTD="$BUILD_DIR/host-tools/usr/bin/zstd"
@@ -18,6 +18,7 @@ require_cmd curl
 require_cmd sha256sum
 require_cmd tar
 [ -x "$ZSTD" ] || die "Local zstd is missing. Run: make iso-host-tools"
+ensure_imagebuilder
 mkdir -p "$BUILD_DIR/cache" "$CUSTOM_PACKAGE_DIR" "$IMAGEBUILDER_PACKAGE_DIR"
 
 if [ ! -s "$SDK_ARCHIVE" ]; then
@@ -39,6 +40,7 @@ log "Synchronizing pinned SDK feeds"
 	[ ! -L package/feeds/packages/newt ] || unlink package/feeds/packages/newt
 	ln -sfn "$PROJECT_DIR/packages/newt-gpm" package/owrt-newt-gpm
 	ln -sfn "$PROJECT_DIR/packages/gpm-daemon" package/owrt-gpm-daemon
+	ln -sfn "$PROJECT_DIR/packages/input-mousedev" package/owrt-input-mousedev
 	cp "$PROJECT_DIR/profiles/sdk-mouse-packages.config" .config
 	make defconfig
 	for disabled in slsh libslang2-modules libslang2-mod-base64 \
@@ -54,22 +56,29 @@ log "Synchronizing pinned SDK feeds"
 		fi
 		done
 	make package/owrt-newt-gpm/clean package/owrt-gpm-daemon/clean
+	make package/owrt-input-mousedev/clean NO_DEPS=1
 	make package/owrt-newt-gpm/compile V=sc
 	make package/owrt-gpm-daemon/compile V=sc
+	# The SDK already ships the prepared target kernel. Avoid repackaging every
+	# unrelated kmod while compiling this single out-of-tree module.
+	make package/owrt-input-mousedev/compile NO_DEPS=1 V=sc
 )
 
-newt_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'libnewt-0.52.24-r2.apk' | head -n 1)"
-whiptail_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'whiptail-0.52.24-r2.apk' | head -n 1)"
-gpm_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'gpm-daemon-1.20.7-r4.apk' | head -n 1)"
+newt_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'libnewt-0.52.24-r3.apk' | head -n 1)"
+whiptail_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'whiptail-0.52.24-r3.apk' | head -n 1)"
+gpm_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'gpm-daemon-1.20.7-r5.apk' | head -n 1)"
+mousedev_apk="$(find "$SDK_DIR/bin" -type f -name 'kmod-input-mousedev-*.apk' | head -n 1)"
 
 rm -f "$CUSTOM_PACKAGE_DIR/libnewt-"*.apk \
 	"$CUSTOM_PACKAGE_DIR/whiptail-"*.apk \
 	"$CUSTOM_PACKAGE_DIR/gpm-daemon-"*.apk \
+	"$CUSTOM_PACKAGE_DIR/kmod-input-mousedev-"*.apk \
 	"$IMAGEBUILDER_PACKAGE_DIR/libnewt-"*.apk \
 	"$IMAGEBUILDER_PACKAGE_DIR/whiptail-"*.apk \
-	"$IMAGEBUILDER_PACKAGE_DIR/gpm-daemon-"*.apk
+	"$IMAGEBUILDER_PACKAGE_DIR/gpm-daemon-"*.apk \
+	"$IMAGEBUILDER_PACKAGE_DIR/kmod-input-mousedev-"*.apk
 
-for package_file in "$newt_apk" "$whiptail_apk" "$gpm_apk"; do
+for package_file in "$newt_apk" "$whiptail_apk" "$gpm_apk" "$mousedev_apk"; do
 	[ -s "$package_file" ] || die "Expected custom mouse package was not built"
 	cp "$package_file" "$CUSTOM_PACKAGE_DIR/"
 	cp "$package_file" "$IMAGEBUILDER_PACKAGE_DIR/"
@@ -78,5 +87,6 @@ done
 sha256sum \
 	"$CUSTOM_PACKAGE_DIR/$(basename "$newt_apk")" \
 	"$CUSTOM_PACKAGE_DIR/$(basename "$whiptail_apk")" \
-	"$CUSTOM_PACKAGE_DIR/$(basename "$gpm_apk")"
+	"$CUSTOM_PACKAGE_DIR/$(basename "$gpm_apk")" \
+	"$CUSTOM_PACKAGE_DIR/$(basename "$mousedev_apk")"
 log "Custom local-console mouse packages are ready"

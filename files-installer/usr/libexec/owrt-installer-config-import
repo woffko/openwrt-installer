@@ -1,0 +1,679 @@
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+config_import_unmount_source() {
+	if [ "$CONFIG_IMPORT_MOUNTED" = "1" ]; then
+		umount "$CONFIG_IMPORT_MOUNTDIR" >> "$INSTALL_LOG" 2>&1 ||
+			umount -l "$CONFIG_IMPORT_MOUNTDIR" >> "$INSTALL_LOG" 2>&1 || true
+		CONFIG_IMPORT_MOUNTED=0
+	fi
+	case "$CONFIG_IMPORT_MOUNTDIR" in
+		"${TMPDIR:-/tmp}"/owrt-import-mnt.*) rmdir "$CONFIG_IMPORT_MOUNTDIR" 2>/dev/null || true ;;
+	esac
+	CONFIG_IMPORT_MOUNTDIR=""
+}
+
+config_import_clear_ram_workspace() {
+	case "$CONFIG_IMPORT_WORKDIR" in
+		"${TMPDIR:-/tmp}"/owrt-import.*) rm -rf "$CONFIG_IMPORT_WORKDIR" ;;
+	esac
+	CONFIG_IMPORT_WORKDIR=""
+	CONFIG_IMPORT_ARCHIVE=""
+	CONFIG_IMPORT_APPLY_DIR=""
+	CONFIG_IMPORT_SHA256=""
+	CONFIG_IMPORT_COMPRESSED_SIZE=""
+	CONFIG_IMPORT_UNPACKED_SIZE=""
+	CONFIG_IMPORT_MEMBER_COUNT=""
+	CONFIG_IMPORT_HAS_NETWORK=0
+}
+
+config_import_clear_workspace() {
+	config_import_unmount_source
+	config_import_clear_ram_workspace
+}
+
+config_import_init_workspace() {
+	# The selected USB source is still mounted here. Clear only an older RAM
+	# staging tree; the caller unmounts the source immediately after the copy.
+	config_import_clear_ram_workspace
+	command -v mktemp >/dev/null 2>&1 || {
+		CONFIG_IMPORT_ERROR="mktemp is required for the import workspace."
+		return 1
+	}
+	CONFIG_IMPORT_WORKDIR="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/owrt-import.XXXXXX")" || {
+		CONFIG_IMPORT_WORKDIR=""
+		CONFIG_IMPORT_ERROR="Could not create the private import workspace."
+		return 1
+	}
+	chmod 0700 "$CONFIG_IMPORT_WORKDIR" || {
+		CONFIG_IMPORT_ERROR="Could not secure the private import workspace."
+		config_import_clear_workspace
+		return 1
+	}
+}
+
+config_import_mem_available_bytes() {
+	if [ "${OWRT_IMPORT_TEST_MODE:-0}" = "1" ] &&
+		is_positive_integer "${OWRT_IMPORT_TEST_MEM_AVAILABLE:-}"; then
+		printf '%s\n' "$OWRT_IMPORT_TEST_MEM_AVAILABLE"
+		return 0
+	fi
+	config_import_mem_kib="$(awk '$1 == "MemAvailable:" { print $2; exit }' /proc/meminfo 2>/dev/null || true)"
+	is_positive_integer "$config_import_mem_kib" || return 1
+	printf '%s\n' "$((config_import_mem_kib * 1024))"
+}
+
+config_import_supported_fstype() {
+	case "$1" in
+		vfat|exfat|ntfs|ntfs3|ext4) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+config_import_sanitize_field() {
+	printf '%s' "$1" | tr '\n\r|' '   ' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//'
+}
+
+config_import_mount_source() {
+	config_import_mount_device="$1"
+	config_import_mount_fstype="$2"
+	config_import_test_source="${3:-}"
+	config_import_unmount_source
+
+	if [ "${OWRT_IMPORT_TEST_MODE:-0}" = "1" ]; then
+		[ -d "$config_import_test_source" ] || {
+			CONFIG_IMPORT_ERROR="Test import source is not a directory: $config_import_test_source"
+			return 1
+		}
+		CONFIG_IMPORT_MOUNTDIR="$config_import_test_source"
+		CONFIG_IMPORT_MOUNTED=0
+		return 0
+	fi
+
+	config_import_supported_fstype "$config_import_mount_fstype" || {
+		CONFIG_IMPORT_ERROR="Unsupported USB filesystem: $config_import_mount_fstype"
+		return 1
+	}
+	CONFIG_IMPORT_MOUNTDIR="$(mktemp -d "${TMPDIR:-/tmp}/owrt-import-mnt.XXXXXX")" || {
+		CONFIG_IMPORT_MOUNTDIR=""
+		CONFIG_IMPORT_ERROR="Could not create the USB mount point."
+		return 1
+	}
+	chmod 0700 "$CONFIG_IMPORT_MOUNTDIR" || {
+		CONFIG_IMPORT_ERROR="Could not secure the USB mount point."
+		config_import_unmount_source
+		return 1
+	}
+	case "$config_import_mount_fstype" in
+		ext4)
+			config_import_mount_type="ext4"
+			config_import_mount_options="ro,noload,nosuid,nodev,noexec"
+			;;
+		ntfs)
+			config_import_mount_type="ntfs3"
+			config_import_mount_options="ro,nosuid,nodev,noexec"
+			;;
+		*)
+			config_import_mount_type="$config_import_mount_fstype"
+			config_import_mount_options="ro,nosuid,nodev,noexec"
+			;;
+	esac
+	if ! mount -t "$config_import_mount_type" -o "$config_import_mount_options" \
+		"$config_import_mount_device" "$CONFIG_IMPORT_MOUNTDIR" >> "$INSTALL_LOG" 2>&1; then
+		CONFIG_IMPORT_ERROR="Could not mount $config_import_mount_device read-only as $config_import_mount_type."
+		config_import_unmount_source
+		return 1
+	fi
+	CONFIG_IMPORT_MOUNTED=1
+}
+
+config_import_block_is_usb() {
+	config_import_parent_name="$1"
+	config_import_removable="$(cat "/sys/class/block/$config_import_parent_name/removable" 2>/dev/null || printf 0)"
+	config_import_device_path="$(readlink -f "/sys/class/block/$config_import_parent_name/device" 2>/dev/null || true)"
+	[ "$config_import_removable" = "1" ] && return 0
+	case "$config_import_device_path" in
+		*/usb*) return 0 ;;
+	esac
+	return 1
+}
+
+config_import_enumerate_partitions() {
+	: > "$CONFIG_IMPORT_PARTITION_LIST"
+	if [ "${OWRT_IMPORT_TEST_MODE:-0}" = "1" ]; then
+		if [ -n "${OWRT_IMPORT_TEST_PARTITIONS_FILE:-}" ]; then
+			[ -r "$OWRT_IMPORT_TEST_PARTITIONS_FILE" ] || {
+				CONFIG_IMPORT_ERROR="Test partition list is unreadable."
+				return 1
+			}
+			cp "$OWRT_IMPORT_TEST_PARTITIONS_FILE" "$CONFIG_IMPORT_PARTITION_LIST" || {
+				CONFIG_IMPORT_ERROR="Could not copy the test partition list."
+				return 1
+			}
+		elif [ -n "${OWRT_IMPORT_TEST_SOURCE_DIR:-}" ]; then
+			printf '%s|%s|%s|%s|%s\n' \
+				"/dev/test-usb1" "vfat" "test" "TEST-USB" \
+				"$OWRT_IMPORT_TEST_SOURCE_DIR" > "$CONFIG_IMPORT_PARTITION_LIST"
+		fi
+		return 0
+	fi
+
+	config_import_target_name=""
+	[ -n "${TARGET:-}" ] && config_import_target_name="$(disk_name_from_path "$TARGET")"
+	for config_import_sys_path in /sys/class/block/*; do
+		[ -e "$config_import_sys_path" ] || continue
+		config_import_block_name="$(basename "$config_import_sys_path")"
+		config_import_device="/dev/$config_import_block_name"
+		[ -b "$config_import_device" ] || continue
+		case "$config_import_block_name" in
+			loop*|ram*|zram*|dm-*|md*|sr*) continue ;;
+		esac
+		config_import_parent_name="$(lsblk -ndo PKNAME "$config_import_device" 2>/dev/null | head -n 1 || true)"
+		[ -n "$config_import_parent_name" ] || config_import_parent_name="$config_import_block_name"
+		[ "$config_import_parent_name" != "$config_import_target_name" ] || continue
+		config_import_block_is_usb "$config_import_parent_name" || continue
+		config_import_fstype="$(blkid -o value -s TYPE "$config_import_device" 2>/dev/null || true)"
+		config_import_supported_fstype "$config_import_fstype" || continue
+		config_import_size="$(lsblk -bdno SIZE "$config_import_device" 2>/dev/null | head -n 1 || true)"
+		config_import_label="$(blkid -o value -s LABEL "$config_import_device" 2>/dev/null || true)"
+		config_import_label="$(config_import_sanitize_field "$config_import_label")"
+		printf '%s|%s|%s|%s|\n' "$config_import_device" "$config_import_fstype" \
+			"${config_import_size:-unknown}" "${config_import_label:-unlabeled}" \
+			>> "$CONFIG_IMPORT_PARTITION_LIST"
+	done
+}
+
+config_import_safe_source_relative_path() {
+	config_import_relative="$1"
+	case "$config_import_relative" in
+		''|/*|./*|*'//'*) return 1 ;;
+		*'|'*|*\\*) return 1 ;;
+	esac
+	printf '%s\n' "$config_import_relative" | LC_ALL=C grep -Eq '^[A-Za-z0-9_./@+,:=% -]+$'
+}
+
+config_import_scan_archives() {
+	: > "$CONFIG_IMPORT_ARCHIVE_LIST"
+	config_import_archive_id=0
+	while IFS='|' read -r config_import_device config_import_fstype config_import_size \
+		config_import_label config_import_test_source; do
+		[ -n "$config_import_device" ] || continue
+		if ! config_import_mount_source "$config_import_device" "$config_import_fstype" \
+			"$config_import_test_source"; then
+			warn "$CONFIG_IMPORT_ERROR"
+			continue
+		fi
+		find "$CONFIG_IMPORT_MOUNTDIR" -xdev -maxdepth 5 -type f \
+			\( -name '*.tar.gz' -o -name '*.tgz' \) -print > "$CONFIG_IMPORT_SCAN_LIST" 2>/dev/null || true
+		while IFS= read -r config_import_found; do
+			config_import_relative="${config_import_found#"$CONFIG_IMPORT_MOUNTDIR"/}"
+			config_import_safe_source_relative_path "$config_import_relative" || continue
+			config_import_archive_id=$((config_import_archive_id + 1))
+			[ "$config_import_archive_id" -le 256 ] || break
+			config_import_display_name="$(basename "$config_import_relative")"
+			printf '%s|%s|%s|%s|%s|%s|%s\n' \
+				"$config_import_archive_id" "$config_import_device" "$config_import_fstype" \
+				"$config_import_relative" "$config_import_label" "$config_import_test_source" \
+				"$config_import_display_name" >> "$CONFIG_IMPORT_ARCHIVE_LIST"
+		done < "$CONFIG_IMPORT_SCAN_LIST"
+		config_import_unmount_source
+	done < "$CONFIG_IMPORT_PARTITION_LIST"
+	config_import_unmount_source
+}
+
+config_import_validate_names() {
+	config_import_names_file="$1"
+	LC_ALL=C awk '
+		length($0) == 0 { exit 1 }
+		$0 !~ /^etc(\/|$)/ { exit 1 }
+		$0 ~ /^\// || $0 ~ /^\.\// || $0 ~ /\/\// || $0 ~ /\\/ { exit 1 }
+		$0 ~ /(^|\/)\.\.(\/|$)/ || $0 ~ /(^|\/)\.(\/|$)/ { exit 1 }
+		$0 ~ /[^A-Za-z0-9_.\/@+,:=% -]/ { exit 1 }
+		$0 ~ /^etc\/config(\/|$)/ { has_config = 1 }
+		END { if (!has_config) exit 1 }
+	' "$config_import_names_file"
+}
+
+config_import_validate_verbose_listing() {
+	config_import_verbose_file="$1"
+	config_import_stats_file="$2"
+	LC_ALL=C awk \
+		-v max_members="$CONFIG_IMPORT_MAX_MEMBERS" \
+		-v max_member="$CONFIG_IMPORT_MAX_MEMBER_BYTES" \
+		-v max_total="$CONFIG_IMPORT_MAX_UNPACKED_BYTES" '
+		{
+			type = substr($1, 1, 1)
+			if (type != "-" && type != "d") exit 1
+			if ($1 ~ /[sS]/) exit 1
+			if ($3 !~ /^[0-9]+$/) exit 1
+			if ($3 > max_member) exit 1
+			total += $3
+			if (total > max_total || NR > max_members) exit 1
+		}
+		END {
+			if (NR == 0 || total > max_total || NR > max_members) exit 1
+			print NR, total
+		}
+	' "$config_import_verbose_file" > "$config_import_stats_file"
+}
+
+config_import_extract_and_audit() {
+	config_import_stage="$CONFIG_IMPORT_WORKDIR/stage"
+	rm -rf "$config_import_stage"
+	mkdir -p "$config_import_stage" || {
+		CONFIG_IMPORT_ERROR="Could not create the archive staging directory."
+		return 1
+	}
+	if ! (umask 077; tar -xozf "$CONFIG_IMPORT_ARCHIVE" -C "$config_import_stage") \
+		>> "$INSTALL_LOG" 2>&1; then
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The backup archive could not be extracted safely."
+		return 1
+	fi
+	config_import_special="$(find "$config_import_stage" ! -type f ! -type d -print 2>/dev/null | head -n 1 || true)"
+	[ -z "$config_import_special" ] || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The extracted backup contains a link or special file."
+		return 1
+	}
+	config_import_privileged="$(find "$config_import_stage" \
+		\( -perm -4000 -o -perm -2000 \) -print 2>/dev/null | head -n 1 || true)"
+	[ -z "$config_import_privileged" ] || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The extracted backup contains setuid or setgid files."
+		return 1
+	}
+	config_import_actual_names="$CONFIG_IMPORT_WORKDIR/extracted.names"
+	config_import_actual_sizes="$CONFIG_IMPORT_WORKDIR/extracted.sizes"
+	config_import_actual_stats="$CONFIG_IMPORT_WORKDIR/extracted.stats"
+	find "$config_import_stage" -print 2>/dev/null |
+		sed -n '2,$p' | sed "s#^$config_import_stage/##" > "$config_import_actual_names" || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="Could not audit extracted backup paths."
+		return 1
+	}
+	config_import_validate_names "$config_import_actual_names" || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The extracted backup contains an unsafe path."
+		return 1
+	}
+	config_import_actual_count="$(wc -l < "$config_import_actual_names" | tr -d ' ')"
+	is_positive_integer "$config_import_actual_count" || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="Could not count extracted backup paths."
+		return 1
+	}
+	[ "$config_import_actual_count" -le "$CONFIG_IMPORT_MAX_MEMBERS" ] || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The extracted backup exceeds the member limit."
+		return 1
+	}
+	find "$config_import_stage" -type f -exec stat -c '%s' '{}' ';' \
+		> "$config_import_actual_sizes" 2>> "$INSTALL_LOG" || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="Could not audit extracted backup sizes."
+		return 1
+	}
+	LC_ALL=C awk \
+		-v max_member="$CONFIG_IMPORT_MAX_MEMBER_BYTES" \
+		-v max_total="$CONFIG_IMPORT_MAX_UNPACKED_BYTES" '
+			$1 !~ /^[0-9]+$/ || $1 > max_member { exit 1 }
+			{ total += $1; if (total > max_total) exit 1 }
+			END { print NR, total }
+		' "$config_import_actual_sizes" > "$config_import_actual_stats" || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The extracted backup exceeds a file-size limit."
+		return 1
+	}
+	config_import_actual_total="$(awk '{ print $2 }' "$config_import_actual_stats")"
+	[ "$config_import_actual_total" = "$CONFIG_IMPORT_UNPACKED_SIZE" ] || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The extracted backup size does not match its validated tar metadata."
+		return 1
+	}
+	[ -d "$config_import_stage/etc/config" ] || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The backup does not contain an etc/config directory."
+		return 1
+	}
+	config_import_config_subdir="$(find "$config_import_stage/etc/config" -type d -print 2>/dev/null |
+		sed -n '2p')"
+	[ -z "$config_import_config_subdir" ] || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The backup contains an unsupported directory below etc/config."
+		return 1
+	}
+	config_import_config_file="$(find "$config_import_stage/etc/config" -type f -print 2>/dev/null |
+		head -n 1 || true)"
+	[ -n "$config_import_config_file" ] || {
+		rm -rf "$config_import_stage"
+		CONFIG_IMPORT_ERROR="The backup does not contain any UCI configuration files."
+		return 1
+	}
+}
+
+config_import_validate_ram_archive() {
+	config_import_tar_limit=$((CONFIG_IMPORT_MAX_UNPACKED_BYTES + CONFIG_IMPORT_MAX_MEMBERS * 1024))
+	# The last command controls this pipeline. gzip receives SIGPIPE when the
+	# bounded reader reaches the limit; do not use pipefail here.
+	config_import_tar_bytes="$(gzip -dc "$CONFIG_IMPORT_ARCHIVE" 2>/dev/null |
+		head -c "$((config_import_tar_limit + 1))" | wc -c | tr -d ' ')"
+	case "$config_import_tar_bytes" in
+		''|*[!0-9]*)
+			CONFIG_IMPORT_ERROR="Could not measure the decompressed backup archive."
+			return 1
+			;;
+	esac
+	[ "$config_import_tar_bytes" -le "$config_import_tar_limit" ] || {
+		CONFIG_IMPORT_ERROR="The decompressed backup exceeds the RAM safety limit."
+		return 1
+	}
+	gzip -t "$CONFIG_IMPORT_ARCHIVE" >> "$INSTALL_LOG" 2>&1 || {
+		CONFIG_IMPORT_ERROR="The backup has an invalid or truncated gzip stream."
+		return 1
+	}
+	config_import_names="$CONFIG_IMPORT_WORKDIR/members.names"
+	config_import_verbose="$CONFIG_IMPORT_WORKDIR/members.verbose"
+	config_import_stats="$CONFIG_IMPORT_WORKDIR/members.stats"
+	config_import_duplicates="$CONFIG_IMPORT_WORKDIR/members.duplicates"
+	tar -tzf "$CONFIG_IMPORT_ARCHIVE" > "$config_import_names" 2>> "$INSTALL_LOG" || {
+		CONFIG_IMPORT_ERROR="The backup tar member list is invalid."
+		return 1
+	}
+	tar -tvzf "$CONFIG_IMPORT_ARCHIVE" > "$config_import_verbose" 2>> "$INSTALL_LOG" || {
+		CONFIG_IMPORT_ERROR="The backup tar metadata is invalid."
+		return 1
+	}
+	config_import_name_count="$(wc -l < "$config_import_names" | tr -d ' ')"
+	config_import_verbose_count="$(wc -l < "$config_import_verbose" | tr -d ' ')"
+	[ "$config_import_name_count" = "$config_import_verbose_count" ] || {
+		CONFIG_IMPORT_ERROR="The backup contains an ambiguous tar member name."
+		return 1
+	}
+	config_import_validate_names "$config_import_names" || {
+		CONFIG_IMPORT_ERROR="The backup contains an unsafe or unsupported path."
+		return 1
+	}
+	sed 's:/*$::' "$config_import_names" | sort | uniq -d > "$config_import_duplicates"
+	[ ! -s "$config_import_duplicates" ] || {
+		CONFIG_IMPORT_ERROR="The backup contains duplicate member paths."
+		return 1
+	}
+	config_import_validate_verbose_listing "$config_import_verbose" "$config_import_stats" || {
+		CONFIG_IMPORT_ERROR="The backup contains unsafe types, modes, or resource sizes."
+		return 1
+	}
+	CONFIG_IMPORT_MEMBER_COUNT="$(awk '{ print $1 }' "$config_import_stats")"
+	CONFIG_IMPORT_UNPACKED_SIZE="$(awk '{ print $2 }' "$config_import_stats")"
+	config_import_extract_and_audit || return 1
+}
+
+config_import_copy_archive_to_ram() {
+	config_import_source_file="$1"
+	if [ ! -f "$config_import_source_file" ] || [ -L "$config_import_source_file" ]; then
+		CONFIG_IMPORT_ERROR="The selected backup is not a regular file."
+		return 1
+	fi
+	config_import_init_workspace || return 1
+	CONFIG_IMPORT_COMPRESSED_SIZE="$(stat -c '%s' "$config_import_source_file" 2>/dev/null || true)"
+	is_positive_integer "$CONFIG_IMPORT_COMPRESSED_SIZE" || {
+		CONFIG_IMPORT_ERROR="Could not determine the backup archive size."
+		return 1
+	}
+	[ "$CONFIG_IMPORT_COMPRESSED_SIZE" -le "$CONFIG_IMPORT_MAX_COMPRESSED_BYTES" ] || {
+		CONFIG_IMPORT_ERROR="The backup archive exceeds the 64 MiB compressed limit."
+		return 1
+	}
+	config_import_ram_available="$(config_import_mem_available_bytes || true)"
+	is_positive_integer "$config_import_ram_available" || {
+		CONFIG_IMPORT_ERROR="Could not determine available RAM for the backup."
+		return 1
+	}
+	config_import_ram_required=$((CONFIG_IMPORT_COMPRESSED_SIZE + CONFIG_IMPORT_MAX_UNPACKED_BYTES + CONFIG_IMPORT_RAM_RESERVE_BYTES))
+	[ "$config_import_ram_available" -ge "$config_import_ram_required" ] || {
+		CONFIG_IMPORT_ERROR="Not enough free RAM to validate and stage this backup safely."
+		return 1
+	}
+	CONFIG_IMPORT_ARCHIVE="$CONFIG_IMPORT_WORKDIR/backup.tar.gz"
+	cp "$config_import_source_file" "$CONFIG_IMPORT_ARCHIVE" || {
+		CONFIG_IMPORT_ERROR="Could not copy the selected backup into RAM."
+		return 1
+	}
+	chmod 0600 "$CONFIG_IMPORT_ARCHIVE" || {
+		CONFIG_IMPORT_ERROR="Could not secure the RAM backup copy."
+		return 1
+	}
+	config_import_ram_size="$(stat -c '%s' "$CONFIG_IMPORT_ARCHIVE" 2>/dev/null || true)"
+	[ "$config_import_ram_size" = "$CONFIG_IMPORT_COMPRESSED_SIZE" ] || {
+		CONFIG_IMPORT_ERROR="The RAM backup copy is incomplete."
+		return 1
+	}
+	CONFIG_IMPORT_SHA256="$(sha256sum "$CONFIG_IMPORT_ARCHIVE" | awk '{ print $1 }')"
+	printf '%s\n' "$CONFIG_IMPORT_SHA256" | grep -Eq '^[0-9a-f]{64}$' || {
+		CONFIG_IMPORT_ERROR="Could not hash the RAM backup copy."
+		return 1
+	}
+}
+
+config_import_prepare_policy() {
+	config_import_requested_policy="$1"
+	config_import_stage="$CONFIG_IMPORT_WORKDIR/stage"
+	CONFIG_IMPORT_APPLY_DIR="$CONFIG_IMPORT_WORKDIR/apply"
+	config_import_ram_available="$(config_import_mem_available_bytes || true)"
+	is_positive_integer "$config_import_ram_available" || {
+		CONFIG_IMPORT_ERROR="Could not determine available RAM for the filtered backup."
+		return 1
+	}
+	# MemAvailable already reflects the RAM archive and extracted stage. Only the
+	# additional filtered copy plus the runtime reserve must fit from this point.
+	config_import_apply_required=$((CONFIG_IMPORT_UNPACKED_SIZE + CONFIG_IMPORT_RAM_RESERVE_BYTES))
+	[ "$config_import_ram_available" -ge "$config_import_apply_required" ] || {
+		CONFIG_IMPORT_ERROR="Not enough free RAM to prepare the filtered backup safely."
+		return 1
+	}
+	rm -rf "$CONFIG_IMPORT_APPLY_DIR"
+	mkdir -p "$CONFIG_IMPORT_APPLY_DIR/etc" || {
+		CONFIG_IMPORT_ERROR="Could not create the filtered import staging tree."
+		return 1
+	}
+	case "$config_import_requested_policy" in
+		config-only)
+			cp -a "$config_import_stage/etc/config" "$CONFIG_IMPORT_APPLY_DIR/etc/" || {
+				CONFIG_IMPORT_ERROR="Could not stage UCI configuration files."
+				return 1
+			}
+			;;
+		full)
+			cp -a "$config_import_stage/etc/." "$CONFIG_IMPORT_APPLY_DIR/etc/" || {
+				CONFIG_IMPORT_ERROR="Could not stage the full OpenWrt backup."
+				return 1
+			}
+			;;
+		*)
+			CONFIG_IMPORT_ERROR="Unsupported import policy: $config_import_requested_policy"
+			return 1
+			;;
+	esac
+	CONFIG_IMPORT_POLICY="$config_import_requested_policy"
+	rm -rf "$CONFIG_IMPORT_APPLY_DIR/etc/owrt-installer"
+	rm -rf "$CONFIG_IMPORT_APPLY_DIR/etc/openwrt-installer-release"
+	rm -rf "$CONFIG_IMPORT_APPLY_DIR/etc/uci-defaults/98-installer-network"
+	if [ -f "$CONFIG_IMPORT_APPLY_DIR/etc/config/network" ]; then
+		CONFIG_IMPORT_HAS_NETWORK=1
+	else
+		CONFIG_IMPORT_HAS_NETWORK=0
+	fi
+}
+
+config_import_prepare_file() {
+	config_import_requested_file="$1"
+	CONFIG_IMPORT_ERROR=""
+	printf '%s\n' "$config_import_requested_file" |
+		LC_ALL=C grep -Eq '^[A-Za-z0-9_./@+,:=% -]+$' || {
+		CONFIG_IMPORT_ERROR="The backup path contains unsupported characters."
+		return 1
+	}
+	CONFIG_IMPORT_DEVICE="local-file"
+	CONFIG_IMPORT_FSTYPE="file"
+	CONFIG_IMPORT_SOURCE_PATH="$config_import_requested_file"
+	CONFIG_IMPORT_SOURCE_LABEL="$config_import_requested_file"
+	config_import_copy_archive_to_ram "$config_import_requested_file" || return 1
+	config_import_validate_ram_archive || return 1
+}
+
+config_import_select_usb_archive() {
+	CONFIG_IMPORT_ERROR=""
+	config_import_enumerate_partitions || return 1
+	[ -s "$CONFIG_IMPORT_PARTITION_LIST" ] || {
+		CONFIG_IMPORT_ERROR="No supported USB filesystem was found. Connect FAT32, exFAT, NTFS, or ext4 media and retry."
+		return 1
+	}
+	config_import_scan_archives
+	[ -s "$CONFIG_IMPORT_ARCHIVE_LIST" ] || {
+		CONFIG_IMPORT_ERROR="No .tar.gz or .tgz OpenWrt backup was found within five directory levels."
+		return 1
+	}
+	menu_reset
+	while IFS='|' read -r config_import_id config_import_device config_import_fstype \
+		config_import_relative config_import_label config_import_test_source config_import_display_name; do
+		menu_add "$config_import_id" "$config_import_display_name [$config_import_device $config_import_fstype ${config_import_label:-unlabeled}]"
+	done < "$CONFIG_IMPORT_ARCHIVE_LIST"
+	menu_add "__back" "Back to installation type"
+	menu_note "Archives are copied to RAM and validated before the erase review."
+	select_from_menu "Select backup archive" "backup archive"
+	[ "$SELECTED_VALUE" != "__back" ] || return 2
+	config_import_selected_line="$(sed -n "${SELECTED_VALUE}p" "$CONFIG_IMPORT_ARCHIVE_LIST")"
+	[ -n "$config_import_selected_line" ] || {
+		CONFIG_IMPORT_ERROR="The selected backup entry disappeared."
+		return 1
+	}
+	config_import_selected_device="$(printf '%s\n' "$config_import_selected_line" | cut -d '|' -f 2)"
+	config_import_selected_fstype="$(printf '%s\n' "$config_import_selected_line" | cut -d '|' -f 3)"
+	config_import_selected_relative="$(printf '%s\n' "$config_import_selected_line" | cut -d '|' -f 4)"
+	config_import_selected_label="$(printf '%s\n' "$config_import_selected_line" | cut -d '|' -f 5)"
+	config_import_selected_test_source="$(printf '%s\n' "$config_import_selected_line" | cut -d '|' -f 6)"
+	config_import_mount_source "$config_import_selected_device" "$config_import_selected_fstype" \
+		"$config_import_selected_test_source" || return 1
+	config_import_selected_file="$CONFIG_IMPORT_MOUNTDIR/$config_import_selected_relative"
+	CONFIG_IMPORT_DEVICE="$config_import_selected_device"
+	CONFIG_IMPORT_FSTYPE="$config_import_selected_fstype"
+	CONFIG_IMPORT_SOURCE_PATH="/$config_import_selected_relative"
+	CONFIG_IMPORT_SOURCE_LABEL="$config_import_selected_device ($config_import_selected_fstype ${config_import_selected_label:-unlabeled}) :: /$config_import_selected_relative"
+	if ! config_import_copy_archive_to_ram "$config_import_selected_file"; then
+		config_import_unmount_source
+		return 1
+	fi
+	config_import_unmount_source
+	config_import_validate_ram_archive || return 1
+}
+
+config_import_select_policy() {
+	while :; do
+		menu_reset
+		menu_add "config-only" "Configuration only (recommended)"
+		menu_add "full" "Full OpenWrt backup (advanced)"
+		menu_add "__back" "Back to backup archive"
+		menu_note "Full restore may replace root password, SSH keys, and executable first-boot configuration."
+		select_from_menu "Select import scope" "import scope"
+		case "$SELECTED_VALUE" in
+			config-only)
+				config_import_prepare_policy config-only
+				return $?
+				;;
+			full)
+				menu_reset
+				menu_warning "WARNING: trust this backup. Full restore can replace credentials and execute restored boot configuration."
+				menu_add "continue" "Continue with full trusted backup"
+				menu_add "__back" "Back to import scope"
+				select_from_menu "Full backup warning" "full backup action"
+				[ "$SELECTED_VALUE" = "continue" ] || continue
+				config_import_prepare_policy full
+				return $?
+				;;
+			__back) return 2 ;;
+		esac
+	done
+}
+
+config_import_select_network_source() {
+	if [ "$CONFIG_IMPORT_HAS_NETWORK" != "1" ]; then
+		NETWORK_SOURCE="wizard"
+		SKIP_NETWORK=0
+		ui_notice "Network configuration" "This backup has no etc/config/network file. The LAN/WAN wizard will run next."
+		return 0
+	fi
+	menu_reset
+	menu_add "keep" "Keep imported network configuration"
+	menu_add "wizard" "Configure LAN/WAN for this machine"
+	menu_add "__back" "Back to import scope"
+	menu_warning "Imported device names may not match this machine and can make it unreachable."
+	select_from_menu "Imported network configuration" "network source"
+	case "$SELECTED_VALUE" in
+		keep)
+			NETWORK_SOURCE="imported"
+			SKIP_NETWORK=1
+			;;
+		wizard)
+			NETWORK_SOURCE="wizard"
+			SKIP_NETWORK=0
+			;;
+		__back) return 2 ;;
+	esac
+}
+
+config_import_ready_notice() {
+	ui_notice "Backup ready" "Validated RAM copy: $CONFIG_IMPORT_MEMBER_COUNT members, $(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE") compressed, SHA-256 $CONFIG_IMPORT_SHA256. USB media is no longer mounted."
+}
+
+config_import_prepare_target_tree() {
+	config_import_target_root="$1"
+	config_import_target_dirs="$CONFIG_IMPORT_WORKDIR/target.dirs"
+	config_import_target_files="$CONFIG_IMPORT_WORKDIR/target.files"
+	find "$CONFIG_IMPORT_APPLY_DIR" -type d -print > "$config_import_target_dirs" ||
+		die "Could not enumerate imported configuration directories"
+	find "$CONFIG_IMPORT_APPLY_DIR" -type f -print > "$config_import_target_files" ||
+		die "Could not enumerate imported configuration files"
+
+	while IFS= read -r config_import_source_dir; do
+		[ "$config_import_source_dir" != "$CONFIG_IMPORT_APPLY_DIR" ] || continue
+		config_import_relative_path="${config_import_source_dir#"$CONFIG_IMPORT_APPLY_DIR"/}"
+		case "$config_import_relative_path" in
+			etc|etc/*) ;;
+			*) die "Imported directory escaped the validated etc tree" ;;
+		esac
+		config_import_destination="$config_import_target_root/$config_import_relative_path"
+		if [ -L "$config_import_destination" ] ||
+			{ [ -e "$config_import_destination" ] && [ ! -d "$config_import_destination" ]; }; then
+			rm -rf "$config_import_destination" ||
+				die "Could not replace conflicting target path: /$config_import_relative_path"
+		fi
+		mkdir -p "$config_import_destination" ||
+			die "Could not prepare target directory: /$config_import_relative_path"
+	done < "$config_import_target_dirs"
+
+	while IFS= read -r config_import_source_file; do
+		config_import_relative_path="${config_import_source_file#"$CONFIG_IMPORT_APPLY_DIR"/}"
+		case "$config_import_relative_path" in
+			etc/*) ;;
+			*) die "Imported file escaped the validated etc tree" ;;
+		esac
+		config_import_destination="$config_import_target_root/$config_import_relative_path"
+		if [ -e "$config_import_destination" ] || [ -L "$config_import_destination" ]; then
+			rm -rf "$config_import_destination" ||
+				die "Could not replace target file: /$config_import_relative_path"
+		fi
+	done < "$config_import_target_files"
+}
+
+config_import_apply_to_target() {
+	config_import_target_root="$1"
+	[ "$INSTALL_MODE" = "import" ] || return 0
+	[ -d "$CONFIG_IMPORT_APPLY_DIR/etc" ] || die "Validated import staging tree is missing"
+	config_import_prepare_target_tree "$config_import_target_root"
+	cp -a "$CONFIG_IMPORT_APPLY_DIR/." "$config_import_target_root/" >> "$INSTALL_LOG" 2>&1 ||
+		die "Could not apply the staged OpenWrt backup"
+	# Installer-owned state from a previous machine must never survive a restore.
+	rm -rf "$config_import_target_root/etc/owrt-installer"
+	rm -rf "$config_import_target_root/etc/openwrt-installer-release"
+	rm -rf "$config_import_target_root/etc/uci-defaults/98-installer-network"
+}

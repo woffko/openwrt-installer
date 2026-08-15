@@ -16,11 +16,18 @@ mkdir -p "$cache_dir" "$tools_dir"
 log "Downloading local hybrid ISO host tools"
 (
 	cd "$cache_dir"
-	apt-get download cpio xorriso libisoburn1t64 libburn4t64 libisofs6t64
+	apt-get download \
+		cpio \
+		grub-efi-amd64-bin \
+		grub-pc-bin \
+		xorriso \
+		libisoburn1t64 \
+		libburn4t64 \
+		libisofs6t64
 )
 
 for archive in "$cache_dir"/*.deb; do
 	dpkg-deb -x "$archive" "$tools_dir"
 done
 
-log "Local ISO host tools ready: $tools_dir/usr/bin/xorrisofs"
+log "Local ISO host tools and GRUB modules are ready"

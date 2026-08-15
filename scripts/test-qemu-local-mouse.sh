@@ -14,6 +14,9 @@ QEMU_UI_SETTLE="${QEMU_UI_SETTLE:-1}"
 QEMU_ACCEL="${QEMU_ACCEL:-tcg}"
 QEMU_MEMORY="${QEMU_MEMORY:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
+QEMU_MOUSE_CASE="${QEMU_MOUSE_CASE:-all}"
+QEMU_TABLET_TARGET_X="${QEMU_TABLET_TARGET_X:-13856}"
+QEMU_TABLET_TARGET_Y="${QEMU_TABLET_TARGET_Y:-18000}"
 LOCAL_QEMU_ROOT="$BUILD_DIR/qemu-local/root"
 QEMU_PID=""
 VM_DISK=""
@@ -90,6 +93,36 @@ assert_marker() {
 hmp() {
 	printf '%s\n' "$*" | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
 		die "Could not send QEMU monitor command: $*"
+}
+
+capture_screen() {
+	screenshot="$1"
+	rm -f "$screenshot"
+	hmp "screendump $screenshot"
+	tries=0
+	while [ ! -s "$screenshot" ] && [ "$tries" -lt 10 ]; do
+		tries=$((tries + 1))
+		sleep 0.1
+	done
+	[ -s "$screenshot" ] || die "QEMU screenshot was not created: $screenshot"
+}
+
+assert_pointer_became_visible() {
+	before="$1"
+	after_prefix="$2"
+	minimum_changed_bytes=192
+	changed_bytes=0
+	for sample in 1 2 3 4 5; do
+		after="${after_prefix}-${sample}.ppm"
+		capture_screen "$after"
+		changed_bytes="$(cmp -l "$before" "$after" 2>/dev/null | wc -l | tr -d ' ')"
+		if [ "$changed_bytes" -ge "$minimum_changed_bytes" ]; then
+			break
+		fi
+		sleep 0.2
+	done
+	[ "$changed_bytes" -ge "$minimum_changed_bytes" ] ||
+		die "Pointer movement changed only $changed_bytes framebuffer bytes; a visible block cursor was not rendered"
 }
 
 hmp_keys() {
@@ -183,15 +216,43 @@ click_target_ok() {
 		die "Could not send calibrated USB mouse click"
 }
 
-click_target_ok_absolute() {
-	# The target-disk OK button is centered around cell 65x26 on the 160x50
-	# console. QMP absolute axes use a stable 0..32767 coordinate range.
+assert_relative_pointer_visible() {
+	before="$SMOKE_DIR/usb-relative-pointer-before.ppm"
+	capture_screen "$before"
+	{
+		printf 'mouse_move -10 0\n'
+		sleep 0.3
+	} | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
+		die "Could not move the USB mouse for pointer visibility test"
+	assert_pointer_became_visible "$before" "$SMOKE_DIR/usb-relative-pointer-after"
+	printf 'mouse_move 10 0\n' | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
+		die "Could not restore the USB mouse after pointer visibility test"
+}
+
+assert_absolute_pointer_visible() {
+	before="$SMOKE_DIR/usb-tablet-pointer-before.ppm"
+	sleep "$QEMU_UI_SETTLE"
+	capture_screen "$before"
 	response="$({
 		sleep 0.1
 		printf '%s\n' '{"execute":"qmp_capabilities"}'
 		sleep 0.1
-		printf '%s\n' '{"execute":"input-send-event","arguments":{"events":[{"type":"abs","data":{"axis":"x","value":13312}},{"type":"abs","data":{"axis":"y","value":17367}}]}}'
+		printf '%s\n' "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$QEMU_TABLET_TARGET_X}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$QEMU_TABLET_TARGET_Y}}]}}"
 		sleep 0.3
+	} | nc -w 1 -U "$QMP_SOCKET")" ||
+		die "Could not move the USB tablet for pointer visibility test"
+	if printf '%s\n' "$response" | grep -F '"error"' >/dev/null 2>&1; then
+		die "QMP rejected USB tablet movement for pointer visibility test"
+	fi
+	assert_pointer_became_visible "$before" "$SMOKE_DIR/usb-tablet-pointer-after"
+}
+
+click_target_ok_absolute() {
+	# assert_absolute_pointer_visible already positioned the tablet over OK.
+	response="$({
+		sleep 0.1
+		printf '%s\n' '{"execute":"qmp_capabilities"}'
+		sleep 0.1
 		printf '%s\n' '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"button":"left","down":true}}]}}'
 		sleep 0.2
 		printf '%s\n' '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"button":"left","down":false}}]}}'
@@ -209,7 +270,10 @@ run_usb_click_and_crash() {
 	assert_marker "QEMU QEMU USB Mouse"
 	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE=active"
 	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE_SOCKET_MODE=600"
+	assert_relative_pointer_visible
 	click_target_ok
+	wait_for_marker "OWRT_INSTALLER_UI_READY=install-type"
+	hmp_keys ret
 	wait_for_marker "OWRT_INSTALLER_UI_READY=lan-interface"
 	serial_command "killall -9 gpm; echo OWRT_MOUSE_DAEMON_CRASHED"
 	wait_for_marker "OWRT_MOUSE_DAEMON_CRASHED"
@@ -234,8 +298,9 @@ run_absolute_click() {
 	assert_marker "QEMU QEMU USB Tablet"
 	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE=active"
 	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE_SOCKET_MODE=600"
+	assert_absolute_pointer_visible
 	click_target_ok_absolute
-	wait_for_marker "OWRT_INSTALLER_UI_READY=lan-interface"
+	wait_for_marker "OWRT_INSTALLER_UI_READY=install-type"
 	stop_vm
 }
 
@@ -245,6 +310,8 @@ run_exact_confirmation_cleanup() {
 	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE=active"
 	assert_marker "OWRT_INSTALLER_HARDWARE_TEST=active"
 	before_hash="$(sha256sum "$VM_DISK" | awk '{ print $1 }')"
+	hmp_keys ret
+	wait_for_marker "OWRT_INSTALLER_UI_READY=install-type"
 	hmp_keys ret
 	wait_for_marker "OWRT_INSTALLER_UI_READY=lan-interface"
 	hmp_keys ret
@@ -295,14 +362,24 @@ require_cmd nc
 require_cmd truncate
 require_cmd seq
 require_cmd sha256sum
+require_cmd cmp
 mkdir -p "$SMOKE_DIR"
 
 QEMU_SYSTEM="$(find_qemu_system)" || die "qemu-system-x86_64 is required"
 configure_qemu_env
 
-run_usb_click_and_crash
-run_ps2_activation
-run_absolute_click
-run_exact_confirmation_cleanup
+case "$QEMU_MOUSE_CASE" in
+	all)
+		run_usb_click_and_crash
+		run_ps2_activation
+		run_absolute_click
+		run_exact_confirmation_cleanup
+		;;
+	usb-relative) run_usb_click_and_crash ;;
+	ps2) run_ps2_activation ;;
+	usb-tablet) run_absolute_click ;;
+	exact-confirm) run_exact_confirmation_cleanup ;;
+	*) die "Unknown QEMU_MOUSE_CASE: $QEMU_MOUSE_CASE" ;;
+esac
 
 log "QEMU local-console mouse acceptance passed"

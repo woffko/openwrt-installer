@@ -3,9 +3,9 @@
 This procedure validates the experimental local-console mouse path on bare
 metal without allowing the installer to write a disk.
 
-## Release Candidate
+## Historical Release Candidate
 
-The physical alpha gate applies only to this frozen candidate:
+The previous physical alpha candidate was:
 
 ```text
 installer_version=v1.0-alpha.8
@@ -13,9 +13,18 @@ runtime_commit=964fed6
 iso_sha256=f1131d7587d49b5accf0e1e6b96fc378114fd1f9293a7e1e1a0e5dc1772a22e5
 ```
 
-Any runtime or image change invalidates the result and requires a rebuilt ISO
-and a new physical pass. The eventual release asset must be byte-identical to
-this candidate.
+It is retained only as historical evidence. Runtime and image changes after
+that build invalidated it, so it must not be used for a new physical report or
+release.
+
+The `v1.0-alpha.9` mousedev-based runtime was selected for candidate freeze
+after its pre-freeze development build passed the complete QEMU mouse matrix
+and a VMware cursor test on 2026-08-14. The last pre-candidate ISO, including
+the later configuration-import work, has SHA-256
+`62653cac2fc7f22f51d48f1a813be45a462d385e3846d2eb2a18bbf585357e21` and passed
+the full QEMU ISO gate on 2026-08-15. Those virtual-machine results do not close
+the separate bare-metal gate. This SHA is historical and must be replaced by
+the clean `v1.0-alpha.9` candidate rebuild before accepting a physical report.
 
 ## Safety
 
@@ -31,7 +40,8 @@ cd output
 sha256sum -c sha256sums.txt
 ```
 
-The hybrid ISO line must match the candidate SHA-256 above.
+For an actual gate, the hybrid ISO line must match the newly frozen candidate
+metadata exactly, not the historical `v1.0-alpha.8` block above.
 
 ## Required Hardware
 
@@ -75,11 +85,14 @@ or a different USB receiver/controller.
 
     ```sh
     ./scripts/verify-physical-report.sh /path/to/owrt-hardware-report.txt
-    make release-gate REPORT=/path/to/owrt-hardware-report.txt
+    make release-gate \
+      CANDIDATE=release/v1.0-alpha.N-candidate.env \
+      REPORT=/path/to/owrt-hardware-report.txt
     ```
 
     The second command also verifies the frozen runtime commit, ISO SHA-256,
-    manifest SHA-256, manifest version, and absence of later runtime changes.
+    sidecar and ISO-embedded manifest, build provenance, and absence of later
+    tracked, staged, untracked, or unexpected ignored runtime changes.
 
 ## Pass Criteria
 
@@ -123,7 +136,7 @@ runtime cleanup state. If it fails, also preserve only these bounded outputs:
 
 ```sh
 grep -E 'owrt-installer-mouse|Dry run' /tmp/owrt-installer.log
-ls -l /dev/input/event* /dev/gpmctl /var/run/gpm.pid 2>&1
+ls -l /dev/input/mice /dev/input/event* /dev/gpmctl /var/run/gpm.pid 2>&1
 ps w | grep '[g]pm'
 ```
 

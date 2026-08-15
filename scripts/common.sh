@@ -2,6 +2,10 @@
 
 set -eu
 
+# ImageBuilder preserves the caller's umask in generated rootfs archives.
+# Keep service users and packaged executables usable across build runners.
+umask 022
+
 PROJECT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/build}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
@@ -9,8 +13,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 # and make GNU find reject -execdir during rootfs preparation.
 PATH="$BUILD_DIR/host-tools/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
-OPENWRT_VERSION="${OPENWRT_VERSION:-25.12.4}"
-INSTALLER_VERSION="${INSTALLER_VERSION:-v1.0-alpha.9-dev}"
+OPENWRT_VERSION="${OPENWRT_VERSION:-25.12.5}"
+INSTALLER_VERSION="${INSTALLER_VERSION:-v1.0-alpha.9}"
 PROFILE="generic"
 IMAGE_TYPE="ext4-combined-efi"
 IMAGEBUILDER_ARCHIVE="openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
@@ -18,7 +22,7 @@ IMAGEBUILDER_DIR="$BUILD_DIR/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linu
 # shellcheck disable=SC2034 # Used by scripts that source this file.
 IMAGEBUILDER_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/${IMAGEBUILDER_ARCHIVE}"
 # shellcheck disable=SC2034 # Used by scripts that source this file.
-IMAGEBUILDER_SHA256_25_12_4="53c061b15aef20173c1f938b014103785fb2370f19693518de9c8a29d840ee9d"
+IMAGEBUILDER_SHA256_25_12_5="313221253d9bac534e4a4ee6492a4941b4ba0f43200eceb8d16a4785470ae9df"
 
 log() {
 	printf '[owrt-installer] %s\n' "$*" >&2
@@ -41,10 +45,17 @@ read_package_file() {
 	' "$1"
 }
 
+imagebuilder_ready() {
+	[ -f "$IMAGEBUILDER_DIR/Makefile" ] &&
+		[ -f "$IMAGEBUILDER_DIR/repositories" ] &&
+		[ -x "$IMAGEBUILDER_DIR/staging_dir/host/bin/apk" ]
+}
+
 ensure_imagebuilder() {
-	if [ ! -d "$IMAGEBUILDER_DIR" ]; then
+	if ! imagebuilder_ready; then
 		"$PROJECT_DIR/scripts/download-openwrt.sh"
 	fi
+	imagebuilder_ready || die "ImageBuilder is incomplete after extraction: $IMAGEBUILDER_DIR"
 }
 
 refresh_available_packages() {

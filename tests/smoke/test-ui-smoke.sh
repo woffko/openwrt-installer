@@ -86,6 +86,62 @@ run_line_progress_stream_smoke() {
 	assert_not_contains "$out_file" "invalid%"
 }
 
+run_line_pppoe_wizard_smoke() {
+	work_dir="$1"
+	out_file="$2"
+	marker_file="$work_dir/pppoe-wizard.markers"
+
+	printf '%s\n' \
+		'2' \
+		'subscriber@example.net' \
+		'!back' \
+		'' \
+		'smoke-secret' \
+		'3' \
+		'' \
+		'1' |
+		OWRT_INSTALL_TEST_SOURCE_ONLY=1 UI_LIB="$UI_LIB" OWRT_UI_MODE=line TERM=dumb \
+		TMPDIR="$work_dir" sh -eu -c '
+			. "$1"
+			marker_file="$2"
+			autostart_serial_marker() { printf "%s\n" "$1" >> "$marker_file"; }
+			AUTO_STARTED=1
+			setup_ui
+			select_wan_settings
+			printf "result proto=%s user=%s password_length=%s wan6=%s\n" \
+				"$WAN_PROTO" "$WAN_PPP_USERNAME" "${#WAN_PPP_PASSWORD}" "$WAN6_PROTO"
+			WAN_PPP_PASSWORD=""
+			cleanup
+		' sh "$INSTALLER" "$marker_file" > "$out_file" 2>&1 ||
+		fail "line PPPoE wizard smoke failed"
+
+	assert_contains "$out_file" "PPPoE username"
+	assert_contains "$out_file" "Step 1 of 2"
+	assert_contains "$out_file" "PPPoE password"
+	assert_contains "$out_file" "Step 2 of 2"
+	assert_contains "$out_file" \
+		"result proto=pppoe user=subscriber@example.net password_length=12 wan6=dhcpv6"
+	assert_not_contains "$out_file" "smoke-secret"
+	[ "$(sed -n '1p' "$marker_file")" = "OWRT_INSTALLER_UI_READY=wan-mode" ] ||
+		fail "PPPoE wizard did not start at WAN mode"
+	[ "$(sed -n '2p' "$marker_file")" = "OWRT_INSTALLER_UI_READY=pppoe-username" ] ||
+		fail "PPPoE username marker is missing"
+	[ "$(sed -n '3p' "$marker_file")" = "OWRT_INSTALLER_UI_READY=pppoe-password" ] ||
+		fail "PPPoE password marker is missing"
+	[ "$(sed -n '4p' "$marker_file")" = "OWRT_INSTALLER_UI_READY=pppoe-username" ] ||
+		fail "Back from PPPoE password did not return to username"
+	[ "$(sed -n '5p' "$marker_file")" = "OWRT_INSTALLER_UI_READY=pppoe-password" ] ||
+		fail "PPPoE password was not reopened after username"
+	[ "$(sed -n '6p' "$marker_file")" = "OWRT_INSTALLER_UI_READY=wan6-mode" ] ||
+		fail "PPPoE wizard did not continue to WAN IPv6"
+	[ "$(sed -n '7p' "$marker_file")" = "OWRT_INSTALLER_UI_READY=pppoe-password" ] ||
+		fail "Back from WAN IPv6 did not return to PPPoE password"
+	[ "$(sed -n '8p' "$marker_file")" = "OWRT_INSTALLER_UI_READY=wan6-mode" ] ||
+		fail "PPPoE wizard did not return to WAN IPv6"
+	[ "$(wc -l < "$marker_file" | tr -d ' ')" = "8" ] ||
+		fail "PPPoE wizard emitted unexpected UI markers"
+}
+
 run_whiptail_progress_stream_smoke() {
 	work_dir="$1"
 	out_file="$2"
@@ -849,6 +905,52 @@ run_whiptail_secret_smoke() {
 	assert_not_contains "$out_file" "s3cr3t"
 }
 
+run_whiptail_secret_size_smoke() {
+	work_dir="$1"
+
+	if ! command -v script >/dev/null 2>&1; then
+		printf 'SKIP: script(1) is unavailable; whiptail secret size smoke skipped.\n'
+		return 0
+	fi
+
+	fake_bin="$work_dir/secret-size-bin"
+	mkdir -p "$fake_bin"
+	# shellcheck disable=SC2016 # These lines generate the fake command.
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' '[ "${1:-}" = "--version" ] && exit 0'
+		printf '%s\n' 'previous=""'
+		printf '%s\n' 'current=""'
+		printf '%s\n' 'for argument in "$@"; do previous="$current"; current="$argument"; done'
+		printf '%s\n' 'printf "passwordbox height=%s width=%s\n" "$previous" "$current" > "$WHIPTAIL_ARGS"'
+		printf '%s\n' 'printf "probe-secret\n" >&2'
+	} > "$fake_bin/whiptail"
+	chmod +x "$fake_bin/whiptail"
+
+	harness="$work_dir/whiptail-secret-size.sh"
+	{
+		printf '%s\n' '#!/bin/sh'
+		printf '%s\n' 'set -eu'
+		printf '. %s\n' "$(shell_quote "$UI_LIB")"
+		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'ui_terminal_size() { UI_WIDTH=86; UI_INNER_WIDTH=82; UI_TERM_COLS=90; UI_HEIGHT=25; }'
+		printf '%s\n' 'prompt_secret "Download PPPoE password" "Download PPPoE password" "" "Step 2 of 2.
+Input is hidden and used only for this temporary live uplink.
+Leave it empty only if your ISP explicitly requires no password."'
+		printf '%s\n' 'SELECTED_INPUT=""'
+		printf '%s\n' 'ui_leave'
+	} > "$harness"
+	chmod +x "$harness"
+
+	WHIPTAIL_ARGS="$work_dir/secret-size.args" PATH="$fake_bin:$PATH" \
+	OWRT_UI_MODE=whiptail TERM=xterm \
+		script -q -e -c "$harness" "$work_dir/secret-size.out" >/dev/null 2>&1 ||
+		fail "Whiptail secret size smoke failed"
+
+	assert_contains "$work_dir/secret-size.args" "passwordbox height=12 width=0"
+	assert_not_contains "$work_dir/secret-size.args" "height=0"
+}
+
 run_terminal_size_smoke_case() {
 	work_dir="$1"
 	rows="$2"
@@ -914,6 +1016,7 @@ EOF
 
 run_line_stage_smoke "$log_file" "$work_dir/line-stage.out"
 run_line_progress_stream_smoke "$work_dir" "$work_dir/line-progress.out"
+run_line_pppoe_wizard_smoke "$work_dir" "$work_dir/line-pppoe-wizard.out"
 run_whiptail_progress_stream_smoke "$work_dir" "$work_dir/whiptail-progress.out"
 run_line_menu_smoke "$work_dir" "$work_dir/line-menu.out"
 run_ansi_stage_smoke "$work_dir" "$log_file" "$work_dir/ansi-stage.out"
@@ -935,6 +1038,7 @@ run_curses_selection_smoke "$work_dir"
 run_whiptail_menu_form_smoke "$work_dir" "$work_dir/whiptail-menu-form.out"
 run_whiptail_back_smoke "$work_dir" "$work_dir/whiptail-back.out"
 run_whiptail_secret_smoke "$work_dir" "$work_dir/whiptail-secret.out"
+run_whiptail_secret_size_smoke "$work_dir"
 run_terminal_size_smoke "$work_dir"
 
 printf 'UI smoke tests passed.\n'

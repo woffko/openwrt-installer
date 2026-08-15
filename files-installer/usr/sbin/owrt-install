@@ -2,9 +2,13 @@
 
 set -eu
 
-INSTALLER_VERSION="v1.0-alpha.9-dev"
+INSTALLER_VERSION="v1.0-alpha.9"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
+EMBEDDED_PAYLOAD="$PAYLOAD"
+EMBEDDED_MANIFEST="$MANIFEST"
+NETWORK_APPLIER="/usr/share/owrt-installer/98-installer-network"
+OPENWRT_RELEASE_KEY="/usr/share/owrt-installer/keys/openwrt-release.usign.pub"
 TARGET_MOUNT="/mnt/target"
 
 tmp_file() {
@@ -19,6 +23,9 @@ DISK_LIST="$(tmp_file disks)"
 NIC_LIST="$(tmp_file nics)"
 NIC_CHOICE_LIST="$(tmp_file nic-choices)"
 MENU_LIST="$(tmp_file menu)"
+CONFIG_IMPORT_PARTITION_LIST="$(tmp_file import-partitions)"
+CONFIG_IMPORT_ARCHIVE_LIST="$(tmp_file import-archives)"
+CONFIG_IMPORT_SCAN_LIST="$(tmp_file import-scan)"
 INSTALL_LOG="${TMPDIR:-/tmp}/owrt-installer.log"
 
 TARGET=""
@@ -43,7 +50,34 @@ ASSUME_YES=0
 AUTO_STARTED=0
 DRY_RUN=0
 SKIP_NETWORK=0
+DOWNLOAD_LATEST=0
 TARGET_MOUNTED=0
+INSTALL_MODE="clean"
+NETWORK_SOURCE="wizard"
+CONFIG_IMPORT_SOURCE_REQUEST=""
+CONFIG_IMPORT_POLICY_REQUEST=""
+CONFIG_IMPORT_NETWORK_REQUEST=""
+CONFIG_IMPORT_WORKDIR=""
+CONFIG_IMPORT_MOUNTDIR=""
+CONFIG_IMPORT_MOUNTED=0
+CONFIG_IMPORT_ARCHIVE=""
+CONFIG_IMPORT_APPLY_DIR=""
+CONFIG_IMPORT_DEVICE=""
+CONFIG_IMPORT_FSTYPE=""
+CONFIG_IMPORT_SOURCE_PATH=""
+CONFIG_IMPORT_SOURCE_LABEL=""
+CONFIG_IMPORT_SHA256=""
+CONFIG_IMPORT_COMPRESSED_SIZE=""
+CONFIG_IMPORT_UNPACKED_SIZE=""
+CONFIG_IMPORT_MEMBER_COUNT=""
+CONFIG_IMPORT_POLICY="config-only"
+CONFIG_IMPORT_HAS_NETWORK=0
+CONFIG_IMPORT_ERROR=""
+CONFIG_IMPORT_MAX_COMPRESSED_BYTES="${OWRT_IMPORT_MAX_COMPRESSED_BYTES:-67108864}"
+CONFIG_IMPORT_MAX_UNPACKED_BYTES="${OWRT_IMPORT_MAX_UNPACKED_BYTES:-134217728}"
+CONFIG_IMPORT_MAX_MEMBER_BYTES="${OWRT_IMPORT_MAX_MEMBER_BYTES:-33554432}"
+CONFIG_IMPORT_MAX_MEMBERS="${OWRT_IMPORT_MAX_MEMBERS:-8192}"
+CONFIG_IMPORT_RAM_RESERVE_BYTES="${OWRT_IMPORT_RAM_RESERVE_BYTES:-67108864}"
 TTY_STATE=""
 MENU_NOTE=""
 CLEANED_UP=0
@@ -55,6 +89,29 @@ WRITE_DD_PID=""
 WRITE_SOURCE_FIFO=""
 WRITE_OUTPUT_FIFO=""
 WRITE_PROGRESS_FIFO=""
+PAYLOAD_SOURCE_ID="embedded"
+PAYLOAD_SOURCE_LABEL="Embedded installer image"
+PAYLOAD_VERSION=""
+PAYLOAD_FILENAME="target.img.gz"
+PAYLOAD_IMAGE_TYPE="ext4-combined-efi"
+PAYLOAD_BOOT_MODE="BIOS/UEFI"
+PAYLOAD_URL="offline"
+PAYLOAD_COMPRESSED_SIZE=""
+PAYLOAD_RAM_AVAILABLE=""
+PAYLOAD_RAM_REQUIRED=""
+NETINSTALL_WORKDIR=""
+NETINSTALL_NETWORK_BACKED_UP=0
+NETINSTALL_ERROR=""
+NETINSTALL_DEV=""
+NETINSTALL_PROTO="dhcp"
+NETINSTALL_IPADDR=""
+NETINSTALL_CIDR="24"
+NETINSTALL_NETMASK=""
+NETINSTALL_GATEWAY=""
+NETINSTALL_DNS=""
+NETINSTALL_PPP_USERNAME=""
+NETINSTALL_PPP_PASSWORD=""
+NETINSTALL_AUTO_DHCP_ATTEMPTED=0
 
 C_RESET=""
 C_BOLD=""
@@ -151,7 +208,11 @@ cleanup() {
 	[ "$CLEANED_UP" = "0" ] || return 0
 	CLEANED_UP=1
 	WAN_PPP_PASSWORD=""
+	NETINSTALL_PPP_PASSWORD=""
 	local_mouse_stop
+	if command -v restore_netinstall_network >/dev/null 2>&1; then
+		restore_netinstall_network
+	fi
 	for write_pid in "$WRITE_GZIP_PID" "$WRITE_PV_PID" "$WRITE_DD_PID"; do
 		case "$write_pid" in
 			''|*[!0-9]*) ;;
@@ -173,14 +234,30 @@ cleanup() {
 	if [ "$TARGET_MOUNTED" = "1" ]; then
 		umount "$TARGET_MOUNT" >/dev/null 2>&1 || true
 	fi
-	rm -f "$DISK_LIST" "$NIC_LIST" "$NIC_CHOICE_LIST" "$MENU_LIST"
+	if [ "$CONFIG_IMPORT_MOUNTED" = "1" ]; then
+		umount "$CONFIG_IMPORT_MOUNTDIR" >/dev/null 2>&1 ||
+			umount -l "$CONFIG_IMPORT_MOUNTDIR" >/dev/null 2>&1 || true
+		CONFIG_IMPORT_MOUNTED=0
+	fi
+	case "$CONFIG_IMPORT_MOUNTDIR" in
+		"${TMPDIR:-/tmp}"/owrt-import-mnt.*) rmdir "$CONFIG_IMPORT_MOUNTDIR" 2>/dev/null || true ;;
+	esac
+	case "$CONFIG_IMPORT_WORKDIR" in
+		"${TMPDIR:-/tmp}"/owrt-import.*) rm -rf "$CONFIG_IMPORT_WORKDIR" ;;
+	esac
+	rm -f "$DISK_LIST" "$NIC_LIST" "$NIC_CHOICE_LIST" "$MENU_LIST" \
+		"$CONFIG_IMPORT_PARTITION_LIST" "$CONFIG_IMPORT_ARCHIVE_LIST" \
+		"$CONFIG_IMPORT_SCAN_LIST"
 	for write_fifo in "$WRITE_SOURCE_FIFO" "$WRITE_OUTPUT_FIFO" "$WRITE_PROGRESS_FIFO"; do
 		[ -n "$write_fifo" ] && rm -f "$write_fifo"
 	done
+	case "$NETINSTALL_WORKDIR" in
+		"${TMPDIR:-/tmp}"/owrt-netinstall.*) rm -rf "$NETINSTALL_WORKDIR" ;;
+	esac
 	return 0
 }
 
-trap 'cleanup; exit 130' INT TERM
+trap 'cleanup; exit 130' HUP INT TERM
 
 UI_LIB="${UI_LIB:-/usr/libexec/owrt-installer-ui}"
 if [ -r "$UI_LIB" ]; then
@@ -190,6 +267,16 @@ else
 	UI_LIB_LOCAL="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)/libexec/owrt-installer-ui"
 	# shellcheck source=files-installer/usr/libexec/owrt-installer-ui
 	. "$UI_LIB_LOCAL"
+fi
+
+CONFIG_IMPORT_LIB="${CONFIG_IMPORT_LIB:-/usr/libexec/owrt-installer-config-import}"
+if [ -r "$CONFIG_IMPORT_LIB" ]; then
+	# shellcheck source=/dev/null
+	. "$CONFIG_IMPORT_LIB"
+else
+	CONFIG_IMPORT_LIB_LOCAL="$(dirname "$UI_LIB")/owrt-installer-config-import"
+	# shellcheck source=files-installer/usr/libexec/owrt-installer-config-import
+	. "$CONFIG_IMPORT_LIB_LOCAL"
 fi
 
 usage() {
@@ -205,11 +292,19 @@ Usage:
   owrt-install --target /dev/nvme0n1 --lan-ip 192.168.1.1/24 --wan-proto dhcp
   owrt-install --target /dev/nvme0n1 --wan-proto pppoe --pppoe-username USER --pppoe-password PASS
   owrt-install --target /dev/nvme0n1 --allow-removable
+  owrt-install --target /dev/nvme0n1 --config-backup /path/to/backup.tar.gz
+  owrt-install --target /dev/nvme0n1 --config-backup FILE --config-import-policy config-only
+  owrt-install --target /dev/nvme0n1 --config-backup FILE --import-network keep
   owrt-install --target /dev/nvme0n1 --yes-i-know-this-will-erase-data
+  owrt-install --download-latest
   owrt-install --dry-run
 
 The selected target disk will be erased completely.
 Removable disks and the detected live boot disk are blocked by default.
+--download-latest verifies an official signed OpenWrt x86 image in RAM before
+the existing target selection, review, and exact ERASE confirmation flow.
+--config-backup accepts a standard OpenWrt sysupgrade .tar.gz, validates and
+stages it in RAM, and applies it only after the target image has been written.
 EOF
 }
 
@@ -330,6 +425,686 @@ json_value() {
 	fi
 }
 
+is_positive_integer() {
+	case "$1" in
+		''|*[!0-9]*|0) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+bytes_as_mib() {
+	bytes_value="$1"
+	printf '%s MiB' "$(((bytes_value + 1048575) / 1048576))"
+}
+
+reset_to_embedded_payload() {
+	PAYLOAD="$EMBEDDED_PAYLOAD"
+	MANIFEST="$EMBEDDED_MANIFEST"
+	PAYLOAD_SOURCE_ID="embedded"
+	PAYLOAD_SOURCE_LABEL="Embedded installer image"
+	PAYLOAD_VERSION=""
+	PAYLOAD_FILENAME="target.img.gz"
+	PAYLOAD_IMAGE_TYPE="ext4-combined-efi"
+	PAYLOAD_BOOT_MODE="BIOS/UEFI"
+	PAYLOAD_URL="offline"
+	PAYLOAD_COMPRESSED_SIZE=""
+	PAYLOAD_RAM_AVAILABLE=""
+	PAYLOAD_RAM_REQUIRED=""
+}
+
+init_netinstall_workdir() {
+	[ -n "$NETINSTALL_WORKDIR" ] && return 0
+	command -v mktemp >/dev/null 2>&1 || {
+		NETINSTALL_ERROR="mktemp is required for the RAM download workspace"
+		return 1
+	}
+	umask 077
+	NETINSTALL_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/owrt-netinstall.XXXXXX")" || {
+		NETINSTALL_ERROR="Could not create the RAM download workspace"
+		return 1
+	}
+}
+
+netinstall_curl_get() {
+	netinstall_url="$1"
+	netinstall_output="$2"
+	netinstall_timeout="${3:-30}"
+	curl --fail --silent --show-error \
+		--proto '=https' --tlsv1.2 \
+		--connect-timeout 8 --max-time "$netinstall_timeout" \
+		--output "$netinstall_output" "$netinstall_url" >> "$INSTALL_LOG" 2>&1
+}
+
+netinstall_curl_head() {
+	netinstall_url="$1"
+	netinstall_output="$2"
+	curl --fail --silent --show-error \
+		--proto '=https' --tlsv1.2 \
+		--connect-timeout 8 --max-time 30 \
+		--head --output /dev/null --dump-header "$netinstall_output" \
+		"$netinstall_url" >> "$INSTALL_LOG" 2>&1
+}
+
+netinstall_stable_version() {
+	versions_file="$NETINSTALL_WORKDIR/versions.json"
+	versions_url="https://downloads.openwrt.org/.versions.json"
+	if ! netinstall_curl_get "$versions_url" "$versions_file" 20; then
+		NETINSTALL_ERROR="Could not reach the official OpenWrt release index over HTTPS. Check the uplink, DNS, and captive portal."
+		return 1
+	fi
+	if command -v jsonfilter >/dev/null 2>&1; then
+		NETINSTALL_STABLE_VERSION="$(jsonfilter -i "$versions_file" -e '@.stable_version' 2>/dev/null || true)"
+	else
+		NETINSTALL_STABLE_VERSION="$(sed -n 's/.*"stable_version"[[:space:]]*:[[:space:]]*"\([0-9.]*\)".*/\1/p' "$versions_file" | head -n 1)"
+	fi
+	if ! printf '%s\n' "$NETINSTALL_STABLE_VERSION" |
+		grep -Eq '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'; then
+		NETINSTALL_ERROR="The official release index returned an invalid stable version."
+		return 1
+	fi
+	return 0
+}
+
+netinstall_boot_mode() {
+	if [ "${OWRT_NETINSTALL_TEST_MODE:-0}" = "1" ] &&
+		[ -n "${OWRT_NETINSTALL_TEST_BOOT_MODE:-}" ]; then
+		case "$OWRT_NETINSTALL_TEST_BOOT_MODE" in
+			bios|uefi) printf '%s\n' "$OWRT_NETINSTALL_TEST_BOOT_MODE" ;;
+			*) return 1 ;;
+		esac
+	elif [ -d /sys/firmware/efi ]; then
+		printf '%s\n' "uefi"
+	else
+		printf '%s\n' "bios"
+	fi
+}
+
+netinstall_mem_available_bytes() {
+	if [ "${OWRT_NETINSTALL_TEST_MODE:-0}" = "1" ] &&
+		is_positive_integer "${OWRT_NETINSTALL_TEST_MEM_AVAILABLE:-}"; then
+		printf '%s\n' "$OWRT_NETINSTALL_TEST_MEM_AVAILABLE"
+		return 0
+	fi
+	mem_available_kib="$(awk '$1 == "MemAvailable:" { print $2; exit }' /proc/meminfo 2>/dev/null || true)"
+	is_positive_integer "$mem_available_kib" || return 1
+	printf '%s\n' "$((mem_available_kib * 1024))"
+}
+
+validate_downloaded_layout() {
+	layout_payload="$1"
+	layout_size="$2"
+	layout_mode="$3"
+	layout_image="$NETINSTALL_WORKDIR/layout.img"
+	layout_report="$NETINSTALL_WORKDIR/layout.txt"
+
+	[ "$layout_size" -ge 8388608 ] 2>/dev/null || {
+		NETINSTALL_ERROR="The signed image is too small to be an OpenWrt combined x86 disk image."
+		return 1
+	}
+	dd if=/dev/null of="$layout_image" bs=1 seek="$layout_size" count=0 status=none \
+		>> "$INSTALL_LOG" 2>&1 || {
+		NETINSTALL_ERROR="Could not create the sparse image-layout probe."
+		return 1
+	}
+	if ! gzip -dc "$layout_payload" 2>/dev/null |
+		dd of="$layout_image" bs=1M count=4 iflag=fullblock conv=notrunc status=none \
+			>> "$INSTALL_LOG" 2>&1; then
+		NETINSTALL_ERROR="Could not read the signed image partition-table prefix."
+		rm -f "$layout_image"
+		return 1
+	fi
+	if ! fdisk -l "$layout_image" > "$layout_report" 2>&1; then
+		NETINSTALL_ERROR="fdisk rejected the signed image partition table."
+		rm -f "$layout_image"
+		return 1
+	fi
+	case "$layout_mode" in
+		uefi)
+			layout_partition_count="$(grep -c 'Linux filesystem' "$layout_report" || true)"
+			if ! grep -F 'Disklabel type: gpt' "$layout_report" >/dev/null 2>&1 ||
+				[ "$layout_partition_count" -lt 2 ]; then
+				NETINSTALL_ERROR="The signed UEFI image does not have the expected x86 GPT combined layout."
+				rm -f "$layout_image"
+				return 1
+			fi
+			;;
+		bios)
+			layout_partition_count="$(grep -c ' 83 Linux' "$layout_report" || true)"
+			if ! grep -F 'Disklabel type: dos' "$layout_report" >/dev/null 2>&1 ||
+				[ "$layout_partition_count" -lt 2 ]; then
+				NETINSTALL_ERROR="The signed BIOS image does not have the expected x86 MBR combined layout."
+				rm -f "$layout_image"
+				return 1
+			fi
+			;;
+		*)
+			NETINSTALL_ERROR="Unsupported online-install boot mode: $layout_mode"
+			rm -f "$layout_image"
+			return 1
+			;;
+	esac
+	rm -f "$layout_image"
+	return 0
+}
+
+acquire_downloaded_payload() {
+	for netinstall_cmd in curl usign sha256sum gzip stat fdisk dd awk grep; do
+		command -v "$netinstall_cmd" >/dev/null 2>&1 || {
+			NETINSTALL_ERROR="Required online-install command is missing: $netinstall_cmd"
+			return 1
+		}
+	done
+	[ -s "$OPENWRT_RELEASE_KEY" ] || {
+		NETINSTALL_ERROR="Pinned OpenWrt release verification key is missing."
+		return 1
+	}
+	init_netinstall_workdir || return 1
+
+	ui_install_stage "Online release" "Checking the official stable OpenWrt release index over HTTPS." "$INSTALL_LOG"
+	netinstall_stable_version || return 1
+	netinstall_mode="$(netinstall_boot_mode)" || {
+		NETINSTALL_ERROR="Could not determine BIOS or UEFI boot mode."
+		return 1
+	}
+	case "$netinstall_mode" in
+		uefi)
+		netinstall_image_type="ext4-combined-efi"
+		netinstall_boot_label="UEFI"
+		;;
+		bios)
+		netinstall_image_type="ext4-combined"
+		netinstall_boot_label="BIOS"
+		;;
+	esac
+	netinstall_filename="openwrt-${NETINSTALL_STABLE_VERSION}-x86-64-generic-${netinstall_image_type}.img.gz"
+	netinstall_base_url="https://downloads.openwrt.org/releases/${NETINSTALL_STABLE_VERSION}/targets/x86/64"
+	netinstall_image_url="$netinstall_base_url/$netinstall_filename"
+	netinstall_sums="$NETINSTALL_WORKDIR/sha256sums"
+	netinstall_signature="$NETINSTALL_WORKDIR/sha256sums.sig"
+	netinstall_headers="$NETINSTALL_WORKDIR/image.headers"
+	netinstall_payload="$NETINSTALL_WORKDIR/target.img.gz"
+	netinstall_manifest="$NETINSTALL_WORKDIR/manifest.json"
+
+	ui_install_stage "Verify release" "Downloading and verifying the signed OpenWrt checksum manifest." "$INSTALL_LOG"
+	netinstall_curl_get "$netinstall_base_url/sha256sums" "$netinstall_sums" 45 || {
+		NETINSTALL_ERROR="Could not download the official OpenWrt checksum manifest."
+		return 1
+	}
+	netinstall_curl_get "$netinstall_base_url/sha256sums.sig" "$netinstall_signature" 30 || {
+		NETINSTALL_ERROR="Could not download the OpenWrt usign signature."
+		return 1
+	}
+	if ! usign -V -m "$netinstall_sums" -x "$netinstall_signature" \
+		-p "$OPENWRT_RELEASE_KEY" >> "$INSTALL_LOG" 2>&1; then
+		NETINSTALL_ERROR="The OpenWrt checksum manifest signature is invalid."
+		return 1
+	fi
+	autostart_serial_marker "OWRT_INSTALLER_NETINSTALL_SIGNATURE_VERIFIED=1"
+
+	netinstall_hashes="$(awk -v wanted="*$netinstall_filename" '
+		$2 == wanted && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }
+	' "$netinstall_sums")"
+	netinstall_expected_sha="$(printf '%s\n' "$netinstall_hashes" | sed -n '1p')"
+	if [ -z "$netinstall_expected_sha" ] ||
+		[ -n "$(printf '%s\n' "$netinstall_hashes" | sed -n '2p')" ]; then
+		NETINSTALL_ERROR="The signed checksum manifest does not contain exactly one expected x86 image entry."
+		return 1
+	fi
+
+	netinstall_curl_head "$netinstall_image_url" "$netinstall_headers" || {
+		NETINSTALL_ERROR="Could not obtain the official image size before allocating RAM."
+		return 1
+	}
+	netinstall_content_length="$(tr -d '\r' < "$netinstall_headers" |
+		awk 'tolower($1) == "content-length:" { value=$2 } END { print value }')"
+	is_positive_integer "$netinstall_content_length" || {
+		NETINSTALL_ERROR="The official image server did not provide a valid Content-Length."
+		return 1
+	}
+	netinstall_max_image=1073741824
+	[ "$netinstall_content_length" -le "$netinstall_max_image" ] || {
+		NETINSTALL_ERROR="The advertised OpenWrt image exceeds the 1 GiB safety limit."
+		return 1
+	}
+	netinstall_mem_available="$(netinstall_mem_available_bytes)" || {
+		NETINSTALL_ERROR="Could not read MemAvailable for the RAM safety gate."
+		return 1
+	}
+	netinstall_ram_reserve=268435456
+	if [ "${OWRT_NETINSTALL_TEST_MODE:-0}" = "1" ] &&
+		is_positive_integer "${OWRT_NETINSTALL_TEST_RAM_RESERVE:-}"; then
+		netinstall_ram_reserve="$OWRT_NETINSTALL_TEST_RAM_RESERVE"
+	fi
+	netinstall_ram_required=$((netinstall_content_length + netinstall_ram_reserve))
+	[ "$netinstall_mem_available" -ge "$netinstall_ram_required" ] || {
+		NETINSTALL_ERROR="Insufficient RAM: $(bytes_as_mib "$netinstall_mem_available") available, $(bytes_as_mib "$netinstall_ram_required") required including reserve."
+		return 1
+	}
+
+	ui_install_stage "Download image" "Downloading $netinstall_filename into RAM." "$INSTALL_LOG"
+	if ! curl --fail --silent --show-error \
+		--proto '=https' --tlsv1.2 \
+		--connect-timeout 10 --max-time 900 \
+		--max-filesize "$netinstall_content_length" \
+		--output "$netinstall_payload" "$netinstall_image_url" >> "$INSTALL_LOG" 2>&1; then
+		rm -f "$netinstall_payload"
+		NETINSTALL_ERROR="The official OpenWrt image download failed or exceeded its advertised size."
+		return 1
+	fi
+	netinstall_actual_size="$(stat -c '%s' "$netinstall_payload" 2>/dev/null || true)"
+	[ "$netinstall_actual_size" = "$netinstall_content_length" ] || {
+		rm -f "$netinstall_payload"
+		NETINSTALL_ERROR="The downloaded image size does not match the preflight Content-Length."
+		return 1
+	}
+	netinstall_actual_sha="$(sha256sum "$netinstall_payload" | awk '{ print $1 }')"
+	[ "$netinstall_actual_sha" = "$netinstall_expected_sha" ] || {
+		rm -f "$netinstall_payload"
+		NETINSTALL_ERROR="The downloaded image SHA-256 does not match the signed manifest."
+		return 1
+	}
+	if ! gzip -t "$netinstall_payload" >> "$INSTALL_LOG" 2>&1; then
+		rm -f "$netinstall_payload"
+		NETINSTALL_ERROR="The downloaded image has an invalid or truncated gzip stream."
+		return 1
+	fi
+	netinstall_uncompressed_size="$(gzip -l "$netinstall_payload" 2>/dev/null |
+		awk 'NR == 2 { print $2 }')"
+	is_positive_integer "$netinstall_uncompressed_size" || {
+		NETINSTALL_ERROR="Could not determine the downloaded image uncompressed size."
+		return 1
+	}
+	validate_downloaded_layout "$netinstall_payload" "$netinstall_uncompressed_size" "$netinstall_mode" || return 1
+
+	cat > "$netinstall_manifest" <<EOF_NETINSTALL_MANIFEST
+{
+  "installer_version": "$INSTALLER_VERSION",
+  "openwrt_version": "$NETINSTALL_STABLE_VERSION",
+  "target_arch": "x86_64",
+  "target_profile": "generic",
+  "image_type": "$netinstall_image_type",
+  "payload_source": "downloaded-official",
+  "payload_filename": "$netinstall_filename",
+  "payload_sha256": "$netinstall_expected_sha",
+  "payload_uncompressed_size": "$netinstall_uncompressed_size"
+}
+EOF_NETINSTALL_MANIFEST
+
+	PAYLOAD="$netinstall_payload"
+	MANIFEST="$netinstall_manifest"
+	PAYLOAD_SOURCE_ID="downloaded-official"
+	PAYLOAD_SOURCE_LABEL="Downloaded official OpenWrt"
+	PAYLOAD_VERSION="$NETINSTALL_STABLE_VERSION"
+	PAYLOAD_FILENAME="$netinstall_filename"
+	PAYLOAD_IMAGE_TYPE="$netinstall_image_type"
+	PAYLOAD_BOOT_MODE="$netinstall_boot_label"
+	PAYLOAD_URL="$netinstall_image_url"
+	PAYLOAD_COMPRESSED_SIZE="$netinstall_actual_size"
+	PAYLOAD_RAM_AVAILABLE="$netinstall_mem_available"
+	PAYLOAD_RAM_REQUIRED="$netinstall_ram_required"
+	autostart_serial_marker "OWRT_INSTALLER_NETINSTALL_VERSION=$PAYLOAD_VERSION"
+	autostart_serial_marker "OWRT_INSTALLER_NETINSTALL_IMAGE=$PAYLOAD_FILENAME"
+	autostart_serial_marker "OWRT_INSTALLER_NETINSTALL_PAYLOAD_VERIFIED=1"
+	NETINSTALL_ERROR=""
+	return 0
+}
+
+restore_netinstall_network() {
+	[ "$NETINSTALL_NETWORK_BACKED_UP" = "1" ] || return 0
+	netinstall_network_backup="$NETINSTALL_WORKDIR/network.config"
+	if [ -s "$netinstall_network_backup" ]; then
+		cp "$netinstall_network_backup" /etc/config/network >> "$INSTALL_LOG" 2>&1 || true
+		if [ -x /etc/init.d/network ]; then
+			/etc/init.d/network restart >> "$INSTALL_LOG" 2>&1 || true
+		fi
+	fi
+	NETINSTALL_NETWORK_BACKED_UP=0
+}
+
+backup_netinstall_network() {
+	[ "$NETINSTALL_NETWORK_BACKED_UP" = "0" ] || return 0
+	init_netinstall_workdir || return 1
+	[ -s /etc/config/network ] || {
+		NETINSTALL_ERROR="The live network configuration is missing."
+		return 1
+	}
+	cp /etc/config/network "$NETINSTALL_WORKDIR/network.config" >> "$INSTALL_LOG" 2>&1 || {
+		NETINSTALL_ERROR="Could not back up the live RAM network configuration."
+		return 1
+	}
+	NETINSTALL_NETWORK_BACKED_UP=1
+}
+
+netinstall_has_default_route() {
+	ip route show default 2>/dev/null | grep -q '^default' && return 0
+	ip -6 route show default 2>/dev/null | grep -q '^default' && return 0
+	return 1
+}
+
+apply_netinstall_network() {
+	netinstall_wait_override="${1:-}"
+	backup_netinstall_network || return 1
+	: > /etc/config/network || {
+		NETINSTALL_ERROR="Could not prepare the temporary live network configuration."
+		restore_netinstall_network
+		return 1
+	}
+
+	if ! {
+		uci -q set network.loopback=interface
+		uci -q set network.loopback.device='lo'
+		uci -q set network.loopback.proto='static'
+		uci -q set network.loopback.ipaddr='127.0.0.1'
+		uci -q set network.loopback.netmask='255.0.0.0'
+		uci -q set network.owrt_netinstall=interface
+		uci -q set network.owrt_netinstall.device="$NETINSTALL_DEV"
+		uci -q set network.owrt_netinstall.proto="$NETINSTALL_PROTO"
+		case "$NETINSTALL_PROTO" in
+			dhcp)
+				uci -q set network.owrt_netinstall.peerdns='1'
+				;;
+			static)
+				uci -q set network.owrt_netinstall.ipaddr="$NETINSTALL_IPADDR"
+				uci -q set network.owrt_netinstall.netmask="$NETINSTALL_NETMASK"
+				uci -q set network.owrt_netinstall.gateway="$NETINSTALL_GATEWAY"
+				for netinstall_dns in $NETINSTALL_DNS; do
+					uci -q add_list network.owrt_netinstall.dns="$netinstall_dns"
+				done
+				;;
+			pppoe)
+				uci -q set network.owrt_netinstall.username="$NETINSTALL_PPP_USERNAME"
+				uci -q set network.owrt_netinstall.password="$NETINSTALL_PPP_PASSWORD"
+				uci -q set network.owrt_netinstall.ipv6='auto'
+				uci -q set network.owrt_netinstall.peerdns='1'
+				;;
+		esac
+		uci -q commit network
+	}; then
+		NETINSTALL_ERROR="Could not create the temporary live uplink configuration."
+		restore_netinstall_network
+		return 1
+	fi
+
+	if ! /etc/init.d/network restart >> "$INSTALL_LOG" 2>&1; then
+		NETINSTALL_ERROR="The live network service rejected the temporary uplink configuration."
+		restore_netinstall_network
+		return 1
+	fi
+	netinstall_wait="${netinstall_wait_override:-${OWRT_NETINSTALL_NETWORK_WAIT:-45}}"
+	case "$netinstall_wait" in
+		''|*[!0-9]*) netinstall_wait=45 ;;
+	esac
+	netinstall_elapsed=0
+	while [ "$netinstall_elapsed" -lt "$netinstall_wait" ]; do
+		if netinstall_has_default_route; then
+			return 0
+		fi
+		sleep 1
+		netinstall_elapsed=$((netinstall_elapsed + 1))
+	done
+	NETINSTALL_ERROR="The selected uplink did not obtain a default route within ${netinstall_wait}s."
+	return 1
+}
+
+auto_configure_netinstall_dhcp() {
+	refresh_nics
+	netinstall_auto_count=0
+	netinstall_auto_wait="${OWRT_NETINSTALL_AUTO_DHCP_WAIT:-12}"
+	case "$netinstall_auto_wait" in
+		''|*[!0-9]*) netinstall_auto_wait=12 ;;
+	esac
+
+	# Prefer interfaces with carrier, but also try devices whose link state is
+	# not visible until the network service brings them up.
+	for netinstall_link_pass in up down; do
+		while IFS='|' read -r netinstall_auto_dev _; do
+			[ -n "$netinstall_auto_dev" ] || continue
+			ip link set dev "$netinstall_auto_dev" up >> "$INSTALL_LOG" 2>&1 || true
+			netinstall_auto_link="$(get_nic_link "$netinstall_auto_dev")"
+			case "$netinstall_link_pass:$netinstall_auto_link" in
+				up:up|down:down) ;;
+				*) continue ;;
+			esac
+
+			netinstall_auto_count=$((netinstall_auto_count + 1))
+			NETINSTALL_DEV="$netinstall_auto_dev"
+			NETINSTALL_PROTO="dhcp"
+			ui_install_stage "Automatic DHCP" \
+				"Trying temporary DHCP on $NETINSTALL_DEV for the official OpenWrt download." \
+				"$INSTALL_LOG"
+			if apply_netinstall_network "$netinstall_auto_wait"; then
+				NETINSTALL_AUTO_DHCP_ATTEMPTED=1
+				autostart_serial_marker "OWRT_INSTALLER_NETINSTALL_AUTO_DHCP=$NETINSTALL_DEV"
+				return 0
+			fi
+		done < "$NIC_LIST"
+	done
+
+	NETINSTALL_AUTO_DHCP_ATTEMPTED=1
+	restore_netinstall_network
+	NETINSTALL_ERROR="Automatic DHCP did not obtain a default route on any of the $netinstall_auto_count detected Ethernet interfaces."
+	return 1
+}
+
+select_netinstall_uplink() {
+	refresh_nics
+	build_nic_menu
+	menu_note "This temporary uplink is used only to download and verify the official image. Installed LAN/WAN settings are selected later."
+	menu_add "__back" "Back to online source options"
+	select_from_menu "Select download uplink" "download uplink"
+	[ "$SELECTED_VALUE" != "__back" ] || return 2
+	NETINSTALL_DEV="${SELECTED_VALUE%%,*}"
+	return 0
+}
+
+select_netinstall_mode() {
+	menu_reset
+	menu_note "Choose how the live installer should reach the official OpenWrt download server."
+	menu_add "dhcp" "DHCP client"
+	menu_add "static" "Static IPv4"
+	menu_add "pppoe" "PPPoE"
+	menu_add "__back" "Back to uplink selection"
+	select_from_menu "Select download network mode" "download network mode"
+	NETINSTALL_SELECTED_PROTO="$SELECTED_VALUE"
+}
+
+select_netinstall_static() {
+	netinstall_form_error=""
+	while :; do
+		prompt_default \
+			"Download uplink IPv4/CIDR" \
+			"${NETINSTALL_IPADDR:-192.0.2.2}/$NETINSTALL_CIDR" \
+			"Download static IPv4" \
+			"Example: 192.0.2.2/24" \
+			"$netinstall_form_error" \
+			"This configuration exists only in the live installer RAM."
+		[ "$UI_INPUT_ACTION" != "back" ] || return 2
+		if parse_cidr_address "$SELECTED_INPUT" "$NETINSTALL_CIDR"; then
+			NETINSTALL_IPADDR="$PARSED_IP"
+			NETINSTALL_CIDR="$PARSED_CIDR"
+			NETINSTALL_NETMASK="$PARSED_NETMASK"
+			break
+		fi
+		netinstall_form_error="Invalid IPv4/CIDR value."
+	done
+
+	netinstall_form_error=""
+	while :; do
+		prompt_default \
+			"Download uplink gateway" \
+			"${NETINSTALL_GATEWAY:-}" \
+			"Download static IPv4" \
+			"Example: 192.0.2.1" \
+			"$netinstall_form_error" \
+			"A gateway is required for the online download path."
+		[ "$UI_INPUT_ACTION" != "back" ] || return 2
+		if is_ipv4 "$SELECTED_INPUT"; then
+			NETINSTALL_GATEWAY="$SELECTED_INPUT"
+			break
+		fi
+		netinstall_form_error="A valid IPv4 gateway is required."
+	done
+
+	netinstall_form_error=""
+	while :; do
+		prompt_default \
+			"Download uplink DNS servers" \
+			"${NETINSTALL_DNS:-1.1.1.1}" \
+			"Download static IPv4" \
+			"Example: 1.1.1.1 8.8.8.8" \
+			"$netinstall_form_error" \
+			"At least one DNS server is required for HTTPS release discovery."
+		[ "$UI_INPUT_ACTION" != "back" ] || return 2
+		if [ -n "$SELECTED_INPUT" ] && validate_dns_servers "$SELECTED_INPUT"; then
+			NETINSTALL_DNS="$SELECTED_INPUT"
+			return 0
+		fi
+		netinstall_form_error="Enter one or more valid IPv4 DNS servers."
+	done
+}
+
+select_netinstall_pppoe() {
+	netinstall_pppoe_state="username"
+	netinstall_form_error=""
+	while :; do
+		case "$netinstall_pppoe_state" in
+			username)
+				prompt_default \
+					"Download PPPoE username" \
+					"${NETINSTALL_PPP_USERNAME:-}" \
+					"Download PPPoE username" \
+					"Example: user@example.net" \
+					"$netinstall_form_error" \
+					"Step 1 of 2. This temporary credential is cleared when the installer exits."
+				[ "$UI_INPUT_ACTION" != "back" ] || return 2
+				if [ -n "$SELECTED_INPUT" ]; then
+					NETINSTALL_PPP_USERNAME="$SELECTED_INPUT"
+					netinstall_form_error=""
+					netinstall_pppoe_state="password"
+				else
+					netinstall_form_error="PPPoE username is required."
+				fi
+				;;
+			password)
+				prompt_secret \
+					"Download PPPoE password" \
+					"Download PPPoE password" \
+					"" \
+					"Step 2 of 2.
+Input is hidden and used only for this temporary live uplink.
+Leave it empty only if your ISP explicitly requires no password." \
+					"${NETINSTALL_PPP_PASSWORD:-}"
+				if [ "$UI_INPUT_ACTION" = "back" ]; then
+					netinstall_pppoe_state="username"
+					continue
+				fi
+				NETINSTALL_PPP_PASSWORD="$SELECTED_INPUT"
+				return 0
+				;;
+		esac
+	done
+}
+
+configure_netinstall_network() {
+	while :; do
+		if select_netinstall_uplink; then
+			:
+		else
+			netinstall_select_status=$?
+			[ "$netinstall_select_status" -eq 2 ] && return 2
+			return "$netinstall_select_status"
+		fi
+		while :; do
+			select_netinstall_mode
+			case "$NETINSTALL_SELECTED_PROTO" in
+				__back) break ;;
+				dhcp)
+					NETINSTALL_PROTO="dhcp"
+					break
+					;;
+				static)
+					if select_netinstall_static; then
+						NETINSTALL_PROTO="static"
+						break
+					else
+						netinstall_form_status=$?
+					fi
+					[ "$netinstall_form_status" -eq 2 ] || return "$netinstall_form_status"
+					;;
+				pppoe)
+					if select_netinstall_pppoe; then
+						NETINSTALL_PROTO="pppoe"
+						break
+					else
+						netinstall_form_status=$?
+					fi
+					[ "$netinstall_form_status" -eq 2 ] || return "$netinstall_form_status"
+					;;
+				*)
+					NETINSTALL_ERROR="Unsupported download network mode: $NETINSTALL_SELECTED_PROTO"
+					return 1
+					;;
+			esac
+		done
+		[ "$NETINSTALL_SELECTED_PROTO" = "__back" ] && continue
+		ui_install_stage "Configure uplink" "Applying temporary $NETINSTALL_PROTO networking on $NETINSTALL_DEV." "$INSTALL_LOG"
+		apply_netinstall_network
+		return $?
+	done
+}
+
+prepare_online_payload() {
+	init_netinstall_workdir || die "$NETINSTALL_ERROR"
+	if ! netinstall_has_default_route; then
+		auto_configure_netinstall_dhcp || true
+	fi
+	while :; do
+		if acquire_downloaded_payload; then
+			restore_netinstall_network
+			ui_notice "Online image ready" "OpenWrt $PAYLOAD_VERSION $PAYLOAD_BOOT_MODE image is signed, downloaded into RAM, and verified. Target disk selection starts next."
+			return 0
+		fi
+		case "$NETINSTALL_ERROR" in
+			"Could not reach the official OpenWrt release index over HTTPS."*)
+				if [ "$NETINSTALL_AUTO_DHCP_ATTEMPTED" = "0" ]; then
+					auto_configure_netinstall_dhcp && continue
+				fi
+				NETINSTALL_ERROR="$NETINSTALL_ERROR Automatic DHCP was already tried; manual DHCP, static IPv4, and PPPoE remain available."
+				;;
+		esac
+
+		menu_reset
+		menu_note "$NETINSTALL_ERROR"
+		menu_add "configure" "Configure or change the temporary download uplink"
+		menu_add "retry" "Retry official release discovery and verification"
+		menu_add "embedded" "Use the embedded offline OpenWrt image"
+		menu_add "cancel" "Cancel and return to shell"
+		select_from_menu "Online image unavailable" "online source action"
+		case "$SELECTED_VALUE" in
+			configure)
+				if configure_netinstall_network; then
+					:
+				else
+					netinstall_config_status=$?
+					[ "$netinstall_config_status" -eq 2 ] || warn "$NETINSTALL_ERROR"
+				fi
+				;;
+			retry) ;;
+			embedded)
+				restore_netinstall_network
+				reset_to_embedded_payload
+				autostart_serial_marker "OWRT_INSTALLER_NETINSTALL_FALLBACK=embedded"
+				ui_notice "Offline fallback" "The embedded verified OpenWrt image will be used. No network download is required."
+				return 0
+				;;
+			cancel)
+				restore_netinstall_network
+				die "Online installation cancelled"
+				;;
+		esac
+	done
+}
+
 verify_payload() {
 	[ -s "$PAYLOAD" ] || die "Payload image is missing: $PAYLOAD"
 	[ -s "$MANIFEST" ] || die "Payload manifest is missing: $MANIFEST"
@@ -344,6 +1119,18 @@ verify_payload() {
 
 	PAYLOAD_SHA256="$actual"
 	PAYLOAD_UNCOMPRESSED_SIZE="$(json_value payload_uncompressed_size || true)"
+	manifest_version="$(json_value openwrt_version || true)"
+	manifest_filename="$(json_value payload_filename || true)"
+	manifest_image_type="$(json_value image_type || true)"
+	manifest_source="$(json_value payload_source || true)"
+	[ -n "$manifest_version" ] && PAYLOAD_VERSION="$manifest_version"
+	[ -n "$manifest_filename" ] && PAYLOAD_FILENAME="$manifest_filename"
+	[ -n "$manifest_image_type" ] && PAYLOAD_IMAGE_TYPE="$manifest_image_type"
+	if [ "$manifest_source" = "downloaded-official" ]; then
+		PAYLOAD_SOURCE_ID="downloaded-official"
+		PAYLOAD_SOURCE_LABEL="Downloaded official OpenWrt"
+	fi
+	PAYLOAD_COMPRESSED_SIZE="$(stat -c '%s' "$PAYLOAD" 2>/dev/null || true)"
 	export PAYLOAD_SHA256
 	export PAYLOAD_UNCOMPRESSED_SIZE
 	log "Payload SHA-256 verified"
@@ -526,6 +1313,96 @@ select_target_disk() {
 	fi
 	select_from_menu "Select target disk" "target disk"
 	TARGET="$SELECTED_VALUE"
+}
+
+select_installation_type() {
+	menu_reset
+	menu_add "clean" "Clean installation"
+	menu_add "import" "Import OpenWrt backup from USB"
+	menu_add "__back" "Back to target disk selection"
+	menu_note "Import validates an OpenWrt sysupgrade .tar.gz in RAM before the erase review."
+	select_from_menu "Select installation type" "installation type"
+	SELECTED_INSTALL_MODE="$SELECTED_VALUE"
+}
+
+prepare_interactive_config_import() {
+	while :; do
+		config_import_status=0
+		config_import_select_usb_archive || config_import_status=$?
+		case "$config_import_status" in
+			0) ;;
+			2)
+				config_import_clear_workspace
+				return 2
+				;;
+			*)
+				autostart_serial_marker "OWRT_INSTALLER_CONFIG_IMPORT_ERROR=$CONFIG_IMPORT_ERROR"
+				ui_notice "Backup unavailable" "$CONFIG_IMPORT_ERROR"
+				config_import_clear_workspace
+				return 2
+				;;
+		esac
+
+		while :; do
+			config_import_status=0
+			config_import_select_policy || config_import_status=$?
+			case "$config_import_status" in
+				0) ;;
+				2)
+					config_import_clear_workspace
+					break
+					;;
+				*)
+					autostart_serial_marker "OWRT_INSTALLER_CONFIG_IMPORT_ERROR=$CONFIG_IMPORT_ERROR"
+					ui_notice "Backup rejected" "$CONFIG_IMPORT_ERROR"
+					config_import_clear_workspace
+					break
+					;;
+			esac
+			config_import_status=0
+			config_import_select_network_source || config_import_status=$?
+			[ "$config_import_status" -eq 2 ] && continue
+			if [ "$config_import_status" -ne 0 ]; then
+				autostart_serial_marker "OWRT_INSTALLER_CONFIG_IMPORT_ERROR=$CONFIG_IMPORT_ERROR"
+				ui_notice "Backup rejected" "$CONFIG_IMPORT_ERROR"
+				config_import_clear_workspace
+				break
+			fi
+			INSTALL_MODE="import"
+			config_import_ready_notice
+			return 0
+		done
+	done
+}
+
+prepare_requested_config_import() {
+	ui_install_stage "Validate backup" "Copying the selected OpenWrt backup into RAM and validating every member." "$INSTALL_LOG"
+	config_import_prepare_file "$CONFIG_IMPORT_SOURCE_REQUEST" || die "$CONFIG_IMPORT_ERROR"
+	config_import_policy="${CONFIG_IMPORT_POLICY_REQUEST:-config-only}"
+	config_import_prepare_policy "$config_import_policy" || die "$CONFIG_IMPORT_ERROR"
+	case "${CONFIG_IMPORT_NETWORK_REQUEST:-}" in
+		keep)
+			[ "$CONFIG_IMPORT_HAS_NETWORK" = "1" ] ||
+				die "--import-network keep requires etc/config/network in the backup"
+			NETWORK_SOURCE="imported"
+			SKIP_NETWORK=1
+			;;
+		wizard)
+			NETWORK_SOURCE="wizard"
+			SKIP_NETWORK=0
+			;;
+		"")
+			if [ "$CONFIG_IMPORT_HAS_NETWORK" = "1" ]; then
+				NETWORK_SOURCE="imported"
+				SKIP_NETWORK=1
+			elif [ "$SKIP_NETWORK" = "1" ]; then
+				NETWORK_SOURCE="defaults"
+			else
+				NETWORK_SOURCE="wizard"
+			fi
+			;;
+	esac
+	INSTALL_MODE="import"
 }
 
 is_ignored_nic() {
@@ -743,10 +1620,10 @@ select_wan_settings() {
 				prompt_default \
 					"PPPoE username" \
 					"${WAN_PPP_USERNAME:-}" \
-					"PPPoE settings" \
+					"PPPoE username" \
 					"Example: user@example.net" \
 					"$wan_form_error" \
-					"Credentials are saved only into the installed OpenWrt configuration."
+					"Step 1 of 2. Credentials are saved only into the installed OpenWrt configuration."
 				if [ "$UI_INPUT_ACTION" = "back" ]; then
 					wan_form_error=""
 					wan_state="mode"
@@ -763,9 +1640,11 @@ select_wan_settings() {
 			pppoe-password)
 				prompt_secret \
 					"PPPoE password" \
-					"PPPoE settings" \
+					"PPPoE password" \
 					"" \
-					"The password is hidden and will not be shown in the review screen." \
+					"Step 2 of 2.
+Input is hidden and omitted from the review screen.
+Leave it empty only if your ISP explicitly requires no password." \
 					"${WAN_PPP_PASSWORD:-}"
 				if [ "$UI_INPUT_ACTION" = "back" ]; then
 					wan_state="pppoe-user"
@@ -1096,14 +1975,53 @@ write_installed_config() {
 	rootpart="$1"
 	target="$2"
 	install_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+	release_lan_mac="$LAN_MAC"
+	release_wan_mac="$WAN_MAC"
+	release_lan_ip="$LAN_IP"
+	release_lan_cidr="$LAN_CIDR"
+	release_wan_proto="$WAN_PROTO"
+	release_wan6_proto="$WAN6_PROTO"
+	release_import_source="none"
+	release_import_sha256="none"
+	release_import_policy="none"
+	release_import_members=0
+	if [ "$INSTALL_MODE" = "import" ]; then
+		release_import_source="$CONFIG_IMPORT_SOURCE_LABEL"
+		release_import_sha256="$CONFIG_IMPORT_SHA256"
+		release_import_policy="$CONFIG_IMPORT_POLICY"
+		release_import_members="$CONFIG_IMPORT_MEMBER_COUNT"
+	fi
+	if [ "$NETWORK_SOURCE" = "imported" ]; then
+		release_lan_mac="imported"
+		release_wan_mac="imported"
+		release_lan_ip="imported"
+		release_lan_cidr="imported"
+		release_wan_proto="imported"
+		release_wan6_proto="imported"
+	fi
 
 	log "Mounting $rootpart for installed configuration"
 	mkdir -p "$TARGET_MOUNT" || die "Could not create target mount point: $TARGET_MOUNT"
 	run_or_die "Could not mount $rootpart at $TARGET_MOUNT" mount "$rootpart" "$TARGET_MOUNT"
 	TARGET_MOUNTED=1
+	config_import_apply_to_target "$TARGET_MOUNT"
 
 	mkdir -p "$TARGET_MOUNT/etc/owrt-installer" ||
 		die "Could not create installer metadata directory"
+	if [ -s "$NETWORK_APPLIER" ] &&
+		{ [ "$INSTALL_MODE" != "import" ] || [ "$NETWORK_SOURCE" != "imported" ]; }; then
+		if [ -L "$TARGET_MOUNT/etc/uci-defaults" ] ||
+			{ [ -e "$TARGET_MOUNT/etc/uci-defaults" ] && [ ! -d "$TARGET_MOUNT/etc/uci-defaults" ]; }; then
+			rm -rf "$TARGET_MOUNT/etc/uci-defaults" ||
+				die "Could not replace conflicting installed uci-defaults path"
+		fi
+		mkdir -p "$TARGET_MOUNT/etc/uci-defaults" ||
+			die "Could not create installed uci-defaults directory"
+		cp "$NETWORK_APPLIER" "$TARGET_MOUNT/etc/uci-defaults/98-installer-network" ||
+			die "Could not install the first-boot network applier"
+		chmod 0755 "$TARGET_MOUNT/etc/uci-defaults/98-installer-network" ||
+			die "Could not mark the first-boot network applier executable"
+	fi
 	if [ "$SKIP_NETWORK" != "1" ]; then
 		if ! {
 			printf 'LAN_MAC=%s\n' "$(shell_quote "$LAN_MAC")"
@@ -1131,13 +2049,24 @@ installer_version=$INSTALLER_VERSION
 install_date=$install_date
 target_disk=$target
 payload_sha256=$PAYLOAD_SHA256
-image_type=ext4-combined-efi
-lan_mac=$LAN_MAC
-wan_mac=$WAN_MAC
-lan_ip=$LAN_IP
-lan_cidr=$LAN_CIDR
-wan_proto=$WAN_PROTO
-wan6_proto=$WAN6_PROTO
+payload_source=$PAYLOAD_SOURCE_ID
+openwrt_version=$PAYLOAD_VERSION
+payload_filename=$PAYLOAD_FILENAME
+image_type=$PAYLOAD_IMAGE_TYPE
+boot_mode=$PAYLOAD_BOOT_MODE
+payload_url=$PAYLOAD_URL
+install_mode=$INSTALL_MODE
+network_source=$NETWORK_SOURCE
+config_import_source=$release_import_source
+config_import_sha256=$release_import_sha256
+config_import_policy=$release_import_policy
+config_import_members=$release_import_members
+lan_mac=$release_lan_mac
+wan_mac=$release_wan_mac
+lan_ip=$release_lan_ip
+lan_cidr=$release_lan_cidr
+wan_proto=$release_wan_proto
+wan6_proto=$release_wan6_proto
 EOF
 	then
 		die "Could not write installer release metadata"
@@ -1154,7 +2083,25 @@ show_summary() {
 	fi
 	printf '\nInstallation summary:\n\n'
 	printf '  Target disk: %s\n' "$TARGET"
-	if [ "$SKIP_NETWORK" = "1" ]; then
+	printf '  Image source: %s\n' "$PAYLOAD_SOURCE_LABEL"
+	printf '  OpenWrt:      %s\n' "${PAYLOAD_VERSION:-unknown}"
+	printf '  Image:        %s\n' "$PAYLOAD_FILENAME"
+	printf '  Boot mode:    %s\n' "$PAYLOAD_BOOT_MODE"
+	printf '  SHA-256:      %s\n' "$PAYLOAD_SHA256"
+	if [ "$PAYLOAD_SOURCE_ID" = "downloaded-official" ]; then
+		printf '  RAM download: %s compressed; %s required with reserve\n' \
+			"$(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE")" \
+			"$(bytes_as_mib "$PAYLOAD_RAM_REQUIRED")"
+	fi
+	if [ "$INSTALL_MODE" = "import" ]; then
+		printf '  Config:      %s\n' "$CONFIG_IMPORT_SOURCE_LABEL"
+		printf '  Import:      %s, %s members, %s\n' "$CONFIG_IMPORT_POLICY" \
+			"$CONFIG_IMPORT_MEMBER_COUNT" "$(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE")"
+		printf '  Import SHA:  %s\n' "$CONFIG_IMPORT_SHA256"
+	fi
+	if [ "$NETWORK_SOURCE" = "imported" ]; then
+		printf '  Network:     imported from backup\n'
+	elif [ "$SKIP_NETWORK" = "1" ]; then
 		printf '  Network:     keep OpenWrt defaults\n'
 	else
 		printf '  LAN:         %s %s\n' "${LAN_DEV:-selected-by-mac}" "$LAN_MAC"
@@ -1202,7 +2149,8 @@ review_and_confirm() {
 			menu_note "No disk write starts from this screen. Continue only opens the final exact ERASE confirmation."
 		fi
 		menu_add "continue" "Continue to final ERASE confirmation"
-		if [ "$SKIP_NETWORK" != "1" ]; then
+		if [ "$SKIP_NETWORK" != "1" ] ||
+			{ [ "$INSTALL_MODE" = "import" ] && [ "$CONFIG_IMPORT_HAS_NETWORK" = "1" ]; }; then
 			menu_add "edit-network" "Edit LAN/WAN interfaces and network settings"
 		fi
 		menu_add "cancel" "Cancel and return to shell"
@@ -1216,6 +2164,8 @@ review_and_confirm() {
 			edit-network)
 				select_network
 				validate_network_settings
+				NETWORK_SOURCE="wizard"
+				SKIP_NETWORK=0
 				;;
 			cancel)
 				die "Installation cancelled"
@@ -1264,12 +2214,59 @@ run_install() {
 	autostart_serial_marker "OWRT_INSTALLER_UI_BACKEND=${UI_MODE_ACTUAL:-line}"
 	ui_welcome_screen "$INSTALLER_VERSION" "$AUTO_STARTED"
 
-	ui_install_stage "Verify payload" "Checking embedded OpenWrt image integrity." "$INSTALL_LOG"
+	if [ "$DOWNLOAD_LATEST" = "1" ]; then
+		prepare_online_payload
+	fi
+	ui_install_stage "Verify payload" "Checking the selected local OpenWrt image integrity." "$INSTALL_LOG"
 	verify_payload
 	if [ -z "$TARGET" ]; then
-		select_target_disk
+		install_target_ready=0
+		while [ "$install_target_ready" = "0" ]; do
+			select_target_disk
+			validate_target_disk "$TARGET"
+			while :; do
+				select_installation_type
+				case "$SELECTED_INSTALL_MODE" in
+					clean)
+						config_import_clear_workspace
+						INSTALL_MODE="clean"
+						if [ "$SKIP_NETWORK" = "1" ]; then
+							NETWORK_SOURCE="defaults"
+						else
+							NETWORK_SOURCE="wizard"
+						fi
+						install_target_ready=1
+						break
+						;;
+					import)
+						config_import_status=0
+						prepare_interactive_config_import || config_import_status=$?
+						if [ "$config_import_status" -eq 0 ]; then
+							install_target_ready=1
+							break
+						fi
+						;;
+					__back)
+						config_import_clear_workspace
+						TARGET=""
+						break
+						;;
+				esac
+			done
+		done
+	else
+		validate_target_disk "$TARGET"
+		if [ -n "$CONFIG_IMPORT_SOURCE_REQUEST" ]; then
+			prepare_requested_config_import
+		else
+			INSTALL_MODE="clean"
+			if [ "$SKIP_NETWORK" = "1" ]; then
+				NETWORK_SOURCE="defaults"
+			else
+				NETWORK_SOURCE="wizard"
+			fi
+		fi
 	fi
-	validate_target_disk "$TARGET"
 
 	if [ "$SKIP_NETWORK" != "1" ]; then
 		if [ -n "$LAN_MAC" ] || [ -n "$WAN_MAC" ]; then
@@ -1295,7 +2292,7 @@ run_install() {
 	ui_install_stage "Prepare target" "Stopping swap and unmounting target partitions." "$INSTALL_LOG"
 	swapoff -a >> "$INSTALL_LOG" 2>&1 || true
 	unmount_target_partitions "$TARGET"
-	ui_install_stage "Write image" "Writing embedded OpenWrt image to $TARGET." "$INSTALL_LOG"
+	ui_install_stage "Write image" "Writing the verified OpenWrt image to $TARGET." "$INSTALL_LOG"
 	write_payload "$TARGET"
 
 	rootpart="$(get_partition_path "$TARGET" 2)"
@@ -1399,6 +2396,31 @@ parse_args() {
 				SKIP_NETWORK=1
 				shift
 				;;
+			--config-backup)
+				[ "$#" -ge 2 ] || die "--config-backup requires a .tar.gz file"
+				CONFIG_IMPORT_SOURCE_REQUEST="$2"
+				shift 2
+				;;
+			--config-import-policy)
+				[ "$#" -ge 2 ] || die "--config-import-policy requires config-only or full"
+				case "$2" in
+					config-only|full) CONFIG_IMPORT_POLICY_REQUEST="$2" ;;
+					*) die "Invalid --config-import-policy value: $2" ;;
+				esac
+				shift 2
+				;;
+			--import-network)
+				[ "$#" -ge 2 ] || die "--import-network requires keep or wizard"
+				case "$2" in
+					keep|wizard) CONFIG_IMPORT_NETWORK_REQUEST="$2" ;;
+					*) die "Invalid --import-network value: $2" ;;
+				esac
+				shift 2
+				;;
+			--download-latest)
+				DOWNLOAD_LATEST=1
+				shift
+				;;
 			--autostart)
 				AUTO_STARTED=1
 				shift
@@ -1420,6 +2442,12 @@ parse_args() {
 				;;
 		esac
 	done
+	if [ -z "$CONFIG_IMPORT_SOURCE_REQUEST" ]; then
+		[ -z "$CONFIG_IMPORT_POLICY_REQUEST" ] ||
+			die "--config-import-policy requires --config-backup"
+		[ -z "$CONFIG_IMPORT_NETWORK_REQUEST" ] ||
+			die "--import-network requires --config-backup"
+	fi
 }
 
 main() {

@@ -27,6 +27,7 @@ make -C "$IMAGEBUILDER_DIR" image \
 
 artifact="$(find_imagebuilder_artifact)"
 cp "$artifact" "$OUTPUT_DIR/openwrt-x86-64-target.img.gz"
+printf '%s\n' "$OPENWRT_VERSION" > "$OUTPUT_DIR/openwrt-x86-64-target.version"
 sha256sum "$OUTPUT_DIR/openwrt-x86-64-target.img.gz" > \
 	"$OUTPUT_DIR/openwrt-x86-64-target.img.gz.sha256"
 update_output_checksums

@@ -1,0 +1,68 @@
+diff --git a/form.c b/form.c
+--- a/form.c
++++ b/form.c
+@@ -17,6 +17,7 @@
+ #include <unistd.h>
+ #include <string.h>
+ #include <strings.h>
++#include <sys/ioctl.h>
+ #include <sys/kd.h>        /* KDGETMODE */
+ #include <signal.h>
+ #include <stdio.h>
+@@ -92,6 +93,27 @@ static struct sigaction gpm_saved_winch_hook;
+ #define GPM_NODE_DEV "/dev/gpmctl"
+ #define GPM_NODE_CTL GPM_NODE_DEV
+ 
++struct newtGpmSelection {
++  unsigned char subcode;
++  unsigned short x_start;
++  unsigned short y_start;
++  unsigned short x_end;
++  unsigned short y_end;
++  unsigned short mode;
++} __attribute__((packed));
++
++static void newtGpmSetPointer(const Gpm_Event *event, unsigned short mode)
++{
++  struct newtGpmSelection selection = { 2, 0, 0, 0, 0, mode };
++
++  if (event) {
++    selection.x_start = selection.x_end = event->x;
++    selection.y_start = selection.y_end = event->y;
++  }
++
++  ioctl(STDIN_FILENO, TIOCLINUX, &selection);
++}
++
+ static inline int putdata(int where,  Gpm_Connect *what)
+ {
+   if (write(where,what,sizeof(Gpm_Connect))!=sizeof(Gpm_Connect))
+@@ -949,8 +971,8 @@ void newtFormRun(newtComponent co, struct newtExitStruct * es) {
+     Gpm_Event event;
+ 
+     /* Set up GPM interface */
+-    conn.eventMask   = ~GPM_MOVE;
+-    conn.defaultMask = GPM_MOVE;
++    conn.eventMask   = GPM_MOVE | GPM_DRAG | GPM_DOWN | GPM_UP;
++    conn.defaultMask = 0;
+     conn.minMod      = 0;
+     conn.maxMod      = 0;
+ 
+@@ -1058,6 +1080,9 @@ void newtFormRun(newtComponent co, struct newtExitStruct * es) {
+ 	if (gpm_fd > 0 && FD_ISSET(gpm_fd, &readSet)) {
+ 	    Gpm_GetEvent(&event);
+ 
++	    if (event.type & (GPM_MOVE | GPM_DRAG | GPM_DOWN))
++		newtGpmSetPointer(&event, 3);
++
+ 	    if (event.type & GPM_DOWN) {
+ 		/* Transform coordinates to current window */
+ 		newtGetWindowPos(&x, &y);
+@@ -1144,6 +1170,7 @@ void newtFormRun(newtComponent co, struct newtExitStruct * es) {
+     }
+     newtRefresh();
+ #ifdef USE_GPM
++    newtGpmSetPointer(NULL, 4);
+     Gpm_Close();
+ #endif
+ }

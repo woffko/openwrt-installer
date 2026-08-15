@@ -4,6 +4,7 @@
 UI_MODE_ACTUAL="line"
 UI_WIDTH=80
 UI_HEIGHT=25
+UI_TERM_COLS=80
 UI_INNER_WIDTH=76
 UI_CURSOR_HIDDEN=0
 UI_DIALOGRC=""
@@ -64,6 +65,7 @@ ui_terminal_size() {
 		UI_HEIGHT="$rows"
 		UI_WIDTH="$cols"
 	fi
+	UI_TERM_COLS="$UI_WIDTH"
 	[ "$UI_WIDTH" -gt 100 ] && UI_WIDTH=100
 	[ "$UI_WIDTH" -lt 60 ] && UI_WIDTH=60
 	UI_INNER_WIDTH=$((UI_WIDTH - 4))
@@ -82,12 +84,26 @@ ui_is_serial() {
 ui_ready_marker() {
 	ui_ready_title="$1"
 	case "$ui_ready_title" in
+		"Online image unavailable") ui_ready_name="online-unavailable" ;;
+		"Select download uplink") ui_ready_name="online-uplink" ;;
+		"Select download network mode") ui_ready_name="online-network-mode" ;;
+		"Download static IPv4") ui_ready_name="online-static" ;;
+		"Download PPPoE username") ui_ready_name="online-pppoe-username" ;;
+		"Download PPPoE password") ui_ready_name="online-pppoe-password" ;;
+		"Online image ready") ui_ready_name="online-ready" ;;
+		"Offline fallback") ui_ready_name="online-fallback" ;;
 		"Select target disk") ui_ready_name="target-disk" ;;
+		"Select installation type") ui_ready_name="install-type" ;;
+		"Select backup archive") ui_ready_name="config-import-archive" ;;
+		"Select import scope") ui_ready_name="config-import-scope" ;;
+		"Imported network configuration") ui_ready_name="config-import-network" ;;
+		"Backup ready") ui_ready_name="config-import-ready" ;;
 		"Select LAN interface") ui_ready_name="lan-interface" ;;
 		"Select WAN interface") ui_ready_name="wan-interface" ;;
 		"WAN interface") ui_ready_name="wan-interface-auto" ;;
 		"LAN IPv4 settings") ui_ready_name="lan-ip" ;;
-		"PPPoE settings") ui_ready_name="pppoe" ;;
+		"PPPoE username") ui_ready_name="pppoe-username" ;;
+		"PPPoE password") ui_ready_name="pppoe-password" ;;
 		"Static WAN IPv4 settings") ui_ready_name="wan-static" ;;
 		"Select WAN mode") ui_ready_name="wan-mode" ;;
 		"Select WAN IPv6 configuration type") ui_ready_name="wan6-mode" ;;
@@ -1034,6 +1050,22 @@ prompt_default() {
 	ui_read_form_input "$default" 0
 }
 
+ui_passwordbox_height() {
+	body="$1"
+	body_rows="$(printf '%s\n' "$body" | awk -v cols="$((UI_TERM_COLS - 4))" '
+		{
+			length_in_columns = length($0)
+			rows += (cols < 1 || length_in_columns <= cols) ? 1 : int((length_in_columns + cols - 1) / cols)
+		}
+		END { print rows + 0 }
+	')"
+	box_height=$((body_rows + 9))
+	max_height=$((UI_HEIGHT - 2))
+	[ "$max_height" -ge 9 ] || max_height=9
+	[ "$box_height" -le "$max_height" ] || box_height="$max_height"
+	printf '%s\n' "$box_height"
+}
+
 prompt_secret() {
 	label="$1"
 	title="${2:-$label}"
@@ -1047,8 +1079,13 @@ prompt_secret() {
 A value is already set; submit an empty value to keep it."
 		[ -n "$error" ] && body="${body}${body:+
 }ERROR: $error"
+		box_height=0
+		if [ "$UI_MODE_ACTUAL" = "whiptail" ]; then
+			ui_terminal_size
+			box_height="$(ui_passwordbox_height "$body")"
+		fi
 		dialog_status=0
-		SELECTED_INPUT="$(ui_dialog_capture --backtitle "OpenWrt Hellforge Installer" --title "$title" --passwordbox "$body" 0 0)" || dialog_status=$?
+		SELECTED_INPUT="$(ui_dialog_capture --backtitle "OpenWrt Hellforge Installer" --title "$title" --passwordbox "$body" "$box_height" 0)" || dialog_status=$?
 		case "$dialog_status" in
 			0) UI_INPUT_ACTION="submit" ;;
 			1|255)
@@ -1148,8 +1185,25 @@ ui_notice() {
 ui_summary_screen() {
 	ui_ready_marker "Review installation"
 	if ui_dialog_active; then
-		body="Target disk: $TARGET"
-		if [ "$SKIP_NETWORK" = "1" ]; then
+		body="Target disk: $TARGET
+Image source: $PAYLOAD_SOURCE_LABEL
+OpenWrt: ${PAYLOAD_VERSION:-unknown} ($PAYLOAD_BOOT_MODE)
+Image: $PAYLOAD_FILENAME
+SHA-256: $PAYLOAD_SHA256"
+		if [ "$PAYLOAD_SOURCE_ID" = "downloaded-official" ]; then
+			body="$body
+RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
+		fi
+		if [ "${INSTALL_MODE:-clean}" = "import" ]; then
+			body="$body
+Config: $CONFIG_IMPORT_SOURCE_LABEL
+Import: $CONFIG_IMPORT_POLICY, $CONFIG_IMPORT_MEMBER_COUNT members, $(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE")
+Import SHA-256: $CONFIG_IMPORT_SHA256"
+		fi
+		if [ "${NETWORK_SOURCE:-wizard}" = "imported" ]; then
+			body="$body
+Network: imported from backup"
+		elif [ "$SKIP_NETWORK" = "1" ]; then
 			body="$body
 Network: keep OpenWrt defaults"
 		else
@@ -1188,7 +1242,21 @@ ALL DATA ON $TARGET WILL BE ERASED."
 	ui_ansi_active || return 1
 	ui_screen_begin "Review installation"
 	ui_line "Target disk: $TARGET"
-	if [ "$SKIP_NETWORK" = "1" ]; then
+	ui_line "Image source: $PAYLOAD_SOURCE_LABEL"
+	ui_line "OpenWrt: ${PAYLOAD_VERSION:-unknown} ($PAYLOAD_BOOT_MODE)"
+	ui_line "Image: $PAYLOAD_FILENAME"
+	ui_line "SHA-256: $PAYLOAD_SHA256"
+	if [ "$PAYLOAD_SOURCE_ID" = "downloaded-official" ]; then
+		ui_line "RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
+	fi
+	if [ "${INSTALL_MODE:-clean}" = "import" ]; then
+		ui_line "Config: $CONFIG_IMPORT_SOURCE_LABEL"
+		ui_line "Import: $CONFIG_IMPORT_POLICY, $CONFIG_IMPORT_MEMBER_COUNT members, $(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE")"
+		ui_line "Import SHA-256: $CONFIG_IMPORT_SHA256"
+	fi
+	if [ "${NETWORK_SOURCE:-wizard}" = "imported" ]; then
+		ui_line "Network: imported from backup"
+	elif [ "$SKIP_NETWORK" = "1" ]; then
 		ui_line "Network: keep OpenWrt defaults"
 	else
 		ui_line "LAN: ${LAN_DEV:-selected-by-mac} $LAN_MAC"

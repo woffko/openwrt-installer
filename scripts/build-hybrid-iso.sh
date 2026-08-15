@@ -17,12 +17,17 @@ mkdir -p "$OUTPUT_DIR"
 
 targets_dir="$IMAGEBUILDER_DIR/bin/targets/x86/64"
 ib_host="$IMAGEBUILDER_DIR/staging_dir/host"
-grub_dir="$IMAGEBUILDER_DIR/staging_dir/target-x86_64_musl/image/grub2"
 work_dir="$BUILD_DIR/hybrid-iso"
 iso_root="$work_dir/root"
 initramfs_root="$work_dir/initramfs"
 iso_image="$OUTPUT_DIR/openwrt-x86-64-installer-hybrid.iso"
+grub_bios_early_config="$work_dir/grub-bios-early.cfg"
+grub_efi_early_config="$work_dir/grub-efi-early.cfg"
+grub_bios_core="$work_dir/grub-bios-core.img"
 local_lib="$BUILD_DIR/host-tools/usr/lib/x86_64-linux-gnu"
+grub_mkimage="$ib_host/bin/grub-mkimage"
+grub_pc_dir="$BUILD_DIR/host-tools/usr/lib/grub/i386-pc"
+grub_efi_dir="$BUILD_DIR/host-tools/usr/lib/grub/x86_64-efi"
 
 kernel="$(find "$targets_dir" -maxdepth 1 -type f \
 	-name "*-${PROFILE}-kernel.bin" | head -n 1)"
@@ -33,15 +38,18 @@ rootfs="$(find "$targets_dir" -maxdepth 1 -type f \
 [ -n "$rootfs" ] || die "Installer rootfs tarball is missing. Run: make installer"
 [ -s "$OUTPUT_DIR/openwrt-x86-64-installer.img.gz" ] ||
 	die "Installer image is missing. Run: make installer"
+[ -s "$OUTPUT_DIR/manifest.json" ] ||
+	die "Installer manifest is missing. Run: make installer"
 [ -s "$PROJECT_DIR/files-installer/usr/share/owrt-installer/target.img.gz" ] ||
 	die "Embedded target payload is missing. Run: make installer"
 [ -x "$ib_host/bin/mkfs.fat" ] || die "ImageBuilder mkfs.fat tool is missing"
 [ -x "$ib_host/bin/mcopy" ] || die "ImageBuilder mcopy tool is missing"
 [ -x "$ib_host/bin/mmd" ] || die "ImageBuilder mmd tool is missing"
-[ -s "$grub_dir/boot.img" ] || die "GRUB MBR image is missing"
-[ -s "$grub_dir/cdboot.img" ] || die "GRUB CD boot image is missing"
-[ -s "$grub_dir/eltorito.img" ] || die "GRUB El Torito image is missing"
-[ -s "$grub_dir/iso-bootx64.efi" ] || die "GRUB EFI image is missing"
+[ -x "$grub_mkimage" ] || die "ImageBuilder grub-mkimage tool is missing"
+[ -s "$grub_pc_dir/boot.img" ] || die "Local GRUB BIOS modules are missing. Run: make iso-host-tools"
+[ -s "$grub_pc_dir/cdboot.img" ] || die "Local GRUB CD boot image is missing"
+[ -s "$grub_pc_dir/part_gpt.mod" ] || die "Local GRUB BIOS GPT module is missing"
+[ -s "$grub_efi_dir/part_gpt.mod" ] || die "Local GRUB UEFI GPT module is missing"
 [ -s "$IMAGEBUILDER_DIR/target/linux/generic/other-files/init" ] ||
 	die "OpenWrt initramfs init script is missing"
 
@@ -106,15 +114,42 @@ fakeroot sh -eu -c '
 
 cp "$kernel" "$iso_root/boot/vmlinuz"
 cp "$PROJECT_DIR/iso/boot/grub/grub.cfg" "$iso_root/boot/grub/grub.cfg"
-cp "$grub_dir/iso-bootx64.efi" "$iso_root/efi/boot/bootx64.efi"
-cat "$grub_dir/cdboot.img" "$grub_dir/eltorito.img" > \
-	"$iso_root/boot/grub/eltorito.img"
+cp "$OUTPUT_DIR/manifest.json" "$iso_root/manifest.json"
+
+printf '%s\n' 'configfile (hd0,msdos1)/boot/grub/grub.cfg' > "$grub_bios_early_config"
+printf '%s\n' 'configfile (cd0)/boot/grub/grub.cfg' > "$grub_efi_early_config"
+
+# OpenWrt's minimal ISO GRUB cannot inspect another GPT/FAT disk. Build both
+# boot images with OpenWrt's layout and the modules needed by the local-disk
+# menu entry.
+set -- at_keyboard biosdisk boot chain configfile fat iso9660 linux ls \
+	part_gpt part_msdos reboot search search_fs_file search_label serial test \
+	vga echo sleep normal
+"$grub_mkimage" \
+	-d "$grub_pc_dir" \
+	-O i386-pc \
+	-c "$grub_bios_early_config" \
+	-p /boot/grub \
+	-o "$grub_bios_core" \
+	"$@"
+cat "$grub_pc_dir/cdboot.img" "$grub_bios_core" > "$iso_root/boot/grub/eltorito.img"
+
+set -- at_keyboard boot chain configfile fat iso9660 linux ls part_gpt \
+	part_msdos reboot search search_fs_file search_label serial test \
+	efi_gop efi_uga echo sleep normal
+"$grub_mkimage" \
+	-d "$grub_efi_dir" \
+	-O x86_64-efi \
+	-c "$grub_efi_early_config" \
+	-p /boot/grub \
+	-o "$iso_root/efi/boot/bootx64.efi" \
+	"$@"
 
 log "Creating EFI boot image"
 "$ib_host/bin/mkfs.fat" --invariant -C "$iso_root/boot/grub/isoboot.img" -S 512 1440
 "$ib_host/bin/mmd" -i "$iso_root/boot/grub/isoboot.img" ::/efi ::/efi/boot
 "$ib_host/bin/mcopy" -i "$iso_root/boot/grub/isoboot.img" \
-	"$grub_dir/iso-bootx64.efi" ::/efi/boot/bootx64.efi
+	"$iso_root/efi/boot/bootx64.efi" ::/efi/boot/bootx64.efi
 
 log "Building BIOS/UEFI hybrid ISO"
 run_xorrisofs \
@@ -122,7 +157,7 @@ run_xorrisofs \
 	-J \
 	-V OWRT_INSTALL \
 	-o "$iso_image" \
-	--grub2-mbr "$grub_dir/boot.img" \
+	--grub2-mbr "$grub_pc_dir/boot.img" \
 	-partition_offset 16 \
 	--mbr-force-bootable \
 	-append_partition 2 0xef "$iso_root/boot/grub/isoboot.img" \

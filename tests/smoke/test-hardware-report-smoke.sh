@@ -33,20 +33,20 @@ printf '%s\n' '1234' > "$work_dir/input/event0/device/id/vendor"
 printf '%s\n' '5678' > "$work_dir/input/event0/device/id/product"
 cat > "$work_dir/installed" <<'EOF'
 P:gpm-daemon
-V:1.20.7-r4
+V:1.20.7-r5
 
 P:libnewt
-V:0.52.24-r2
+V:0.52.24-r3
 
 P:whiptail
-V:0.52.24-r2
+V:0.52.24-r3
 EOF
 cat > "$work_dir/install.log" <<'EOF'
-[owrt-installer-mouse] active on /dev/input/event0 with PID 123
+[owrt-installer-mouse] active on /dev/input/mice with PID 123
 [owrt-installer-mouse] stopped
 INFO: Dry run complete; no changes were made
 EOF
-printf '%s\n' '#!/bin/sh' 'INSTALLER_VERSION="v1.0-alpha.9-dev"' > "$work_dir/owrt-install"
+printf '%s\n' '#!/bin/sh' 'INSTALLER_VERSION="v1.0-alpha.9"' > "$work_dir/owrt-install"
 
 report="$work_dir/report.txt"
 OWRT_HW_REPORT_NONINTERACTIVE=1 \
@@ -68,12 +68,12 @@ OWRT_HW_MOUSE_STATE="$work_dir/missing-state" \
 	"$REPORTER" "$report" >/dev/null
 
 assert_contains "$report" "report_schema=2"
-assert_contains "$report" "installer_version=v1.0-alpha.9-dev"
+assert_contains "$report" "installer_version=v1.0-alpha.9"
 assert_contains "$report" "kernel_mouse_flag=yes"
 assert_contains "$report" "kernel_hardware_test_flag=yes"
-assert_contains "$report" "gpm_daemon_version=1.20.7-r4"
-assert_contains "$report" "libnewt_version=0.52.24-r2"
-assert_contains "$report" "whiptail_version=0.52.24-r2"
+assert_contains "$report" "gpm_daemon_version=1.20.7-r5"
+assert_contains "$report" "libnewt_version=0.52.24-r3"
+assert_contains "$report" "whiptail_version=0.52.24-r3"
 assert_contains "$report" "mouse_started=yes"
 assert_contains "$report" "mouse_stopped=yes"
 assert_contains "$report" "dry_run_complete=yes"

@@ -8,6 +8,7 @@ set -eu
 require_cmd curl
 require_cmd date
 require_cmd gzip
+require_cmd git
 require_cmd make
 require_cmd sha256sum
 
@@ -15,21 +16,37 @@ ensure_imagebuilder
 mkdir -p "$OUTPUT_DIR" "$PROJECT_DIR/files-installer/usr/share/owrt-installer"
 
 target_image="$OUTPUT_DIR/openwrt-x86-64-target.img.gz"
+target_version_file="$OUTPUT_DIR/openwrt-x86-64-target.version"
 payload="$PROJECT_DIR/files-installer/usr/share/owrt-installer/target.img.gz"
 manifest="$PROJECT_DIR/files-installer/usr/share/owrt-installer/manifest.json"
+network_applier="$PROJECT_DIR/files-installer/usr/share/owrt-installer/98-installer-network"
 
 [ -s "$target_image" ] || die "Target image is missing. Run: make target"
+[ -s "$target_version_file" ] || die "Target version marker is missing. Run: make target"
+target_version="$(sed -n '1p' "$target_version_file")"
+[ "$target_version" = "$OPENWRT_VERSION" ] ||
+	die "Target image is OpenWrt $target_version, expected $OPENWRT_VERSION. Run: make target"
 
 log "Embedding target payload"
 cp "$target_image" "$payload"
+cp "$PROJECT_DIR/files-target/etc/uci-defaults/98-installer-network" "$network_applier"
+chmod 0755 "$network_applier"
 payload_sha256="$(sha256sum "$payload" | awk '{ print $1 }')"
 payload_uncompressed_size="$(gzip -dc "$payload" | wc -c | tr -d ' ')"
 build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+build_commit="$(git -C "$PROJECT_DIR" rev-parse --verify 'HEAD^{commit}')"
+if [ -n "$(git -C "$PROJECT_DIR" status --porcelain=v1 --untracked-files=all)" ]; then
+	build_dirty=true
+else
+	build_dirty=false
+fi
 
 cat > "$manifest" <<EOF
 {
   "installer_version": "$INSTALLER_VERSION",
   "build_date": "$build_date",
+  "build_commit": "$build_commit",
+  "build_dirty": $build_dirty,
   "openwrt_version": "$OPENWRT_VERSION",
   "target_arch": "x86_64",
   "target_profile": "$PROFILE",
