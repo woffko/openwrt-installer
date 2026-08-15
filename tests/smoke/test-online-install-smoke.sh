@@ -141,6 +141,87 @@ run_auto_dhcp_smoke() {
 	assert_contains "$prepare_output" "trace=auto,acquire,restore attempted=1"
 }
 
+run_latest_check_case() {
+	case_dir="$1"
+	case_name="$2"
+	expected="$3"
+	case_output="$case_dir/latest-$case_name.out"
+
+	OWRT_LATEST_TEST_CASE="$case_name" \
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 UI_LIB="$UI_LIB" TMPDIR="$case_dir" \
+		sh -eu -c '
+			. "$1"
+			INSTALL_LOG="$2/latest-$OWRT_LATEST_TEST_CASE.log"
+			NETINSTALL_WORKDIR="$2/latest-$OWRT_LATEST_TEST_CASE"
+			mkdir -p "$NETINSTALL_WORKDIR"
+			trace=""
+			trace_add() { trace="${trace}${trace:+,}$1"; }
+			json_value() { [ "$1" = openwrt_version ] && printf 25.12.5; }
+			netinstall_has_default_route() {
+				[ "$OWRT_LATEST_TEST_CASE" != no-network ]
+			}
+			auto_configure_netinstall_dhcp() {
+				trace_add auto
+				NETINSTALL_AUTO_DHCP_ATTEMPTED=1
+				NETINSTALL_ERROR="no DHCP route"
+				return 1
+			}
+			netinstall_stable_version() {
+				trace_add stable
+				case "$OWRT_LATEST_TEST_CASE" in
+					current) NETINSTALL_STABLE_VERSION=25.12.5 ;;
+					*) NETINSTALL_STABLE_VERSION=25.12.6 ;;
+				esac
+			}
+			restore_netinstall_network() { trace_add restore; }
+			reset_to_embedded_payload() { trace_add local; }
+			menu_reset() { :; }
+			menu_note() { :; }
+			menu_add() { :; }
+			select_from_menu() {
+				trace_add menu
+				case "$OWRT_LATEST_TEST_CASE" in
+					newer-download) SELECTED_VALUE=download ;;
+					*) SELECTED_VALUE=embedded ;;
+				esac
+			}
+			prepare_online_payload() { trace_add download; }
+			autostart_serial_marker() { trace_add "marker:$1"; }
+			check_for_newer_payload
+			printf "trace=%s\n" "$trace"
+			cleanup
+		' sh "$INSTALLER" "$case_dir" > "$case_output" 2>&1 ||
+		fail "latest-check case failed: $case_name"
+
+	assert_contains "$case_output" "$expected"
+}
+
+run_latest_check_smoke() {
+	case_dir="$1"
+	version_output="$case_dir/version-compare.out"
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 UI_LIB="$UI_LIB" TMPDIR="$case_dir" \
+		sh -eu -c '
+			. "$1"
+			release_version_is_newer 25.12.6 25.12.5
+			! release_version_is_newer 25.12.5 25.12.5
+			! release_version_is_newer 25.12.4 25.12.5
+			! release_version_is_newer 25.11.99 25.12.5
+			printf "version-compare=pass\n"
+			cleanup
+		' sh "$INSTALLER" > "$version_output" 2>&1 ||
+		fail "latest release version comparison smoke failed"
+	assert_contains "$version_output" "version-compare=pass"
+
+	run_latest_check_case "$case_dir" no-network \
+		"trace=auto,marker:OWRT_INSTALLER_LATEST_CHECK=local-no-network,local"
+	run_latest_check_case "$case_dir" current \
+		"trace=stable,marker:OWRT_INSTALLER_LATEST_CHECK=local-current,restore,local"
+	run_latest_check_case "$case_dir" newer-local \
+		"trace=stable,menu,marker:OWRT_INSTALLER_LATEST_CHECK=local-selected,restore,local"
+	run_latest_check_case "$case_dir" newer-download \
+		"trace=stable,menu,marker:OWRT_INSTALLER_LATEST_CHECK=download-accepted,download"
+}
+
 write_fake_curl() {
 	path="$1"
 	# shellcheck disable=SC2016 # This writes the fake command, not this test's variables.
@@ -268,9 +349,11 @@ run_acquire_case() {
 	assert_contains "$case_output" "$expected_text"
 }
 
-assert_contains "$GRUB_CONFIG" 'menuentry "Download latest OpenWrt x86 image and install"'
-assert_contains "$GRUB_CONFIG" 'owrt.netinstall=1'
+assert_contains "$GRUB_CONFIG" 'menuentry "OpenWrt x86 Installer"'
+assert_contains "$GRUB_CONFIG" 'owrt.check-latest=1'
+assert_contains "$AUTOSTART" 'exec /usr/sbin/owrt-install --autostart --check-latest'
 assert_contains "$AUTOSTART" 'exec /usr/sbin/owrt-install --autostart --download-latest'
+assert_contains "$UI_LIB" '"New OpenWrt release available") ui_ready_name="online-update"'
 assert_contains "$PROJECT_DIR/profiles/packages-installer.txt" 'curl'
 assert_contains "$PROJECT_DIR/profiles/packages-installer.txt" 'usign'
 assert_contains "$PROJECT_DIR/scripts/build-installer.sh" '98-installer-network'
@@ -286,6 +369,7 @@ write_fake_usign "$fake_bin/usign"
 write_fake_fdisk "$fake_bin/fdisk"
 run_netinstall_pppoe_smoke "$work_dir"
 run_auto_dhcp_smoke "$work_dir"
+run_latest_check_smoke "$work_dir"
 
 raw_image="$work_dir/image.raw"
 valid_payload="$work_dir/image.img.gz"

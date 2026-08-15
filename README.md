@@ -110,21 +110,23 @@ The `.iso` and `.img.gz` variants contain the same target payload. Prefer the
 hybrid ISO for convenient boot media and the raw `.img.gz` image as a simple
 fallback.
 
-The GRUB menu provides the embedded RAM installer, the verified online
-installer, a **Boot installed OpenWrt from local disk** entry, the hardware
-mouse dry-run, the experimental mouse installer, and a failsafe entry. Local
-disk boot searches for the installed OpenWrt `kernel` partition and loads its
-own GRUB configuration; it is covered in both BIOS and UEFI QEMU tests.
+The GRUB menu has exactly three entries: **OpenWrt x86 Installer**, **Boot
+installed OpenWrt from local disk**, and **OpenWrt x86 Installer (failsafe)**.
+No OpenWrt release number is embedded in the menu labels. GRUB searches for an
+installed OpenWrt `kernel` partition before showing the menu; when found, local
+disk boot becomes the default. Otherwise the unified installer is the default.
 
 ### Online install
 
-Select **Download latest OpenWrt x86 image and install** in GRUB to use the
-online path. The installer first checks existing connectivity and, when no
+The main **OpenWrt x86 Installer** checks the official stable release before
+target-disk selection. It first checks existing connectivity and, when no
 default route is available, automatically tries temporary DHCP on detected
-Ethernet interfaces, preferring an active link. If HTTPS is still unavailable,
-it offers manual DHCP, static IPv4, or PPPoE setup for a selected uplink.
-Cancelling or any recoverable network failure allows returning to the embedded
-OpenWrt `25.12.5` payload.
+Ethernet interfaces, preferring an active link. If the official stable release
+is newer than the embedded image, the user can download it or continue with the
+embedded image. No network, an unavailable index, or an equal/older stable
+release continues directly with the embedded payload without a separate error
+menu. A download failure still offers manual DHCP, static IPv4, PPPoE, and
+offline fallback.
 
 The online path accepts only the exact official x86/64 generic ext4 combined
 image for the active boot mode: `ext4-combined` for BIOS or
@@ -201,10 +203,9 @@ same menus always remain usable with Up/Down and Enter. Mouse tracking is
 enabled only while a menu is open and is disabled during cleanup. Set
 `OWRT_UI_NO_MOUSE=1` to force keyboard-only operation.
 
-Local VGA mouse input is available as an experimental, disabled-by-default
-mode. Select **Installer (experimental mouse)** in GRUB, append `owrt.mouse=1`
-to the installer kernel command line, or use
-`OWRT_LOCAL_MOUSE_ENABLE=1 owrt-install` for a manual session on `tty1`. The
+The main GRUB installer enables experimental local VGA mouse input together
+with normal keyboard controls. The failsafe entry remains keyboard-only. For a
+manual `tty1` session, use `OWRT_LOCAL_MOUSE_ENABLE=1 owrt-install`. The
 image contains GPM-enabled Newt/whiptail packages built by the pinned OpenWrt
 SDK. The stock Linux `mousedev` compatibility handler combines relative and
 absolute pointers into `/dev/input/mice`; GPM consumes its standard IMPS/2
@@ -221,14 +222,15 @@ with the keyboard. The previous direct-evdev implementation passed QEMU but
 failed its VMware cursor test and has been replaced by the kernel multiplexer.
 The replacement path passed the automated QEMU USB, PS/2, absolute-tablet,
 crash, cleanup, and fallback matrix, and its VMware cursor test on 2026-08-14.
-The mode remains experimental until the separate physical x86 gate is
-completed.
+The mode remains experimental and the release gate remains blocked until the
+separate physical x86 acceptance is completed.
 
-For bare-metal validation, GRUB also provides **Mouse hardware test (no disk
-writes)**. It runs the real disk and network wizard, including the exact erase
-gate, with `--dry-run` forced from the kernel command line. A successful flow
-ends with an explicit no-changes dialog. Run `owrt-hardware-report` afterward
-to create a privacy-safe acceptance report with a machine-readable verdict.
+For bare-metal validation, highlight **OpenWrt x86 Installer**, press `e`, and
+append `owrt.hardware-test=1` to its `linux` line before booting with Ctrl+X or
+F10. This forces `--dry-run` before latest-release handling and runs the real
+disk/network wizard without writing the target. A successful flow ends with an
+explicit no-changes dialog. Run `owrt-hardware-report` afterward to create a
+privacy-safe acceptance report with a machine-readable verdict.
 After preserving that report, validate the wired USB alpha gate on the build
 host with `./scripts/verify-physical-report.sh REPORT`. Follow
 [PHYSICAL_X86_MOUSE_TEST.md](PHYSICAL_X86_MOUSE_TEST.md); use a disposable test
@@ -371,7 +373,8 @@ cleanup before the exact erase confirmation, the forced hardware dry-run flow,
 and target-disk immutability.
 
 Run the full automated hybrid ISO gate after `make iso`. It covers BIOS, UEFI,
-local-disk boot and its missing-disk path, the hardware-test menu, the VGA
+local-disk conditional default and its missing-disk path, the hidden
+hardware-test kernel flag, the VGA
 curses framebuffer, clean installation to a disposable qcow2 disk, USB backup
 import, and boot validation of both installed systems:
 

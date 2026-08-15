@@ -6,7 +6,7 @@
 
 ## Короткий вывод
 
-Реализованный путь: обязательный `whiptail`/newt backend для локальной Linux console, ANSI/POSIX shell backend с native SGR mouse для SSH/xterm-compatible terminals, line fallback для serial/pipe и optional `dialog` backend там, где пакет доступен. Для opt-in local VGA mouse используется штатный Linux `mousedev` aggregate `/dev/input/mice` и GPM `imps2`, без project-owned parser для `EV_REL`/`EV_ABS`.
+Реализованный путь: обязательный `whiptail`/newt backend для локальной Linux console, ANSI/POSIX shell backend с native SGR mouse для SSH/xterm-compatible terminals, line fallback для serial/pipe и optional `dialog` backend там, где пакет доступен. Unified candidate entry включает local VGA mouse через штатный Linux `mousedev` aggregate `/dev/input/mice` и GPM `imps2`, без project-owned parser для `EV_REL`/`EV_ABS`; публикация остается заблокирована physical gate.
 
 Mouse support не является обязательным для прохождения wizard. В локальной Linux console `tty1` мышь обычно не работает как terminal event без `gpm` или прямой обработки `/dev/input/event*`. В SSH/xterm-подобных терминалах SGR mouse reporting работает без дополнительных пакетов. Поэтому базовая UX-модель остается keyboard-first, а мышь дублирует те же безопасные действия.
 
@@ -286,7 +286,8 @@ VMware twin devices удалены. Installer теперь собирает из
 selection-cell pointer через стандартный `TIOCLINUX`; blinking text caret не
 перемещается. Этот путь прошел USB relative, PS/2, absolute USB tablet и
 exact-confirmation QEMU matrix, после чего движение и выбор были вручную
-подтверждены в VMware. Он остается opt-in до отдельного bare-metal gate.
+подтверждены в VMware. Путь включен в unified candidate entry по решению для
+трехпунктового GRUB, но не считается release-ready до bare-metal gate.
 
 Threat model local mouse:
 
@@ -301,9 +302,9 @@ Threat model local mouse:
   keyboard-only ввода точной destructive phrase `ERASE /dev/...`;
 - daemon завершается и удаляет socket при выходе installer; failure мыши не
   прерывает keyboard UX;
-- experimental runtime включается только через `owrt.mouse=1` или
+- unified GRUB entry передает `owrt.mouse=1`, а ручной запуск использует
   `OWRT_LOCAL_MOUSE_ENABLE=1`; QEMU/VMware gates пройдены, но feature не
-  объявлять поддерживаемой и не делать default до отдельной проверки на
+  объявлять поддерживаемой и не публиковать candidate до отдельной проверки на
   физической x86 машине.
 
 Работы:
@@ -407,13 +408,11 @@ target disk по SHA-256. Обычный default entry и destructive install-to
 
 ## Online Combined Image Install
 
-Статус на 2026-08-14: implemented and QEMU-verified. Путь остается opt-in и не
-заменяет embedded offline install.
-
-Добавить отдельный GRUB-пункт `Download latest OpenWrt x86 image and install`.
-Он не заменяет встроенный payload и не меняет default boot path. Пункт передает
-`owrt.netinstall=1`, после чего installer выполняет отдельный network-bootstrap
-до выбора и стирания target disk:
+Статус на 2026-08-15: verified download engine встроен в unified installer.
+Main entry проверяет official stable, предлагает download только для строго
+более новой версии и автоматически продолжает с embedded image без сети или
+при equal/older stable. Принудительный `owrt.netinstall=1` сохранен как скрытый
+diagnostic/QEMU path:
 
 1. Проверить уже существующий маршрут, DNS и HTTPS-доступ к официальному
    OpenWrt download host. Если сети нет, предложить выбрать uplink и повторно
@@ -614,3 +613,4 @@ initramfs совпадают с текущими source artifacts по SHA-256.
 63. [in progress] Зафиксировать выбранный `v1.0-alpha.9` post-import runtime в новом immutable candidate commit/metadata, пересобрать release ISO из clean commit и повторить `make smoke`, `make mouse-qemu-smoke`, `make iso-smoke`; любое последующее runtime-изменение аннулирует candidate.
 64. [pending] После успешного wired USB HID report выполнить `make release-gate`, опубликовать следующий immutable alpha tag/assets и не перемещать старые tags; включение mouse path по умолчанию оставить до второго platform/input-controller pass из задачи 39.
 65. [done] Harden candidate freeze/gate: убрать shell `source` и historical default, требовать явный committed metadata path, ловить tracked/staged/untracked/unexpected-ignored runtime, встроить `build_commit`/`build_dirty` manifest в корень ISO и проверять его byte-for-byte; покрыть isolated Git smoke и повторить полный QEMU gate.
+66. [in progress] Свести GRUB к трем пунктам, включить keyboard+mouse в unified installer, автоматически проверять strictly newer stable с embedded fallback и делать local-disk entry условным default; повторить полный QEMU gate до freeze.

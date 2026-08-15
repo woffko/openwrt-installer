@@ -10,7 +10,7 @@
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
 - Последняя опубликованная функциональная версия: обязательный `pv`, честный byte-percent записи payload, раздельный контроль `gzip`/`pv`/`dd`, cleanup FIFO/processes и полный QEMU install+boot smoke; release runtime `v1.0-alpha.7`.
-- Текущий release-candidate runtime: `v1.0-alpha.9`. Experimental local VGA mouse через stock Linux `mousedev`, hardened GPM и GPM-enabled Newt поддерживает relative PS/2/USB и absolute VMware/QEMU tablet, но остается выключенной по умолчанию до нового physical x86 gate.
+- Текущий release-candidate runtime: `v1.0-alpha.9`. Unified GRUB installer включает keyboard и experimental local VGA mouse через stock Linux `mousedev`; публикация и заявленная поддержка мыши по-прежнему ждут physical x86 gate.
 - Последний опубликованный release: `v1.0-alpha.7`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.7`.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
@@ -24,15 +24,15 @@
 - Local VGA mouse prototype: pinned SDK packages `libnewt`/`whiptail`, daemon-only `gpm-daemon`, stock Linux `mousedev` aggregate `/dev/input/mice`, private `0600` socket и отдельный `make mouse-qemu-smoke`.
 - QEMU local-mouse matrix пройдена: USB relative click, PS/2, absolute-only QEMU tablet click через QMP, daemon crash keyboard fallback, cleanup stale runtime-файлов внутри OpenWrt и cleanup до exact `ERASE`; публикация/default ждут physical x86 test.
 - Прежний direct-evdev/VMMouse twin selector удален. Stock `mousedev` aggregate и стандартный Newt console pointer прошли полный QEMU mouse matrix и ручную повторную проверку в VMware.
-- В GRUB добавлен отдельный opt-in пункт `Installer (experimental mouse)` с `owrt.mouse=1`; обычная установка остается keyboard-first, а hardware-test по-прежнему принудительно использует dry-run.
-- В GRUB добавлен `Boot installed OpenWrt from local disk`: ISO находит раздел `kernel` и загружает GRUB уже установленной системы. BIOS, UEFI и отсутствие подходящего диска проверены в QEMU; UEFI ранний config закреплен за `(cd0)`, чтобы подключенный диск не обходил меню ISO.
-- Реализован opt-in пункт `Download latest OpenWrt x86 image and install`: официальный signed stable `generic-ext4-combined-efi.img.gz` для UEFI или `generic-ext4-combined.img.gz` для BIOS загружается в RAM только при рабочей сети и достаточной памяти, проверяется и передается существующему destructive flow; встроенный payload остается offline fallback.
+- GRUB сведен к трем пунктам без номера OpenWrt в названиях: unified installer с keyboard+mouse, загрузка установленного OpenWrt и keyboard-only failsafe installer.
+- `Boot installed OpenWrt from local disk` становится default, когда GRUB находит раздел `kernel`; иначе default остается unified installer. UEFI ранний config закреплен за `(cd0)`, чтобы подключенный диск не обходил меню ISO.
+- Unified installer проверяет official stable перед выбором диска: download предлагается только для строго более новой версии, а отсутствие сети и equal/older stable автоматически оставляют embedded image. Forced online CLI/kernel path сохранен для диагностики и QEMU acceptance.
 - Online flow сначала автоматически пробует временный DHCP на Ethernet-интерфейсах, затем при необходимости предлагает ручные DHCP/static/PPPoE; pinned usign signature, exact SHA-256 entry, Content-Length/RAM reserve, gzip integrity и partition layout обязательны.
 - Реальные QEMU online BIOS и UEFI download/install/installed-boot tests прошли 2026-08-14 с официальной stable версией OpenWrt `25.12.5`.
 - После выбора target disk реализован импорт стандартного OpenWrt `sysupgrade -b` backup с FAT32/exFAT/NTFS3/ext4 USB: read-only mount, private RAM copy, строгая tar validation, config-only/full policy, imported/wizard network choice и повторный post-extract audit.
 - USB backup никогда не распаковывается прямо в target rootfs; unsafe paths, links, special files, mode/size/member bombs и нехватка RAM отклоняются до destructive confirmation. Review и installed metadata содержат provenance и SHA-256, а stale installer-owned network metadata удаляется.
 - `scripts/common.sh` фиксирует `umask 022`, чтобы ImageBuilder не создавал rootfs с `0700/0600` при запуске из hardened runner; добавлен `make build-env-smoke`.
-- Для physical gate добавлен отдельный GRUB-пункт `Mouse hardware test (no disk writes)`: kernel flag принудительно включает `--dry-run`, UI явно показывает safe mode, а `owrt-hardware-report` создает ограниченный отчет без сетевых и аппаратных серийных идентификаторов.
+- Для physical gate сохранен скрытый kernel flag `owrt.hardware-test=1`: его временно добавляют через GRUB edit к unified entry, он принудительно включает `--dry-run`, а `owrt-hardware-report` создает ограниченный отчет без сетевых и аппаратных серийных идентификаторов.
 - Physical report schema v2 фиксирует безопасный enum подключения, обязательные ручные проверки и итог `physical_flow_result`; `scripts/verify-physical-report.sh` принимает первый alpha gate только для полного wired USB HID pass и отвергает receiver/PS2 или неполный отчет.
 - `make freeze-candidate VERSION=...` создает metadata только из clean non-dev commit и проверенных свежих artifacts; commit не выполняется автоматически. Manifest содержит `build_commit`/`build_dirty` и находится также в корне ISO.
 - `make release-gate CANDIDATE=... REPORT=...` использует data-only parser, требует committed metadata, сверяет physical report, commit, ISO/sidecar/embedded manifest и отвергает tracked/staged/untracked/unexpected-ignored runtime. Изолированный Git smoke покрывает injection, dirty, checksum, hash и embedded-manifest rejection.

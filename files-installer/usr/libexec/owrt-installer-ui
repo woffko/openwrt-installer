@@ -85,6 +85,7 @@ ui_ready_marker() {
 	ui_ready_title="$1"
 	case "$ui_ready_title" in
 		"Online image unavailable") ui_ready_name="online-unavailable" ;;
+		"New OpenWrt release available") ui_ready_name="online-update" ;;
 		"Select download uplink") ui_ready_name="online-uplink" ;;
 		"Select download network mode") ui_ready_name="online-network-mode" ;;
 		"Download static IPv4") ui_ready_name="online-static" ;;

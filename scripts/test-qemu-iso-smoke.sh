@@ -8,6 +8,8 @@ set -eu
 MODE="${1:-all}"
 ISO_IMAGE="${ISO_IMAGE:-$OUTPUT_DIR/openwrt-x86-64-installer-hybrid.iso}"
 TARGET_IMAGE="${TARGET_IMAGE:-$OUTPUT_DIR/openwrt-x86-64-target.img.gz}"
+ISO_STAGED_KERNEL="${ISO_STAGED_KERNEL:-$BUILD_DIR/hybrid-iso/root/boot/vmlinuz}"
+ISO_STAGED_INITRAMFS="${ISO_STAGED_INITRAMFS:-$BUILD_DIR/hybrid-iso/root/boot/initramfs.cpio.gz}"
 SMOKE_DIR="$BUILD_DIR/qemu-iso-smoke"
 QEMU_TIMEOUT="${QEMU_TIMEOUT:-100s}"
 QEMU_ACCEL="${QEMU_ACCEL:-tcg}"
@@ -225,7 +227,7 @@ assert_common_boot_markers() {
 	assert_log_contains "$log_file" "OWRT_INSTALLER_UI_BACKEND=whiptail"
 }
 
-run_hardware_menu_smoke() {
+run_hardware_flag_smoke() {
 	serial_log="$SMOKE_DIR/hardware-menu-iso.log"
 	qemu_log="$SMOKE_DIR/hardware-menu-qemu.log"
 	monitor_socket="$SMOKE_DIR/hardware-menu-monitor.sock"
@@ -237,14 +239,15 @@ run_hardware_menu_smoke() {
 	ensure_qcow2 "$target_disk"
 	rm -f "$serial_log" "$qemu_log" "$monitor_socket"
 
-	log "Starting GRUB hardware-test menu smoke test"
+	log "Starting hidden hardware-test kernel-flag smoke test"
 	if [ -n "$QEMU_L_ARG" ]; then
 		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
 		timeout "$QEMU_TIMEOUT" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" -L "$QEMU_L_ARG" \
 			-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
 			-display none -vga std -serial "file:$serial_log" \
 			-monitor "unix:$monitor_socket,server=on,wait=off" \
-			-cdrom "$ISO_IMAGE" -boot d \
+			-kernel "$ISO_STAGED_KERNEL" -initrd "$ISO_STAGED_INITRAMFS" \
+			-append "console=tty1 console=ttyS0,115200n8 rdinit=/init owrt.mouse=1 owrt.hardware-test=1" \
 			-drive "file=$target_disk,format=qcow2,if=virtio" \
 			-device qemu-xhci -device usb-mouse \
 			-nic user,model=e1000 -nic user,model=e1000 > "$qemu_log" 2>&1 &
@@ -254,17 +257,16 @@ run_hardware_menu_smoke() {
 			-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
 			-display none -vga std -serial "file:$serial_log" \
 			-monitor "unix:$monitor_socket,server=on,wait=off" \
-			-cdrom "$ISO_IMAGE" -boot d \
+			-kernel "$ISO_STAGED_KERNEL" -initrd "$ISO_STAGED_INITRAMFS" \
+			-append "console=tty1 console=ttyS0,115200n8 rdinit=/init owrt.mouse=1 owrt.hardware-test=1" \
 			-drive "file=$target_disk,format=qcow2,if=virtio" \
 			-device qemu-xhci -device usb-mouse \
 			-nic user,model=e1000 -nic user,model=e1000 > "$qemu_log" 2>&1 &
 	fi
 	qemu_pid=$!
 
-	wait_for_log_marker "$serial_log" "Mouse hardware test (no disk writes)" "$qemu_pid" 30
-	[ -S "$monitor_socket" ] || die "QEMU monitor socket was not created"
-	hmp_send_keys "$monitor_socket" down down down ret
 	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_HARDWARE_TEST=active" "$qemu_pid" "$QEMU_HARDWARE_WAIT"
+	[ -S "$monitor_socket" ] || die "QEMU monitor socket was not created"
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" "$qemu_pid" "$QEMU_HARDWARE_WAIT"
 	hmp_command "$monitor_socket" quit
 	wait "$qemu_pid" || true
@@ -273,7 +275,7 @@ run_hardware_menu_smoke() {
 	assert_log_contains "$serial_log" "owrt.hardware-test=1"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
 	assert_log_not_contains "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS="
-	log "GRUB hardware-test menu smoke passed"
+	log "Hidden hardware-test kernel-flag smoke passed"
 }
 
 run_vga_smoke() {
@@ -706,8 +708,8 @@ run_online_install_smoke() {
 			-drive "if=pflash,format=raw,file=$vars_copy"
 	fi
 	set -- "$@" \
-		-drive "file=$ISO_IMAGE,media=cdrom,readonly=on,if=none,id=installer_cd" \
-		-device "ide-cd,drive=installer_cd,bootindex=1" \
+		-kernel "$ISO_STAGED_KERNEL" -initrd "$ISO_STAGED_INITRAMFS" \
+		-append "console=tty1 console=ttyS0,115200n8 rdinit=/init owrt.netinstall=1" \
 		-drive "file=$target_disk,format=qcow2,if=none,id=local_target" \
 		-device "virtio-blk-pci,drive=local_target,bootindex=2" \
 		-boot "menu=off,strict=on" \
@@ -725,10 +727,8 @@ run_online_install_smoke() {
 	fi
 	install_pid=$!
 
-	wait_for_log_marker "$serial_log" "Download latest OpenWrt x86 image and install" "$install_pid" 45
-	[ -S "$monitor_socket" ] || die "QEMU online monitor socket was not created"
-	hmp_send_keys "$monitor_socket" down ret
 	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_NETINSTALL=active" "$install_pid" "$QEMU_ONLINE_WAIT"
+	[ -S "$monitor_socket" ] || die "QEMU online monitor socket was not created"
 	wait_for_either_log_marker "$serial_log" \
 		"OWRT_INSTALLER_UI_READY=online-unavailable" \
 		"OWRT_INSTALLER_UI_READY=online-ready" \
@@ -777,7 +777,7 @@ run_online_install_smoke() {
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=installation-success" "$install_pid" "$QEMU_ONLINE_WAIT"
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=post-install-menu" "$install_pid" "$QEMU_ONLINE_WAIT"
-	hmp_send_keys "$monitor_socket" down down ret
+	hmp_send_keys "$monitor_socket" ret
 	sleep 2
 	hmp_command "$monitor_socket" quit
 	wait "$install_pid" || true
@@ -910,7 +910,7 @@ run_local_disk_boot_smoke() {
 
 	wait_for_log_marker "$serial_log" "Boot installed OpenWrt from local disk" "$boot_pid" 45
 	[ -S "$monitor_socket" ] || die "QEMU local-disk monitor socket was not created"
-	hmp_send_keys "$monitor_socket" down down ret
+	hmp_send_keys "$monitor_socket" ret
 	wait_for_log_marker "$serial_log" "Please press Enter to activate this console." "$boot_pid" "$QEMU_INSTALL_WAIT"
 	{ printf '\r'; sleep 1; printf 'cat /etc/openwrt_release\r'; } |
 		nc -N -U "$serial_socket" >/dev/null 2>&1 ||
@@ -950,7 +950,7 @@ run_local_disk_missing_smoke() {
 	fi
 	boot_pid=$!
 	wait_for_log_marker "$serial_log" "Boot installed OpenWrt from local disk" "$boot_pid" 45
-	hmp_send_keys "$monitor_socket" down down ret
+	hmp_send_keys "$monitor_socket" down ret
 	wait_for_log_marker "$serial_log" "No installed OpenWrt boot partition with label 'kernel' was found." "$boot_pid" 45
 	hmp_command "$monitor_socket" quit
 	wait "$boot_pid" || true
@@ -1040,6 +1040,12 @@ case "$MODE" in
 		;;
 esac
 case "$MODE" in
+	all|hardware|online|online-bios|online-uefi)
+		[ -s "$ISO_STAGED_KERNEL" ] || die "Staged ISO kernel is missing. Run: make iso"
+		[ -s "$ISO_STAGED_INITRAMFS" ] || die "Staged ISO initramfs is missing. Run: make iso"
+		;;
+esac
+case "$MODE" in
 	all|config-import|local-disk|local-disk-bios|local-disk-uefi)
 		require_cmd gzip
 		require_cmd fdisk
@@ -1066,7 +1072,7 @@ case "$MODE" in
 		run_local_disk_boot_smoke bios
 		run_local_disk_boot_smoke uefi
 		run_local_disk_missing_smoke
-		run_hardware_menu_smoke
+		run_hardware_flag_smoke
 		run_vga_smoke
 		run_install_smoke
 		run_config_import_smoke
@@ -1078,7 +1084,7 @@ case "$MODE" in
 		run_uefi_smoke
 		;;
 	hardware)
-		run_hardware_menu_smoke
+		run_hardware_flag_smoke
 		;;
 	vga)
 		run_vga_smoke

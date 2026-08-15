@@ -51,6 +51,7 @@ AUTO_STARTED=0
 DRY_RUN=0
 SKIP_NETWORK=0
 DOWNLOAD_LATEST=0
+CHECK_LATEST=0
 TARGET_MOUNTED=0
 INSTALL_MODE="clean"
 NETWORK_SOURCE="wizard"
@@ -297,12 +298,15 @@ Usage:
   owrt-install --target /dev/nvme0n1 --config-backup FILE --import-network keep
   owrt-install --target /dev/nvme0n1 --yes-i-know-this-will-erase-data
   owrt-install --download-latest
+  owrt-install --check-latest
   owrt-install --dry-run
 
 The selected target disk will be erased completely.
 Removable disks and the detected live boot disk are blocked by default.
 --download-latest verifies an official signed OpenWrt x86 image in RAM before
 the existing target selection, review, and exact ERASE confirmation flow.
+--check-latest offers that download only when the official stable release is
+newer than the embedded image; network failure falls back to the embedded image.
 --config-backup accepts a standard OpenWrt sysupgrade .tar.gz, validates and
 stages it in RAM, and applies it only after the target image has been written.
 EOF
@@ -430,6 +434,18 @@ is_positive_integer() {
 		''|*[!0-9]*|0) return 1 ;;
 		*) return 0 ;;
 	esac
+}
+
+release_version_is_newer() {
+	awk -v candidate="$1" -v current="$2" 'BEGIN {
+		split(candidate, a, ".")
+		split(current, b, ".")
+		for (i = 1; i <= 3; i++) {
+			if ((a[i] + 0) > (b[i] + 0)) exit 0
+			if ((a[i] + 0) < (b[i] + 0)) exit 1
+		}
+		exit 1
+	}'
 }
 
 bytes_as_mib() {
@@ -1103,6 +1119,66 @@ prepare_online_payload() {
 				;;
 		esac
 	done
+}
+
+check_for_newer_payload() {
+	if ! init_netinstall_workdir; then
+		append_install_log "INFO: Latest-release check skipped: $NETINSTALL_ERROR"
+		autostart_serial_marker "OWRT_INSTALLER_LATEST_CHECK=local-workspace-unavailable"
+		reset_to_embedded_payload
+		return 0
+	fi
+
+	if ! netinstall_has_default_route; then
+		if ! auto_configure_netinstall_dhcp; then
+			append_install_log "INFO: Latest-release check uses embedded image: $NETINSTALL_ERROR"
+			autostart_serial_marker "OWRT_INSTALLER_LATEST_CHECK=local-no-network"
+			reset_to_embedded_payload
+			return 0
+		fi
+	fi
+
+	if ! netinstall_stable_version; then
+		append_install_log "INFO: Latest-release check uses embedded image: $NETINSTALL_ERROR"
+		autostart_serial_marker "OWRT_INSTALLER_LATEST_CHECK=local-index-unavailable"
+		restore_netinstall_network
+		reset_to_embedded_payload
+		return 0
+	fi
+
+	embedded_version="$(json_value openwrt_version || true)"
+	if ! printf '%s\n' "$embedded_version" |
+		grep -Eq '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'; then
+		append_install_log "INFO: Latest-release check skipped: embedded version is invalid"
+		autostart_serial_marker "OWRT_INSTALLER_LATEST_CHECK=local-invalid-embedded-version"
+		restore_netinstall_network
+		reset_to_embedded_payload
+		return 0
+	fi
+
+	if ! release_version_is_newer "$NETINSTALL_STABLE_VERSION" "$embedded_version"; then
+		autostart_serial_marker "OWRT_INSTALLER_LATEST_CHECK=local-current"
+		restore_netinstall_network
+		reset_to_embedded_payload
+		return 0
+	fi
+
+	menu_reset
+	menu_note "Embedded image: OpenWrt $embedded_version. Available stable release: OpenWrt $NETINSTALL_STABLE_VERSION."
+	menu_add "download" "Download, verify, and install OpenWrt $NETINSTALL_STABLE_VERSION"
+	menu_add "embedded" "Continue with embedded OpenWrt $embedded_version"
+	select_from_menu "New OpenWrt release available" "online update action"
+	case "$SELECTED_VALUE" in
+		download)
+			autostart_serial_marker "OWRT_INSTALLER_LATEST_CHECK=download-accepted"
+			prepare_online_payload
+			;;
+		embedded)
+			autostart_serial_marker "OWRT_INSTALLER_LATEST_CHECK=local-selected"
+			restore_netinstall_network
+			reset_to_embedded_payload
+			;;
+	esac
 }
 
 verify_payload() {
@@ -2216,6 +2292,8 @@ run_install() {
 
 	if [ "$DOWNLOAD_LATEST" = "1" ]; then
 		prepare_online_payload
+	elif [ "$CHECK_LATEST" = "1" ]; then
+		check_for_newer_payload
 	fi
 	ui_install_stage "Verify payload" "Checking the selected local OpenWrt image integrity." "$INSTALL_LOG"
 	verify_payload
@@ -2419,6 +2497,10 @@ parse_args() {
 				;;
 			--download-latest)
 				DOWNLOAD_LATEST=1
+				shift
+				;;
+			--check-latest)
+				CHECK_LATEST=1
 				shift
 				;;
 			--autostart)

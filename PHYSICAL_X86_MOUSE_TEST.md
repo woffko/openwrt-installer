@@ -28,10 +28,10 @@ the clean `v1.0-alpha.9` candidate rebuild before accepting a physical report.
 
 ## Safety
 
-Use a disposable test machine and a non-essential target disk. The dedicated
-GRUB entry forces `--dry-run`, and the QEMU gate verifies byte-for-byte target
-disk immutability, but physical testing must still avoid the only copy of any
-important data.
+Use a disposable test machine and a non-essential target disk. The temporary
+GRUB kernel edit below forces `--dry-run`, and the QEMU gate verifies
+byte-for-byte target disk immutability, but physical testing must still avoid
+the only copy of any important data.
 
 Verify the ISO before writing it to USB:
 
@@ -51,15 +51,18 @@ metadata exactly, not the historical `v1.0-alpha.8` block above.
 - at least one target disk visible to the installer;
 - at least two network interfaces, physical or USB, for the complete wizard.
 
-One successful wired USB HID run closes the physical gate for an opt-in alpha
-release. Enabling mouse input by default additionally requires a second
-platform class, preferably a laptop with an internal PS/2-compatible pointer
-or a different USB receiver/controller.
+One successful wired USB HID run closes the physical gate for an experimental
+alpha release whose main entry enables mouse input. A second platform class,
+preferably a laptop with an internal PS/2-compatible pointer or a different USB
+receiver/controller, remains required before calling mouse input generally
+supported.
 
 ## Procedure
 
-1. Boot the hybrid ISO and select **Mouse hardware test (no disk writes)** in
-   GRUB. Do not edit the normal installer entry.
+1. Highlight **OpenWrt x86 Installer** in GRUB and press `e`. On the line that
+   starts with `linux`, append `owrt.hardware-test=1` without removing
+   `owrt.mouse=1`, then boot with Ctrl+X or F10. Do not boot the unmodified
+   installer for this acceptance run.
 2. Confirm that the welcome screen says `HARDWARE TEST / DRY RUN`.
 3. Use the mouse to select the target disk and activate the `OK` button.
 4. Use clicks to select LAN, WAN, WAN mode, and WAN6 mode. Use the wheel on at
@@ -70,7 +73,7 @@ or a different USB receiver/controller.
 6. Continue through review. The final screen must say `SAFE DRY RUN`.
 7. At the exact `ERASE /dev/...` prompt, verify that mouse input no longer
    acts on the console. Enter the exact phrase with the keyboard. This is safe
-   only in the dedicated hardware-test boot mode.
+   only when the edited kernel line contains `owrt.hardware-test=1`.
 8. Confirm the `Dry run complete` dialog explicitly states that no disk
    changes were made, then close it with Enter.
 9. At the OpenWrt console, run:

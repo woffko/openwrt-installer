@@ -107,6 +107,10 @@ if mkdir /tmp/owrt-installer-autostart.lock 2>/dev/null; then
 		serial_marker "OWRT_INSTALLER_NETINSTALL=active"
 		exec /usr/sbin/owrt-install --autostart --download-latest
 	fi
+	if kernel_arg_enabled owrt.check-latest=1; then
+		serial_marker "OWRT_INSTALLER_LATEST_CHECK=active"
+		exec /usr/sbin/owrt-install --autostart --check-latest
+	fi
 	exec /usr/sbin/owrt-install --autostart
 fi
 
