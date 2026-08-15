@@ -95,6 +95,13 @@ hmp() {
 		die "Could not send QEMU monitor command: $*"
 }
 
+relative_mouse_step() {
+	hmp "mouse_move $1 $2"
+	# Keep each HID report below GPM's acceleration threshold and give the
+	# guest enough time to consume it before the next monitor transaction.
+	sleep 0.1
+}
+
 capture_screen() {
 	screenshot="$1"
 	rm -f "$screenshot"
@@ -201,25 +208,19 @@ start_vm() {
 
 click_target_ok() {
 	# GPM starts at cell 80x25 on the QEMU 160x50 console. Its default
-	# scaling maps ten small X deltas and twenty Y deltas to one cell. Keep
-	# movement and click in separate monitor transactions: the screendump is
-	# a processing barrier and records the pointer position on test failure.
-	{
-		for _ in $(seq 1 15); do
-			printf 'mouse_move -10 0\n'
-			sleep 0.1
-		done
-		printf 'mouse_move 0 20\nmouse_move 0 20\n'
-	} | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
-		die "Could not position the calibrated USB mouse"
-	sleep 0.2
+	# scaling maps ten small X deltas and twenty Y deltas to one cell. Small,
+	# separately paced X reports avoid acceleration when QEMU batches input;
+	# one Y report aims at the middle button row instead of its shadow.
+	for _ in $(seq 1 30); do
+		relative_mouse_step -5 0
+	done
+	sleep 0.3
+	relative_mouse_step 0 20
+	sleep 0.3
 	capture_screen "$SMOKE_DIR/usb-relative-target-position.ppm"
-	{
-		printf 'mouse_button 1\n'
-		sleep 0.2
-		printf 'mouse_button 0\n'
-	} | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
-		die "Could not send calibrated USB mouse click"
+	hmp "mouse_button 1"
+	sleep 0.2
+	hmp "mouse_button 0"
 	sleep 0.3
 	capture_screen "$SMOKE_DIR/usb-relative-click-after.ppm"
 }
@@ -227,14 +228,11 @@ click_target_ok() {
 assert_relative_pointer_visible() {
 	before="$SMOKE_DIR/usb-relative-pointer-before.ppm"
 	capture_screen "$before"
-	{
-		printf 'mouse_move -10 0\n'
-		sleep 0.3
-	} | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
-		die "Could not move the USB mouse for pointer visibility test"
+	relative_mouse_step -10 0
+	sleep 0.2
 	assert_pointer_became_visible "$before" "$SMOKE_DIR/usb-relative-pointer-after"
-	printf 'mouse_move 10 0\n' | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
-		die "Could not restore the USB mouse after pointer visibility test"
+	relative_mouse_step 10 0
+	sleep 0.2
 }
 
 assert_absolute_pointer_visible() {
@@ -274,7 +272,7 @@ click_target_ok_absolute() {
 
 run_usb_click_and_crash() {
 	log "Testing USB relative mouse click and daemon-crash keyboard fallback"
-	start_vm usb-relative "" -device qemu-xhci -device usb-mouse
+	start_vm usb-relative "module_blacklist=psmouse" -device qemu-xhci -device usb-mouse
 	assert_marker "QEMU QEMU USB Mouse"
 	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE=active"
 	assert_marker "OWRT_INSTALLER_LOCAL_MOUSE_SOCKET_MODE=600"
