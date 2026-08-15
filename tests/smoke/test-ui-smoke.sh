@@ -63,6 +63,24 @@ run_line_stage_smoke() {
 	assert_contains "$out_file" "12:00:03 ERROR: forced"
 }
 
+run_payload_title_smoke() {
+	out_file="$1"
+
+	OWRT_UI_MODE=line TERM=dumb sh -eu -c '
+		. "$1"
+		printf "default=%s\n" "$UI_BACKTITLE"
+		ui_set_payload_version "25.12.5"
+		printf "selected=%s payload=%s\n" "$UI_BACKTITLE" "$UI_PAYLOAD_VERSION"
+		ui_set_payload_version "25.12.5 invalid"
+		printf "invalid=%s payload=%s\n" "$UI_BACKTITLE" "$UI_PAYLOAD_VERSION"
+	' sh "$UI_LIB" > "$out_file" 2>&1
+
+	assert_contains "$out_file" "default=OpenWrt Hellforge Installer"
+	assert_contains "$out_file" \
+		"selected=OpenWrt Hellforge Installer | OpenWrt 25.12.5 payload=25.12.5"
+	assert_contains "$out_file" "invalid=OpenWrt Hellforge Installer payload="
+}
+
 run_line_progress_stream_smoke() {
 	work_dir="$1"
 	out_file="$2"
@@ -176,6 +194,7 @@ run_whiptail_progress_stream_smoke() {
 		printf '%s\n' '(printf "0\n37\n100\n" > "$progress_fifo") &'
 		printf '%s\n' 'writer_pid=$!'
 		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'ui_set_payload_version "25.12.5"'
 		printf '%s\n' 'ui_install_progress_stream "$progress_fifo" "Write image" "Writing test image." ""'
 		printf '%s\n' 'wait "$writer_pid"'
 		printf '%s\n' 'rm -f "$progress_fifo"'
@@ -189,7 +208,8 @@ run_whiptail_progress_stream_smoke() {
 		script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
 		fail "Whiptail progress stream smoke failed"
 
-	assert_contains "$work_dir/whiptail-progress.args" "--fb --backtitle OpenWrt Hellforge Installer --title Install --gauge"
+	assert_contains "$work_dir/whiptail-progress.args" \
+		"--fb --backtitle OpenWrt Hellforge Installer | OpenWrt 25.12.5 --title Install --gauge"
 	assert_contains "$work_dir/whiptail-progress.input" "0"
 	assert_contains "$work_dir/whiptail-progress.input" "37"
 	assert_contains "$work_dir/whiptail-progress.input" "100"
@@ -268,6 +288,7 @@ run_ansi_menu_snapshot_smoke() {
 		printf 'MENU_LIST=%s\n' "$(shell_quote "$work_dir/menu-snapshot")"
 		printf '%s\n' 'stty rows 25 cols 80 2>/dev/null || true'
 		printf '%s\n' 'setup_ui'
+		printf '%s\n' 'ui_set_payload_version "25.12.5"'
 		printf '%s\n' 'menu_reset'
 		printf '%s\n' 'menu_warning "WARNING: selected disk will be erased after final confirmation."'
 		printf '%s\n' 'menu_add "/dev/sda" "/dev/sda 119.2G SSD removable=no live=no"'
@@ -282,6 +303,7 @@ run_ansi_menu_snapshot_smoke() {
 	strip_ansi_file "$out_file" > "$clean_file"
 
 	assert_contains "$clean_file" "OPENWRT HELLFORGE INSTALLER"
+	assert_contains "$clean_file" "OPENWRT HELLFORGE INSTALLER | OpenWrt 25.12.5 | smoke"
 	assert_contains "$clean_file" "Steps: [DISK] ->  LAN  ->  WAN  ->  REVIEW  ->  INSTALL"
 	assert_contains "$clean_file" "Select target disk"
 	assert_contains "$clean_file" "WARNING: selected disk will be erased after final confirmation."
@@ -1015,6 +1037,7 @@ cat > "$log_file" <<'EOF'
 EOF
 
 run_line_stage_smoke "$log_file" "$work_dir/line-stage.out"
+run_payload_title_smoke "$work_dir/payload-title.out"
 run_line_progress_stream_smoke "$work_dir" "$work_dir/line-progress.out"
 run_line_pppoe_wizard_smoke "$work_dir" "$work_dir/line-pppoe-wizard.out"
 run_whiptail_progress_stream_smoke "$work_dir" "$work_dir/whiptail-progress.out"

@@ -205,7 +205,9 @@ run_dry_run_skip_network_smoke() {
 		verify_payload() {
 			record verify_payload
 			PAYLOAD_SHA256=fake-sha
+			PAYLOAD_VERSION=25.12.5
 		}
+		ui_set_payload_version() { record "payload_title:$1"; }
 		validate_target_disk() { record "validate_target:$1"; }
 		review_and_confirm() { record review_and_confirm; }
 		select_target_disk() { forbidden select_target_disk; }
@@ -223,6 +225,7 @@ run_dry_run_skip_network_smoke() {
 
 	assert_contains "$calls_file" "setup_ui"
 	assert_contains "$calls_file" "verify_payload"
+	assert_contains "$calls_file" "payload_title:25.12.5"
 	assert_contains "$calls_file" "validate_target:/dev/testdisk"
 	assert_contains "$calls_file" "review_and_confirm"
 	assert_contains "$out_file" "Dry run complete; no changes were made"

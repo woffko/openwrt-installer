@@ -351,8 +351,10 @@ run_acquire_case() {
 			printf "error=%s\n" "$NETINSTALL_ERROR"
 			if [ "$status" -eq 0 ]; then
 				verify_payload
+				ui_set_payload_version "$PAYLOAD_VERSION"
 				printf "source=%s\n" "$PAYLOAD_SOURCE_ID"
 				printf "version=%s\n" "$PAYLOAD_VERSION"
+				printf "title=%s\n" "$UI_BACKTITLE"
 				printf "boot=%s\n" "$PAYLOAD_BOOT_MODE"
 				printf "filename=%s\n" "$PAYLOAD_FILENAME"
 				printf "verified_sha=%s\n" "$PAYLOAD_SHA256"
@@ -367,6 +369,10 @@ run_acquire_case() {
 		fail "$case_name exited with $case_status instead of $expected_status"
 	}
 	assert_contains "$case_output" "$expected_text"
+	if [ "$expected_status" -eq 0 ]; then
+		assert_contains "$case_output" \
+			"title=OpenWrt Hellforge Installer | OpenWrt 99.88.7"
+	fi
 }
 
 assert_contains "$GRUB_CONFIG" 'menuentry "OpenWrt x86 Installer"'
@@ -414,10 +420,23 @@ FAKE_BAD_LAYOUT=1 run_acquire_case wrong-layout uefi 1 'does not have the expect
 TEST_MEM_AVAILABLE=1 run_acquire_case insufficient-ram bios 1 'Insufficient RAM'
 
 fallback_output="$work_dir/fallback.txt"
+fallback_manifest="$work_dir/fallback-manifest.json"
+cat > "$fallback_manifest" <<EOF_FALLBACK_MANIFEST
+{
+  "openwrt_version": "25.12.4",
+  "image_type": "ext4-combined-efi",
+  "payload_source": "embedded",
+  "payload_filename": "target.img.gz",
+  "payload_sha256": "$valid_payload_sha",
+  "payload_uncompressed_size": "9437184"
+}
+EOF_FALLBACK_MANIFEST
 # shellcheck disable=SC2016 # Variables in this script belong to the child shell.
 OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
 	. "$1"
 	INSTALL_LOG="$2/fallback.log"
+	EMBEDDED_PAYLOAD="$3"
+	EMBEDDED_MANIFEST="$4"
 	acquire_downloaded_payload() { NETINSTALL_ERROR="forced offline"; return 1; }
 	ui_install_stage() { :; }
 	ui_notice() { :; }
@@ -425,11 +444,16 @@ OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
 	select_from_menu() { SELECTED_VALUE=embedded; }
 	autostart_serial_marker() { [ "$1" = "OWRT_INSTALLER_NETINSTALL_FALLBACK=embedded" ]; }
 	prepare_online_payload
+	verify_payload
+	ui_set_payload_version "$PAYLOAD_VERSION"
 	printf "source=%s\n" "$PAYLOAD_SOURCE_ID"
 	printf "payload=%s\n" "$PAYLOAD"
+	printf "title=%s\n" "$UI_BACKTITLE"
 	cleanup
-' sh "$INSTALLER" "$work_dir" > "$fallback_output" 2>&1
+' sh "$INSTALLER" "$work_dir" "$valid_payload" "$fallback_manifest" > "$fallback_output" 2>&1
 assert_contains "$fallback_output" 'source=embedded'
-assert_contains "$fallback_output" 'payload=/usr/share/owrt-installer/target.img.gz'
+assert_contains "$fallback_output" "payload=$valid_payload"
+assert_contains "$fallback_output" \
+	'title=OpenWrt Hellforge Installer | OpenWrt 25.12.4'
 
 printf '%s\n' "Online install smoke tests passed."

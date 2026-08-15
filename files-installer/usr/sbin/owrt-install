@@ -2,7 +2,7 @@
 
 set -eu
 
-INSTALLER_VERSION="v1.0-alpha.9"
+INSTALLER_VERSION="v1.0-alpha.10"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 EMBEDDED_PAYLOAD="$PAYLOAD"
@@ -459,6 +459,7 @@ reset_to_embedded_payload() {
 	PAYLOAD_SOURCE_ID="embedded"
 	PAYLOAD_SOURCE_LABEL="Embedded installer image"
 	PAYLOAD_VERSION=""
+	ui_set_payload_version ""
 	PAYLOAD_FILENAME="target.img.gz"
 	PAYLOAD_IMAGE_TYPE="ext4-combined-efi"
 	PAYLOAD_BOOT_MODE="BIOS/UEFI"
@@ -2296,6 +2297,7 @@ run_install() {
 	fi
 	ui_install_stage "Verify payload" "Checking the selected local OpenWrt image integrity." "$INSTALL_LOG"
 	verify_payload
+	ui_set_payload_version "$PAYLOAD_VERSION"
 	if [ -z "$TARGET" ]; then
 		install_target_ready=0
 		while [ "$install_target_ready" = "0" ]; do

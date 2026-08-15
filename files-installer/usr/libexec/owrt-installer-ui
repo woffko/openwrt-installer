@@ -15,6 +15,9 @@ UI_MENU_LAST_ROW=0
 UI_MENU_TOP=1
 UI_INPUT_ACTION="submit"
 MENU_NOTE_KIND=""
+UI_BACKTITLE_BASE="OpenWrt Hellforge Installer"
+UI_BACKTITLE="$UI_BACKTITLE_BASE"
+UI_PAYLOAD_VERSION=""
 
 ui_repeat() {
 	repeat_char="$1"
@@ -27,6 +30,24 @@ ui_repeat() {
 
 ui_text_len() {
 	printf '%s' "$1" | wc -c | tr -d ' '
+}
+
+ui_set_payload_version() {
+	ui_title_version="$1"
+	case "$ui_title_version" in
+		""|*[![:alnum:]._+-]*)
+			UI_PAYLOAD_VERSION=""
+			UI_BACKTITLE="$UI_BACKTITLE_BASE"
+			return 0
+			;;
+	esac
+	if [ "$(ui_text_len "$ui_title_version")" -gt 32 ]; then
+		UI_PAYLOAD_VERSION=""
+		UI_BACKTITLE="$UI_BACKTITLE_BASE"
+		return 0
+	fi
+	UI_PAYLOAD_VERSION="$ui_title_version"
+	UI_BACKTITLE="$UI_BACKTITLE_BASE | OpenWrt $UI_PAYLOAD_VERSION"
 }
 
 ui_trunc() {
@@ -411,8 +432,12 @@ ui_steps_text() {
 
 ui_header() {
 	version="${INSTALLER_VERSION:-unknown}"
+	header_title="OPENWRT HELLFORGE INSTALLER"
+	if [ -n "$UI_PAYLOAD_VERSION" ]; then
+		header_title="$header_title | OpenWrt $UI_PAYLOAD_VERSION"
+	fi
 	ui_rule
-	ui_line "OPENWRT HELLFORGE INSTALLER                                      $version"
+	ui_line "$header_title | $version"
 	ui_rule
 }
 
@@ -615,7 +640,7 @@ Writing the embedded image. Do not power off the machine."
 			fi
 			printf '%s\n' "$ui_progress_percent"
 		done < "$ui_progress_fifo" |
-			ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Install" \
+			ui_dialog_run --backtitle "$UI_BACKTITLE" --title "Install" \
 				--gauge "$ui_progress_body" 12 76 0
 		return $?
 	fi
@@ -896,7 +921,7 @@ select_from_menu() {
 			set --
 		fi
 		set -- "$@" \
-			--backtitle "OpenWrt Hellforge Installer" \
+			--backtitle "$UI_BACKTITLE" \
 			--title "$title" \
 			--menu "${MENU_NOTE:-Select $prompt.}" 0 0 0
 		number=0
@@ -1008,7 +1033,7 @@ prompt_default() {
 }ERROR: $error"
 		[ -n "$body" ] || body="Type a new value or press Enter to keep the default."
 		dialog_status=0
-		SELECTED_INPUT="$(ui_dialog_capture --backtitle "OpenWrt Hellforge Installer" --title "$title" --inputbox "$body" 0 0 "$default")" || dialog_status=$?
+		SELECTED_INPUT="$(ui_dialog_capture --backtitle "$UI_BACKTITLE" --title "$title" --inputbox "$body" 0 0 "$default")" || dialog_status=$?
 		case "$dialog_status" in
 			0) UI_INPUT_ACTION="submit" ;;
 			1|255)
@@ -1086,7 +1111,7 @@ A value is already set; submit an empty value to keep it."
 			box_height="$(ui_passwordbox_height "$body")"
 		fi
 		dialog_status=0
-		SELECTED_INPUT="$(ui_dialog_capture --backtitle "OpenWrt Hellforge Installer" --title "$title" --passwordbox "$body" "$box_height" 0)" || dialog_status=$?
+		SELECTED_INPUT="$(ui_dialog_capture --backtitle "$UI_BACKTITLE" --title "$title" --passwordbox "$body" "$box_height" 0)" || dialog_status=$?
 		case "$dialog_status" in
 			0) UI_INPUT_ACTION="submit" ;;
 			1|255)
@@ -1166,7 +1191,7 @@ ui_notice() {
 	message="$2"
 	ui_ready_marker "$title"
 	if ui_dialog_active; then
-		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "$title" --msgbox "$message" 0 0 ||
+		ui_dialog_run --backtitle "$UI_BACKTITLE" --title "$title" --msgbox "$message" 0 0 ||
 			die "Notice cancelled"
 		return 0
 	fi
@@ -1236,7 +1261,7 @@ HARDWARE TEST / DRY RUN: $TARGET WILL NOT BE WRITTEN."
 
 ALL DATA ON $TARGET WILL BE ERASED."
 		fi
-		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Review installation" --msgbox "$body" 0 0 ||
+		ui_dialog_run --backtitle "$UI_BACKTITLE" --title "Review installation" --msgbox "$body" 0 0 ||
 			die "Review cancelled"
 		return 0
 	fi
@@ -1294,7 +1319,7 @@ ui_confirm_erase_screen() {
 		detail="Type this exact confirmation string in the next prompt:"
 	fi
 	if ui_dialog_active; then
-		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Final erase confirmation" --msgbox "$heading
+		ui_dialog_run --backtitle "$UI_BACKTITLE" --title "Final erase confirmation" --msgbox "$heading
 
 $detail
 
@@ -1333,7 +1358,7 @@ $log_tail"
 		body="$body
 
 Do not power off the machine while this step is running."
-		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Install" --infobox "$body" 14 76 2>/dev/null || true
+		ui_dialog_run --backtitle "$UI_BACKTITLE" --title "Install" --infobox "$body" 14 76 2>/dev/null || true
 		return 0
 	fi
 	if ui_ansi_active; then
@@ -1381,7 +1406,7 @@ $log_tail"
 		body="$body
 
 Return to shell and inspect the log before retrying."
-		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Installation failed" --msgbox "$body" 0 0 2>/dev/null || true
+		ui_dialog_run --backtitle "$UI_BACKTITLE" --title "Installation failed" --msgbox "$body" 0 0 2>/dev/null || true
 		return 0
 	fi
 	if ui_ansi_active; then
@@ -1414,7 +1439,7 @@ ui_success_screen() {
 	message="$1"
 	ui_ready_marker "Installation success"
 	if ui_dialog_active; then
-		ui_dialog_run --backtitle "OpenWrt Hellforge Installer" --title "Installation completed" --msgbox "$message" 0 0 ||
+		ui_dialog_run --backtitle "$UI_BACKTITLE" --title "Installation completed" --msgbox "$message" 0 0 ||
 			true
 		return 0
 	fi

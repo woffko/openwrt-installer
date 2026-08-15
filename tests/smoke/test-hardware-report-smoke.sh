@@ -46,7 +46,7 @@ cat > "$work_dir/install.log" <<'EOF'
 [owrt-installer-mouse] stopped
 INFO: Dry run complete; no changes were made
 EOF
-printf '%s\n' '#!/bin/sh' 'INSTALLER_VERSION="v1.0-alpha.9"' > "$work_dir/owrt-install"
+printf '%s\n' '#!/bin/sh' 'INSTALLER_VERSION="v1.0-alpha.10"' > "$work_dir/owrt-install"
 
 report="$work_dir/report.txt"
 OWRT_HW_REPORT_NONINTERACTIVE=1 \
@@ -68,7 +68,7 @@ OWRT_HW_MOUSE_STATE="$work_dir/missing-state" \
 	"$REPORTER" "$report" >/dev/null
 
 assert_contains "$report" "report_schema=2"
-assert_contains "$report" "installer_version=v1.0-alpha.9"
+assert_contains "$report" "installer_version=v1.0-alpha.10"
 assert_contains "$report" "kernel_mouse_flag=yes"
 assert_contains "$report" "kernel_hardware_test_flag=yes"
 assert_contains "$report" "gpm_daemon_version=1.20.7-r5"
