@@ -7,8 +7,6 @@ INSTALLER="$PROJECT_DIR/files-installer/usr/sbin/owrt-install"
 UI_LIB="$PROJECT_DIR/files-installer/usr/libexec/owrt-installer-ui"
 IMPORT_LIB="$PROJECT_DIR/files-installer/usr/libexec/owrt-installer-config-import"
 STORAGE_LIB="$PROJECT_DIR/files-installer/usr/libexec/owrt-installer-storage"
-PAYLOAD_FILE="$PROJECT_DIR/files-installer/usr/share/owrt-installer/target.img.gz"
-MANIFEST_FILE="$PROJECT_DIR/files-installer/usr/share/owrt-installer/manifest.json"
 TMPDIR="${TMPDIR:-/tmp}"
 
 fail() {
@@ -23,6 +21,36 @@ assert_contains() {
 		sed -n '1,240p' "$file" >&2 || true
 		fail "Expected output to contain: $pattern"
 	}
+}
+
+prepare_gpt_layout_fixture() {
+	fixture_dir="$1/gpt-fixture"
+	mkdir -p "$fixture_dir"
+	raw_file="$fixture_dir/target.img"
+	GPT_PAYLOAD_FILE="$fixture_dir/target.img.gz"
+	GPT_MANIFEST_FILE="$fixture_dir/manifest.json"
+	command -v sfdisk >/dev/null 2>&1 || fail "sfdisk is required for GPT layout smoke"
+
+	truncate -s 285507072 "$raw_file"
+	printf '%s\n' \
+		'label: gpt' \
+		'unit: sectors' \
+		'first-lba: 34' \
+		'' \
+		'start=512, size=32768, type=L' \
+		'start=33280, size=524288, type=L' |
+		sfdisk --wipe always "$raw_file" >/dev/null 2>&1
+	# Minimal ext4 superblock: 65536 x 4096-byte blocks exactly fill
+	# the 524288-sector root partition beginning at sector 33280.
+	printf '\000\000\001\000' | dd of="$raw_file" bs=1 seek=17040388 conv=notrunc status=none
+	printf '\002\000\000\000' | dd of="$raw_file" bs=1 seek=17040408 conv=notrunc status=none
+	printf '\123\357' | dd of="$raw_file" bs=1 seek=17040440 conv=notrunc status=none
+	gzip -c "$raw_file" > "$GPT_PAYLOAD_FILE"
+	cat > "$GPT_MANIFEST_FILE" <<'EOF'
+{
+  "payload_uncompressed_size": "285507072"
+}
+EOF
 }
 
 run_layout_smoke() {
@@ -61,7 +89,7 @@ run_layout_smoke() {
 		if storage_prepare_target_geometry /dev/testdisk; then exit 23; fi
 		printf "4kn_rejected=%s\n" "$STORAGE_ERROR"
 		cleanup
-	' sh "$INSTALLER" "$PAYLOAD_FILE" "$MANIFEST_FILE" "$work_dir" > "$out_file" 2>&1 ||
+	' sh "$INSTALLER" "$GPT_PAYLOAD_FILE" "$GPT_MANIFEST_FILE" "$work_dir" > "$out_file" 2>&1 ||
 		fail "Storage geometry smoke failed"
 
 	assert_contains "$out_file" "gpt=gpt boot=512-33279 root=33280-557567 image_mib=256"
@@ -319,12 +347,10 @@ run_read_only_probe_mount_smoke() {
 	assert_contains "$work_dir/mount.args" "-t ext4 -o ro,noload,nosuid,nodev,noexec /dev/testdisk2"
 }
 
-[ -r "$PAYLOAD_FILE" ] || fail "Embedded target payload is missing"
-[ -r "$MANIFEST_FILE" ] || fail "Embedded target manifest is missing"
-
 work_dir="$(mktemp -d "$TMPDIR/owrt-storage-rescue-smoke.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT INT TERM
 
+prepare_gpt_layout_fixture "$work_dir"
 run_layout_smoke "$work_dir"
 run_mbr_layout_smoke "$work_dir"
 run_probe_rescue_smoke "$work_dir"
