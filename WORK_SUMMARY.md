@@ -6,8 +6,11 @@
 
 - Опубликованный prerelease: `v1.0-alpha.10`,
   `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.10`.
-- Текущий runtime: `v1.0-alpha.11`. Это development state, а не frozen
-  candidate и не опубликованный release.
+- Текущий frozen candidate: `v1.0-alpha.11`; runtime commit `a1009d7`,
+  metadata commit `1bce4e8`. Candidate не опубликован.
+- Hybrid ISO SHA-256:
+  `712f8c20793815b2a9d09d05ac0a3146a4b2985012fea1302875be4c071bd38e`;
+  manifest фиксирует `build_dirty=false` и runtime commit `a1009d7`.
 - Реализованы `fill`, `image`, 4/8/16/32 GiB presets и custom MiB/GiB rootfs;
   fixed layout оставляет хвост диска неразмеченным.
 - MBR/GPT payload inspector считает exact 512-byte sectors и до `ERASE`
@@ -24,9 +27,11 @@
   запускает `sysupgrade` из live ISO.
 - Пройдены full fast smoke, UEFI fill/image/preset/custom install+boot, full
   rescue+boot, zero-write handoff и official OpenWrt `25.12.5` online BIOS/MBR
-  и UEFI/GPT install+boot.
+  и UEFI/GPT install+boot. Дополнительный frozen-ISO matrix проверил AHCI
+  `/dev/sda`, NVMe `/dev/nvme0n1`, неизменность второго диска и нулевую запись
+  после RAM rescue snapshot при выключении на exact `ERASE` prompt.
 - Hardware report обновлен до schema 3. Публикация alpha.11 заблокирована до
-  clean freeze и реального SATA+NVMe+rescue+power-cycle отчета по
+  реального SATA+NVMe+rescue+power-cycle отчета по
   `PHYSICAL_X86_STORAGE_RESCUE_TEST.md`.
 
 ## Актуальное состояние

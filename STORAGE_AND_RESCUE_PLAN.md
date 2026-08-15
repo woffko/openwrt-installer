@@ -558,13 +558,13 @@ ERASE /dev/...
 
 - [x] Обновить README и CLI help.
 - [x] Обновить hardware report schema для storage/rescue result.
-- [ ] Собрать clean hybrid ISO.
+- [x] Собрать clean hybrid ISO.
 - [ ] Пройти physical SATA/NVMe rescue gate.
 - [ ] Опубликовать отдельный prerelease только после checksums и report.
 
 ## Автоматизированное Подтверждение
 
-На development runtime `v1.0-alpha.11` пройдены:
+На frozen candidate `v1.0-alpha.11` пройдены:
 
 - полный `make smoke`, включая ShellCheck, geometry/rescue fixtures, version
   relation, EXIT cleanup, schema 3 hardware report и isolated release gate;
@@ -579,9 +579,13 @@ ERASE /dev/...
 - pre-ERASE payload ext4-superblock invariant для embedded и официальных
   downloaded combined images; любой посторонний payload partition отклоняется,
   при этом поддерживается стандартный малый GPT auxiliary partition 128.
+- отдельный frozen-ISO device matrix: QEMU AHCI `/dev/sda` и NVMe
+  `/dev/nvme0n1`, exact target metadata после reboot, неизменный дополнительный
+  диск и `qemu-img compare` source после RAM rescue snapshot с выключением на
+  exact `ERASE` prompt.
 
-Эти результаты не закрывают physical gate. Clean candidate, реальные SATA и
-NVMe, power-cycle до `ERASE`, schema 3 report и prerelease остаются отдельными
+Эти результаты не закрывают physical gate. Реальные SATA и NVMe, физический
+power-cycle до `ERASE`, schema 3 report и prerelease остаются отдельными
 неотмеченными пунктами Фазы 4.
 
 ### Отложенная Фаза: Export И Assisted Upgrade
