@@ -629,7 +629,7 @@ run_config_import_smoke() {
 	{
 		printf '\r'
 		sleep 1
-		printf 'cat /etc/config/system; cat /etc/config/network; cat /etc/openwrt-installer-release; if [ ! -e /etc/owrt-installer/interface-map ] && [ ! -e /etc/uci-defaults/98-installer-network ]; then echo OWRT_CONFIG_IMPORT_STALE_STATE_""ABSENT=1; fi\r'
+		printf 'stat -c "OWRT_CONFIG_IMPORT_MODE=%%a %%n" / /etc; cat /etc/config/system; cat /etc/config/network; cat /etc/openwrt-installer-release; if [ ! -e /etc/owrt-installer/interface-map ] && [ ! -e /etc/uci-defaults/98-installer-network ]; then echo OWRT_CONFIG_IMPORT_STALE_STATE_""ABSENT=1; fi\r'
 	} | nc -N -U "$boot_serial_socket" >/dev/null 2>&1 ||
 		die "Could not query config-import installed system console"
 	wait_for_log_marker "$boot_serial_log" "OWRT_CONFIG_IMPORT_STALE_STATE_ABSENT=1" "$boot_pid" "$QEMU_INSTALL_WAIT"
@@ -637,6 +637,8 @@ run_config_import_smoke() {
 	wait "$boot_pid" || true
 
 	assert_log_contains "$boot_serial_log" "option hostname 'imported-qemu'"
+	assert_log_contains "$boot_serial_log" "OWRT_CONFIG_IMPORT_MODE=755 /"
+	assert_log_contains "$boot_serial_log" "OWRT_CONFIG_IMPORT_MODE=755 /etc"
 	assert_log_contains "$boot_serial_log" "option name 'br-imported'"
 	assert_log_contains "$boot_serial_log" "option ipaddr '10.123.45.1'"
 	assert_log_contains "$boot_serial_log" "install_mode=import"

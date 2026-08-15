@@ -35,6 +35,26 @@ assert_not_contains() {
 	fi
 }
 
+run_netinstall_umask_smoke() {
+	case_dir="$1"
+	case_output="$case_dir/netinstall-umask.out"
+
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 UI_LIB="$UI_LIB" TMPDIR="$case_dir" \
+		sh -eu -c '
+			. "$1"
+			initial_umask="$(umask)"
+			init_netinstall_workdir
+			test "$(umask)" = "$initial_umask"
+			test "$(stat -c %a "$NETINSTALL_WORKDIR")" = 700
+			printf "umask=%s workdir_mode=%s\n" \
+				"$(umask)" "$(stat -c %a "$NETINSTALL_WORKDIR")"
+			cleanup
+		' sh "$INSTALLER" > "$case_output" 2>&1 ||
+		fail "netinstall workdir umask smoke failed"
+
+	assert_contains "$case_output" "workdir_mode=700"
+}
+
 run_netinstall_pppoe_smoke() {
 	case_dir="$1"
 	case_output="$case_dir/netinstall-pppoe.out"
@@ -367,6 +387,7 @@ mkdir -p "$fake_bin"
 write_fake_curl "$fake_bin/curl"
 write_fake_usign "$fake_bin/usign"
 write_fake_fdisk "$fake_bin/fdisk"
+run_netinstall_umask_smoke "$work_dir"
 run_netinstall_pppoe_smoke "$work_dir"
 run_auto_dhcp_smoke "$work_dir"
 run_latest_check_smoke "$work_dir"

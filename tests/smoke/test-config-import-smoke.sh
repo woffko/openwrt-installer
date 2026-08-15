@@ -63,7 +63,9 @@ run_valid_policy_smoke() {
 		initial_umask="$(umask)"
 		config_import_prepare_file "$2/backup.tar.gz"
 		test "$(umask)" = "$initial_umask"
+		umask 077
 		config_import_prepare_policy config-only
+		test "$(stat -c %a "$CONFIG_IMPORT_APPLY_DIR/etc")" = 755
 		printf "policy=%s members=%s network=%s hash=%s\n" \
 			"$CONFIG_IMPORT_POLICY" "$CONFIG_IMPORT_MEMBER_COUNT" \
 			"$CONFIG_IMPORT_HAS_NETWORK" "$CONFIG_IMPORT_SHA256"
@@ -71,6 +73,7 @@ run_valid_policy_smoke() {
 		test -f "$CONFIG_IMPORT_APPLY_DIR/etc/config/system"
 		test ! -e "$CONFIG_IMPORT_APPLY_DIR/etc/shadow"
 		config_import_prepare_policy full
+		test "$(stat -c %a "$CONFIG_IMPORT_APPLY_DIR/etc")" = 755
 		test -f "$CONFIG_IMPORT_APPLY_DIR/etc/shadow"
 		test ! -e "$CONFIG_IMPORT_APPLY_DIR/etc/owrt-installer/interface-map"
 		test ! -e "$CONFIG_IMPORT_APPLY_DIR/etc/uci-defaults/98-installer-network"
@@ -188,6 +191,7 @@ run_installed_apply_smoke() {
 	apply_work_dir="$1/installed-apply"
 	mkdir -p "$apply_work_dir/source" "$apply_work_dir/target/etc/uci-defaults" \
 		"$apply_work_dir/outside/config" "$apply_work_dir/bin"
+	chmod 0711 "$apply_work_dir/target"
 	write_valid_tree "$apply_work_dir/source"
 	make_archive "$apply_work_dir/source" "$apply_work_dir/backup.tar.gz"
 	printf '%s\n' 'outside-must-not-change' > "$apply_work_dir/outside/config/sentinel"
@@ -224,6 +228,10 @@ run_installed_apply_smoke() {
 	' sh "$INSTALLER" "$apply_work_dir" > "$apply_out_file" 2>&1 || fail "Installed config import apply smoke failed"
 
 	assert_contains "$apply_work_dir/target/etc/config/network" "br-imported"
+	[ "$(stat -c %a "$apply_work_dir/target")" = 711 ] ||
+		fail "Config import changed the installed root directory mode"
+	[ "$(stat -c %a "$apply_work_dir/target/etc")" = 755 ] ||
+		fail "Config import left the installed etc directory inaccessible"
 	[ ! -L "$apply_work_dir/target/etc/config" ] || fail "Imported config directory remained a target symlink"
 	assert_contains "$apply_work_dir/outside/config/sentinel" "outside-must-not-change"
 	assert_not_exists "$apply_work_dir/outside/config/network"

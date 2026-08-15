@@ -474,8 +474,7 @@ init_netinstall_workdir() {
 		NETINSTALL_ERROR="mktemp is required for the RAM download workspace"
 		return 1
 	}
-	umask 077
-	NETINSTALL_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/owrt-netinstall.XXXXXX")" || {
+	NETINSTALL_WORKDIR="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/owrt-netinstall.XXXXXX")" || {
 		NETINSTALL_ERROR="Could not create the RAM download workspace"
 		return 1
 	}

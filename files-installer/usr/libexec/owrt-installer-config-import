@@ -494,6 +494,10 @@ config_import_prepare_policy() {
 			return 1
 			;;
 	esac
+	chmod 0755 "$CONFIG_IMPORT_APPLY_DIR/etc" || {
+		CONFIG_IMPORT_ERROR="Could not normalize the filtered etc directory."
+		return 1
+	}
 	CONFIG_IMPORT_POLICY="$config_import_requested_policy"
 	rm -rf "$CONFIG_IMPORT_APPLY_DIR/etc/owrt-installer"
 	rm -rf "$CONFIG_IMPORT_APPLY_DIR/etc/openwrt-installer-release"
@@ -670,7 +674,7 @@ config_import_apply_to_target() {
 	[ "$INSTALL_MODE" = "import" ] || return 0
 	[ -d "$CONFIG_IMPORT_APPLY_DIR/etc" ] || die "Validated import staging tree is missing"
 	config_import_prepare_target_tree "$config_import_target_root"
-	cp -a "$CONFIG_IMPORT_APPLY_DIR/." "$config_import_target_root/" >> "$INSTALL_LOG" 2>&1 ||
+	cp -a "$CONFIG_IMPORT_APPLY_DIR/etc/." "$config_import_target_root/etc/" >> "$INSTALL_LOG" 2>&1 ||
 		die "Could not apply the staged OpenWrt backup"
 	# Installer-owned state from a previous machine must never survive a restore.
 	rm -rf "$config_import_target_root/etc/owrt-installer"
