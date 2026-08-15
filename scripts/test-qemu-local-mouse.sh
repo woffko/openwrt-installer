@@ -280,6 +280,8 @@ run_usb_click_and_crash() {
 	click_target_ok
 	wait_for_marker "OWRT_INSTALLER_UI_READY=install-type"
 	hmp_keys ret
+	wait_for_marker "OWRT_INSTALLER_UI_READY=storage-layout"
+	hmp_keys ret
 	wait_for_marker "OWRT_INSTALLER_UI_READY=lan-interface"
 	serial_command "killall -9 gpm; echo OWRT_MOUSE_DAEMON_CRASHED"
 	wait_for_marker "OWRT_MOUSE_DAEMON_CRASHED"
@@ -318,6 +320,8 @@ run_exact_confirmation_cleanup() {
 	before_hash="$(sha256sum "$VM_DISK" | awk '{ print $1 }')"
 	hmp_keys ret
 	wait_for_marker "OWRT_INSTALLER_UI_READY=install-type"
+	hmp_keys ret
+	wait_for_marker "OWRT_INSTALLER_UI_READY=storage-layout"
 	hmp_keys ret
 	wait_for_marker "OWRT_INSTALLER_UI_READY=lan-interface"
 	hmp_keys ret

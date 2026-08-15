@@ -2,7 +2,8 @@
 
 Дата: 2026-08-15.
 
-Статус: согласованный план, реализация еще не начата.
+Статус: реализация и автоматизированная приемка завершены; physical SATA/NVMe
+gate и публикация prerelease еще не выполнены.
 
 Базовая версия проекта: опубликованный prerelease `v1.0-alpha.10`.
 
@@ -28,14 +29,14 @@ RAID, изменение ядра, собственный MD/initramfs и мод
 `sysupgrade` или `owut`. Автоматический one-shot upgrade из ISO не входит в
 MVP.
 
-## Подтвержденное Текущее Поведение
+## Исходное Поведение До Реализации
 
-- Target является официальным x86/64 `ext4-combined-efi` образом.
+- Embedded target являлся официальным x86/64 `ext4-combined-efi` образом.
 - В текущем payload раздел 1 занимает 16 MiB, раздел 2 содержит ext4 rootfs
   размером 256 MiB.
-- После записи `owrt-install` всегда выполняет
+- До этой итерации после записи `owrt-install` всегда выполнял
   `parted -s -f "$target" resizepart 2 100%`, затем `e2fsck` и `resize2fs`.
-- Поэтому текущая установка занимает разделом 2 весь оставшийся диск.
+- Поэтому прежняя установка занимала разделом 2 весь оставшийся диск.
 - GRUB ISO уже обнаруживает раздел с label `kernel` и делает пункт загрузки
   установленной OpenWrt вариантом по умолчанию.
 - Import OpenWrt backup уже умеет безопасно копировать archive в private RAM,
@@ -305,7 +306,8 @@ Squashfs/overlay installation может быть распознана для in
 
 - копирует regular files и directories из `/etc`;
 - может вернуть root password, SSH keys, custom scripts и package settings;
-- исключает symlinks, hardlinks, sockets, devices и FIFOs;
+- исключает symlinks, sockets, devices и FIFOs; regular hardlinks копируются
+  как независимые regular files без сохранения link relationship;
 - исключает stale installer-owned state:
   `/etc/owrt-installer`, `/etc/openwrt-installer-release` и
   `/etc/uci-defaults/98-installer-network`;
@@ -325,16 +327,17 @@ review, но не добавляет пакеты в новый image без о�
 - доступная RAM;
 - reserve для live installer, downloaded payload и extraction staging.
 
-Первые defaults используют существующие ограничения importer: 64 MiB
-compressed, 128 MiB unpacked, 32 MiB single member, 8192 members и отдельный
-RAM reserve. Для rescue можно установить более строгие defaults после
-измерения реальных OpenWrt backups.
+Defaults используют существующие ограничения importer: 64 MiB compressed,
+128 MiB unpacked, 32 MiB single member, 8192 members и отдельный RAM reserve.
+До чтения source tree rescue требует консервативный peak budget 576 MiB
+свободной RAM: source stage/archive, повторная import copy/extraction,
+filtered apply tree и reserve должны одновременно помещаться до ERASE.
 
 Collector создает private directory с `umask 077`, переносит только проверенные
 regular files, формирует `etc/...` archive, считает SHA-256 и пропускает archive
-через существующий `config_import_validate_ram_archive()`. Только после
-успешной повторной validation source partition unmount-ится и snapshot получает
-state `ready`.
+через существующий `config_import_validate_ram_archive()`. Source partition
+unmount-ится сразу после bounded copy и до создания/проверки archive; snapshot
+получает state `ready` только после успешной повторной validation.
 
 Перед ERASE review явно сообщает:
 
@@ -405,7 +408,7 @@ QEMU proof. Минимальные gates для такого будущего э
 - image type совпадает с MBR/GPT layout;
 - target version не является downgrade;
 - достаточно persistent space и RAM;
-- нет дополнительных partitions;
+- нет дополнительных target partitions, которые sysupgrade может уничтожить;
 - failure не создает reboot loop;
 - стандартный `sysupgrade`, а не код installer, выполняет flash.
 
@@ -464,7 +467,8 @@ ERASE /dev/...
 - `ro,noload,nosuid,nodev,noexec` mount arguments;
 - config-only snapshot;
 - full snapshot;
-- symlink, FIFO, device, hardlink and newline path rejection/skipping;
+- symlink, FIFO, device and newline path rejection/skipping, plus safe regular
+  copies of hardlinked files;
 - member count, single-file, total-size and low-RAM gates;
 - stale installer metadata removal;
 - source unmounted before `write_payload`;
@@ -519,44 +523,66 @@ ERASE /dev/...
 
 ### Фаза 0: Общий Geometry Layer
 
-- [ ] Вынести shared payload layout inspector.
-- [ ] Добавить exact disk byte/sector helpers.
-- [ ] Добавить storage state и CLI parser.
-- [ ] Покрыть MBR/GPT geometry smoke tests.
+- [x] Вынести shared payload layout inspector.
+- [x] Добавить exact disk byte/sector helpers.
+- [x] Добавить storage state и CLI parser.
+- [x] Покрыть MBR/GPT geometry smoke tests.
 
 ### Фаза 1: Partition Size Wizard
 
-- [ ] Добавить storage menu после installation action.
-- [ ] Добавить presets, custom input и preview.
-- [ ] Заменить unconditional `100%` на calculated end sector.
-- [ ] Добавить post-resize partition/filesystem verification.
-- [ ] Расширить review, logs и installed metadata.
-- [ ] Пройти full smoke и QEMU BIOS/UEFI matrix.
+- [x] Добавить storage menu после installation action.
+- [x] Добавить presets, custom input и preview.
+- [x] Заменить unconditional `100%` на calculated end sector.
+- [x] Добавить post-resize partition/filesystem verification.
+- [x] Расширить review, logs и installed metadata.
+- [x] Пройти full smoke и QEMU BIOS/UEFI matrix.
 
 ### Фаза 2: Existing OpenWrt Detection
 
-- [ ] Добавить selected-disk partition probe.
-- [ ] Реализовать safe parser `/etc/openwrt_release`.
-- [ ] Добавить strict read-only ext4 mount helper.
-- [ ] Добавить existing-system action screen.
-- [ ] Добавить boot-existing handoff без target writes.
+- [x] Добавить selected-disk partition probe.
+- [x] Реализовать safe parser `/etc/openwrt_release`.
+- [x] Добавить strict read-only ext4 mount helper.
+- [x] Добавить existing-system action screen.
+- [x] Добавить boot-existing handoff без target writes.
 
 ### Фаза 3: RAM Rescue
 
-- [ ] Добавить bounded regular-file collector.
-- [ ] Переиспользовать import validator и apply path.
-- [ ] Добавить rescue scope и network policy.
-- [ ] Добавить source/target version gate.
-- [ ] Добавить RAM-only warning и metadata.
-- [ ] Пройти rescue smoke и QEMU install-rescue-boot matrix.
+- [x] Добавить bounded regular-file collector.
+- [x] Переиспользовать import validator и apply path.
+- [x] Добавить rescue scope и network policy.
+- [x] Добавить source/target version gate.
+- [x] Добавить RAM-only warning и metadata.
+- [x] Пройти rescue smoke и QEMU install-rescue-boot matrix.
 
 ### Фаза 4: Release Gate
 
-- [ ] Обновить README и CLI help.
-- [ ] Обновить hardware report schema для storage/rescue result.
+- [x] Обновить README и CLI help.
+- [x] Обновить hardware report schema для storage/rescue result.
 - [ ] Собрать clean hybrid ISO.
 - [ ] Пройти physical SATA/NVMe rescue gate.
 - [ ] Опубликовать отдельный prerelease только после checksums и report.
+
+## Автоматизированное Подтверждение
+
+На development runtime `v1.0-alpha.11` пройдены:
+
+- полный `make smoke`, включая ShellCheck, geometry/rescue fixtures, version
+  relation, EXIT cleanup, schema 3 hardware report и isolated release gate;
+- UEFI `fill`, `image`, preset `4 GiB` и custom `5120 MiB` install/reboot с
+  проверкой exact sectors, ext4, PARTUUID, unallocated tail и backup GPT в
+  конце target disk;
+- full `/etc` rescue существующей OpenWrt с удалением stale installer state,
+  сохранением UCI и directory modes, package inventory и installed reboot;
+- zero-write standard-upgrade handoff через byte comparison qcow2;
+- official OpenWrt `25.12.5` online BIOS/MBR bounded и UEFI/GPT fill
+  download/install/reboot;
+- pre-ERASE payload ext4-superblock invariant для embedded и официальных
+  downloaded combined images; любой посторонний payload partition отклоняется,
+  при этом поддерживается стандартный малый GPT auxiliary partition 128.
+
+Эти результаты не закрывают physical gate. Clean candidate, реальные SATA и
+NVMe, power-cycle до `ERASE`, schema 3 report и prerelease остаются отдельными
+неотмеченными пунктами Фазы 4.
 
 ### Отложенная Фаза: Export И Assisted Upgrade
 

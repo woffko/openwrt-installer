@@ -28,7 +28,7 @@ require_value() {
 [ "$#" -eq 1 ] || die "Usage: $0 HARDWARE_REPORT"
 [ -r "$REPORT" ] || die "Hardware report is not readable: $REPORT"
 
-require_value report_schema 2
+require_value report_schema 3
 require_value installer_version "$EXPECTED_VERSION"
 require_value kernel_mouse_flag yes
 require_value kernel_hardware_test_flag yes
@@ -41,6 +41,11 @@ require_value manual_pointer_move pass
 require_value manual_click pass
 require_value manual_keyboard pass
 require_value manual_exact_prompt_mouse_stop pass
+require_value manual_storage_rescue_navigation pass
+require_value manual_sata_root_size_and_boot pass
+require_value manual_nvme_root_size_and_boot pass
+require_value manual_rescue_restore pass
+require_value manual_pre_erase_power_cycle_no_change pass
 require_value physical_flow_result pass
 
 wheel="$(report_value manual_wheel)"
@@ -57,4 +62,4 @@ case "$pointer_count" in
 esac
 [ "$pointer_count" -ge 1 ] || die "At least one relative pointer is required"
 
-printf '[owrt-installer] Physical wired USB HID alpha gate passed: %s\n' "$REPORT"
+printf '[owrt-installer] Physical wired USB, SATA/NVMe sizing, and rescue alpha gate passed: %s\n' "$REPORT"

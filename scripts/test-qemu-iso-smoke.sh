@@ -111,6 +111,64 @@ ensure_qcow2() {
 	fi
 }
 
+create_qcow2() {
+	disk="$1"
+	size="$2"
+	rm -f "$disk"
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		env $QEMU_ENV_PREFIX "$QEMU_IMG" create -f qcow2 "$disk" "$size" >/dev/null
+	else
+		"$QEMU_IMG" create -f qcow2 "$disk" "$size" >/dev/null
+	fi
+}
+
+resize_qcow2() {
+	disk="$1"
+	size="$2"
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		env $QEMU_ENV_PREFIX "$QEMU_IMG" resize "$disk" "$size" >/dev/null
+	else
+		"$QEMU_IMG" resize "$disk" "$size" >/dev/null
+	fi
+}
+
+start_qemu_background() {
+	qemu_timeout="$1"
+	qemu_log="$2"
+	shift 2
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$qemu_timeout" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" -L "$QEMU_L_ARG" "$@" \
+			> "$qemu_log" 2>&1 &
+	else
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		timeout "$qemu_timeout" env $QEMU_ENV_PREFIX "$QEMU_SYSTEM" "$@" \
+			> "$qemu_log" 2>&1 &
+	fi
+	QEMU_STARTED_PID=$!
+}
+
+find_ovmf() {
+	QEMU_OVMF_CODE="${OVMF_CODE:-$(find_first_file \
+		"$LOCAL_QEMU_ROOT/usr/share/OVMF/OVMF_CODE_4M.fd" \
+		"$LOCAL_QEMU_ROOT/usr/share/OVMF/OVMF_CODE.fd" \
+		/usr/share/OVMF/OVMF_CODE_4M.fd \
+		/usr/share/OVMF/OVMF_CODE.fd \
+		/usr/share/edk2/x64/OVMF_CODE.fd \
+		/usr/share/qemu/OVMF_CODE.fd || true)}"
+	QEMU_OVMF_VARS="${OVMF_VARS:-$(find_first_file \
+		"$LOCAL_QEMU_ROOT/usr/share/OVMF/OVMF_VARS_4M.fd" \
+		"$LOCAL_QEMU_ROOT/usr/share/OVMF/OVMF_VARS.fd" \
+		/usr/share/OVMF/OVMF_VARS_4M.fd \
+		/usr/share/OVMF/OVMF_VARS.fd \
+		/usr/share/edk2/x64/OVMF_VARS.fd \
+		/usr/share/qemu/OVMF_VARS.fd || true)}"
+	[ -f "$QEMU_OVMF_CODE" ] || die "OVMF_CODE.fd not found"
+	[ -f "$QEMU_OVMF_VARS" ] || die "OVMF_VARS.fd not found"
+}
+
 assert_log_contains() {
 	log_file="$1"
 	pattern="$2"
@@ -404,6 +462,8 @@ run_install_smoke() {
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=install-type" "$install_pid" "$QEMU_INSTALL_WAIT"
 	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-layout" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-interface" "$install_pid" "$QEMU_INSTALL_WAIT"
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan-interface-auto" "$install_pid" "$QEMU_INSTALL_WAIT"
@@ -436,7 +496,9 @@ run_install_smoke() {
 
 	assert_nonblank_ppm "$progress_screenshot"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_STORAGE_LAYOUT=fill"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS=100"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_ROOTFS_VERIFIED_MIB="
 	assert_log_not_contains "$serial_log" "Installation failed"
 
 	log "Booting the disk written by the installer"
@@ -461,14 +523,416 @@ run_install_smoke() {
 	fi
 	boot_pid=$!
 	wait_for_log_marker "$boot_serial_log" "Please press Enter to activate this console." "$boot_pid" "$QEMU_INSTALL_WAIT"
-	{ printf '\r'; sleep 1; printf 'cat /etc/openwrt-installer-release\r'; } |
+	sleep 15
+	# shellcheck disable=SC2016 # The awk expression is evaluated by the guest shell.
+	{ printf '\r'; sleep 1; printf 'cat /etc/openwrt-installer-release; sectors=$(cat /sys/class/block/vda2/size); rootfs=$(awk '\''$2 == "/" { print $3; exit }'\'' /proc/mounts); if [ "$sectors" -gt 0 ] && [ "$rootfs" = ext4 ]; then echo OWRT_INSTALLED_ROOT_""OK=1; fi\r'; } |
 		nc -N -U "$boot_serial_socket" >/dev/null 2>&1 || die "Could not query installed system console"
-	wait_for_log_marker "$boot_serial_log" "installer_version=$INSTALLER_VERSION" "$boot_pid" "$QEMU_INSTALL_WAIT"
+	wait_for_log_marker "$boot_serial_log" "OWRT_INSTALLED_ROOT_OK=1" "$boot_pid" "$QEMU_INSTALL_WAIT"
 	hmp_command "$boot_monitor_socket" quit
 	wait "$boot_pid" || true
 	assert_log_contains "$boot_serial_log" "installed_by=openwrt-x86-installer"
 	assert_log_contains "$boot_serial_log" "target_disk=/dev/vda"
+	assert_log_contains "$boot_serial_log" "storage_layout=fill"
+	assert_log_contains "$boot_serial_log" "installer_version=$INSTALLER_VERSION"
 	log "Automated install and installed-system boot smoke passed"
+}
+
+drive_clean_install_flow() {
+	serial_log="$1"
+	monitor_socket="$2"
+	install_pid="$3"
+	storage_choice="$4"
+	wait_limit="$5"
+
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=install-type" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-layout" "$install_pid" "$wait_limit"
+	case "$storage_choice" in
+		fill) hmp_send_keys "$monitor_socket" ret ;;
+		bounded) hmp_send_keys "$monitor_socket" down ret ;;
+		image) hmp_send_keys "$monitor_socket" down ret ;;
+		custom)
+			hmp_send_keys "$monitor_socket" down down down ret
+			wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-custom" "$install_pid" "$wait_limit"
+			hmp_send_keys "$monitor_socket" ctrl-u 5 1 2 0 spc shift-m i shift-b ret
+			;;
+		*) die "Unsupported automated storage choice: $storage_choice" ;;
+	esac
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-interface" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan-interface-auto" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-ip" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan-mode" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan6-mode" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-summary" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-action" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=final-erase-info" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=exact-erase" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" shift-e shift-r shift-a shift-s shift-e spc slash d e v slash v d a ret
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS=100" "$install_pid" "$wait_limit"
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_ROOTFS_VERIFIED_MIB=" "$install_pid" "$wait_limit"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=installation-success" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=post-install-menu" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" down down ret
+	sleep 2
+	hmp_command "$monitor_socket" quit
+	wait "$install_pid" || true
+}
+
+verify_installed_geometry() {
+	layout_name="$1"
+	target_disk="$2"
+	vars_copy="$3"
+	expected_root_sectors="$4"
+	require_unallocated="$5"
+	log_prefix="$6"
+	serial_log="$SMOKE_DIR/$log_prefix-installed-boot.log"
+	qemu_log="$SMOKE_DIR/$log_prefix-installed-boot-qemu.log"
+	serial_socket="$SMOKE_DIR/$log_prefix-installed-serial.sock"
+	monitor_socket="$SMOKE_DIR/$log_prefix-installed-monitor.sock"
+	rm -f "$serial_log" "$qemu_log" "$serial_socket" "$monitor_socket"
+
+	set -- \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none \
+		-chardev "socket,id=serial0,path=$serial_socket,server=on,wait=off,logfile=$serial_log" \
+		-serial chardev:serial0 -monitor "unix:$monitor_socket,server=on,wait=off" \
+		-drive "if=pflash,format=raw,readonly=on,file=$QEMU_OVMF_CODE" \
+		-drive "if=pflash,format=raw,file=$vars_copy" \
+		-drive "file=$target_disk,format=qcow2,if=virtio" -boot c \
+		-nic user,model=e1000 -nic user,model=e1000
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$qemu_log" "$@"
+	boot_pid="$QEMU_STARTED_PID"
+	wait_for_log_marker "$serial_log" "Please press Enter to activate this console." "$boot_pid" "$QEMU_INSTALL_WAIT"
+	{
+		printf '\r'
+		sleep 1
+		# shellcheck disable=SC2016 # Commands below are evaluated by the guest shell.
+		printf '%s\r' 'start=$(cat /sys/class/block/vda2/start); sectors=$(cat /sys/class/block/vda2/size); end=$((start + sectors - 1)); disk=$(cat /sys/class/block/vda/size)'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'filesystem_kib=$(df -k / | awk '\''NR == 2 { print $2; exit }'\''); free=$((disk - end - 1))'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'meta_start=$(sed -n '\''s/^rootfs_start_sector=//p'\'' /etc/openwrt-installer-release); meta_end=$(sed -n '\''s/^rootfs_end_sector=//p'\'' /etc/openwrt-installer-release)'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'meta_layout=$(sed -n '\''s/^storage_layout=//p'\'' /etc/openwrt-installer-release); uuid=$(blkid -s PARTUUID -o value /dev/vda2)'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'partuuid_ok=0; grep -q "root=PARTUUID=$uuid" /proc/cmdline && partuuid_ok=1; mount_ok=0; grep " / ext4 " /proc/mounts >/dev/null && mount_ok=1'
+		sleep 1
+		printf 'expected_layout=%s; expected_sectors=%s; need_free=%s\r' \
+			"$layout_name" "${expected_root_sectors:-0}" "$require_unallocated"
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'size_ok=0; [ "$expected_sectors" = 0 ] || [ "$sectors" = "$expected_sectors" ]; [ $? -eq 0 ] && size_ok=1; free_ok=0; [ "$need_free" = 0 ] || [ "$free" -gt 1048576 ]; [ $? -eq 0 ] && free_ok=1'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'printf "OWRT_GEOMETRY layout=%s start=%s sectors=%s end=%s disk=%s free=%s filesystem_kib=%s partuuid=%s mount=%s\n" "$meta_layout" "$start" "$sectors" "$end" "$disk" "$free" "$filesystem_kib" "$partuuid_ok" "$mount_ok"'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'if [ "$meta_layout" = "$expected_layout" ] && [ "$meta_start" = "$start" ] && [ "$meta_end" = "$end" ] && [ "$filesystem_kib" -gt 0 ] && [ "$partuuid_ok" = 1 ] && [ "$mount_ok" = 1 ] && [ "$size_ok" = 1 ] && [ "$free_ok" = 1 ]; then echo OWRT_GEOMETRY_""OK=1; fi'
+	} | nc -N -U "$serial_socket" >/dev/null 2>&1 ||
+		die "Could not query $layout_name installed geometry"
+	wait_for_log_marker "$serial_log" "OWRT_GEOMETRY_OK=1" "$boot_pid" "$QEMU_INSTALL_WAIT"
+	hmp_command "$monitor_socket" quit
+	wait "$boot_pid" || true
+	assert_log_contains "$serial_log" "OWRT_GEOMETRY layout=$layout_name"
+	assert_log_contains "$serial_log" "partuuid=1 mount=1"
+}
+
+verify_host_gpt_tail() {
+	target_disk="$1"
+	log_prefix="$2"
+	raw_disk="$SMOKE_DIR/$log_prefix-gpt.raw"
+	fdisk_report="$SMOKE_DIR/$log_prefix-gpt-fdisk.log"
+	sfdisk_report="$SMOKE_DIR/$log_prefix-gpt-sfdisk.log"
+	rm -f "$raw_disk" "$fdisk_report" "$sfdisk_report"
+
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		env $QEMU_ENV_PREFIX "$QEMU_IMG" convert -f qcow2 -O raw -S 4k "$target_disk" "$raw_disk" ||
+			die "Could not convert installed disk for GPT validation"
+	else
+		"$QEMU_IMG" convert -f qcow2 -O raw -S 4k "$target_disk" "$raw_disk" ||
+			die "Could not convert installed disk for GPT validation"
+	fi
+	if ! LC_ALL=C fdisk -l "$raw_disk" > "$fdisk_report" 2>&1; then
+		rm -f "$raw_disk"
+		die "fdisk rejected the installed GPT; see $fdisk_report"
+	fi
+	if grep -E 'GPT PMBR size mismatch|backup GPT.*(corrupt|not on the end)' \
+		"$fdisk_report" >/dev/null 2>&1; then
+		rm -f "$raw_disk"
+		die "The installed backup GPT is not at the end of the disk; see $fdisk_report"
+	fi
+	grep -F 'Disklabel type: gpt' "$fdisk_report" >/dev/null 2>&1 || {
+		rm -f "$raw_disk"
+		die "Installed disk is not reported as GPT; see $fdisk_report"
+	}
+	if ! LC_ALL=C sfdisk --verify "$raw_disk" > "$sfdisk_report" 2>&1; then
+		rm -f "$raw_disk"
+		die "sfdisk rejected the installed GPT; see $sfdisk_report"
+	fi
+	rm -f "$raw_disk"
+	log "Installed primary and backup GPT validation passed"
+}
+
+run_storage_layout_smoke() {
+	layout_name="$1"
+	expected_layout="$layout_name"
+	case "$layout_name" in
+		bounded)
+			disk_size=6G
+			expected_root_sectors=8388608
+			require_unallocated=1
+			;;
+		image)
+			disk_size=2G
+			expected_root_sectors=""
+			require_unallocated=1
+			;;
+		custom)
+			disk_size=7G
+			expected_root_sectors=10485760
+			require_unallocated=1
+			expected_layout=bounded
+			;;
+		*) die "Unsupported storage-layout QEMU mode: $layout_name" ;;
+	esac
+	serial_log="$SMOKE_DIR/storage-$layout_name-iso.log"
+	qemu_log="$SMOKE_DIR/storage-$layout_name-qemu.log"
+	monitor_socket="$SMOKE_DIR/storage-$layout_name-monitor.sock"
+	target_disk="$SMOKE_DIR/target-storage-$layout_name.qcow2"
+	vars_copy="$SMOKE_DIR/OVMF_VARS_4M-storage-$layout_name.fd"
+	rm -f "$serial_log" "$qemu_log" "$monitor_socket" "$vars_copy"
+	create_qcow2 "$target_disk" "$disk_size"
+	find_ovmf
+	cp "$QEMU_OVMF_VARS" "$vars_copy"
+
+	log "Starting UEFI $layout_name partition-layout installation smoke test"
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$qemu_log" \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none -vga std -serial "file:$serial_log" \
+		-monitor "unix:$monitor_socket,server=on,wait=off" \
+		-drive "if=pflash,format=raw,readonly=on,file=$QEMU_OVMF_CODE" \
+		-drive "if=pflash,format=raw,file=$vars_copy" \
+		-cdrom "$ISO_IMAGE" -boot d \
+		-drive "file=$target_disk,format=qcow2,if=virtio" \
+		-nic user,model=e1000 -nic user,model=e1000
+	install_pid="$QEMU_STARTED_PID"
+	drive_clean_install_flow "$serial_log" "$monitor_socket" "$install_pid" "$layout_name" "$QEMU_INSTALL_WAIT"
+
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_STORAGE_LAYOUT=$expected_layout"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_ROOTFS_VERIFIED_MIB="
+	assert_log_not_contains "$serial_log" "Installation failed"
+	verify_host_gpt_tail "$target_disk" "storage-$layout_name"
+	verify_installed_geometry "$expected_layout" "$target_disk" "$vars_copy" \
+		"$expected_root_sectors" "$require_unallocated" "storage-$layout_name"
+	log "UEFI $layout_name partition-layout install and reboot smoke passed"
+}
+
+verify_rescued_system() {
+	target_disk="$1"
+	vars_copy="$2"
+	expected_scope="$3"
+	serial_log="$SMOKE_DIR/rescue-$expected_scope-installed-boot.log"
+	qemu_log="$SMOKE_DIR/rescue-$expected_scope-installed-boot-qemu.log"
+	serial_socket="$SMOKE_DIR/rescue-$expected_scope-installed-serial.sock"
+	monitor_socket="$SMOKE_DIR/rescue-$expected_scope-installed-monitor.sock"
+	rm -f "$serial_log" "$qemu_log" "$serial_socket" "$monitor_socket"
+
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$qemu_log" \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none \
+		-chardev "socket,id=serial0,path=$serial_socket,server=on,wait=off,logfile=$serial_log" \
+		-serial chardev:serial0 -monitor "unix:$monitor_socket,server=on,wait=off" \
+		-drive "if=pflash,format=raw,readonly=on,file=$QEMU_OVMF_CODE" \
+		-drive "if=pflash,format=raw,file=$vars_copy" \
+		-drive "file=$target_disk,format=qcow2,if=virtio" -boot c \
+		-nic user,model=e1000 -nic user,model=e1000
+	boot_pid="$QEMU_STARTED_PID"
+	wait_for_log_marker "$serial_log" "Please press Enter to activate this console." "$boot_pid" "$QEMU_INSTALL_WAIT"
+	{
+		printf '\r'
+		sleep 1
+		# shellcheck disable=SC2016 # Commands below are evaluated by the guest shell.
+		printf '%s\r' 'hostname=$(uci -q get system.@system[0].hostname); lan=$(uci -q get network.lan.ipaddr)'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'mode=$(sed -n '\''s/^install_mode=//p'\'' /etc/openwrt-installer-release); scope=$(sed -n '\''s/^rescue_scope=//p'\'' /etc/openwrt-installer-release)'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'network=$(sed -n '\''s/^network_source=//p'\'' /etc/openwrt-installer-release); count=$(sed -n '\''s/^rescue_package_count=//p'\'' /etc/openwrt-installer-release)'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'saved=$(wc -l < /etc/owrt-installer/rescued-packages.txt 2>/dev/null | tr -d " "); stale=present; if [ ! -e /etc/owrt-installer/stale-source ] && [ ! -e /etc/uci-defaults/98-installer-network ] && ! grep -q stale-source /etc/openwrt-installer-release; then stale=absent; fi'
+		sleep 1
+		printf 'expected_scope=%s\r' "$expected_scope"
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'printf "OWRT_RESCUE hostname=%s lan=%s mode=%s scope=%s network=%s packages=%s saved=%s stale=%s\n" "$hostname" "$lan" "$mode" "$scope" "$network" "$count" "$saved" "$stale"'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'if [ "$hostname" = rescue-source-qemu ] && [ "$lan" = 10.66.77.1 ] && [ "$mode" = rescue ] && [ "$scope" = "$expected_scope" ] && [ "$network" = imported ] && [ "$count" -gt 0 ] && [ "$saved" = "$count" ] && [ "$stale" = absent ]; then echo OWRT_RESCUE_""OK=1; fi'
+	} | nc -N -U "$serial_socket" >/dev/null 2>&1 || die "Could not query rescued system"
+	wait_for_log_marker "$serial_log" "OWRT_RESCUE_OK=1" "$boot_pid" "$QEMU_INSTALL_WAIT"
+	hmp_command "$monitor_socket" quit
+	wait "$boot_pid" || true
+	assert_log_contains "$serial_log" "OWRT_RESCUE hostname=rescue-source-qemu"
+	assert_log_contains "$serial_log" "lan=10.66.77.1 mode=rescue scope=$expected_scope network=imported"
+	assert_log_contains "$serial_log" "stale=absent"
+}
+
+run_standard_upgrade_handoff_smoke() {
+	target_disk="$1"
+	reference_disk="$SMOKE_DIR/target-upgrade-handoff-reference.qcow2"
+	serial_log="$SMOKE_DIR/upgrade-handoff-iso.log"
+	qemu_log="$SMOKE_DIR/upgrade-handoff-qemu.log"
+	monitor_socket="$SMOKE_DIR/upgrade-handoff-monitor.sock"
+	rm -f "$reference_disk" "$serial_log" "$qemu_log" "$monitor_socket"
+	cp "$target_disk" "$reference_disk"
+
+	log "Starting zero-write standard-upgrade handoff smoke test"
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$qemu_log" \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none -vga std -serial "file:$serial_log" \
+		-monitor "unix:$monitor_socket,server=on,wait=off" \
+		-kernel "$ISO_STAGED_KERNEL" -initrd "$ISO_STAGED_INITRAMFS" \
+		-append "console=tty1 console=ttyS0,115200n8 rdinit=/init owrt.mouse=1 owrt.hardware-test=1" \
+		-drive "file=$target_disk,format=qcow2,if=virtio" \
+		-nic user,model=e1000 -nic user,model=e1000
+	handoff_pid="$QEMU_STARTED_PID"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" "$handoff_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=existing-system-action" "$handoff_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" down ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=existing-upgrade" "$handoff_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	sleep 2
+	hmp_send_keys "$monitor_socket" ret
+	sleep 2
+	hmp_command "$monitor_socket" quit
+	wait "$handoff_pid" || true
+
+	if [ -n "$QEMU_L_ARG" ]; then
+		# shellcheck disable=SC2086 # QEMU_ENV_PREFIX is controlled key=value pairs.
+		env $QEMU_ENV_PREFIX "$QEMU_IMG" compare -f qcow2 -F qcow2 "$reference_disk" "$target_disk" >/dev/null ||
+			die "Standard-upgrade handoff modified target disk data"
+	else
+		"$QEMU_IMG" compare -f qcow2 -F qcow2 "$reference_disk" "$target_disk" >/dev/null ||
+			die "Standard-upgrade handoff modified target disk data"
+	fi
+	assert_log_not_contains "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS="
+	log "Zero-write standard-upgrade handoff smoke passed"
+}
+
+run_rescue_smoke() {
+	target_disk="$(prepare_local_boot_disk rescue)"
+	resize_qcow2 "$target_disk" 6G
+	find_ovmf
+	vars_copy="$SMOKE_DIR/OVMF_VARS_4M-rescue.fd"
+	baseline_serial_log="$SMOKE_DIR/rescue-baseline-boot.log"
+	baseline_qemu_log="$SMOKE_DIR/rescue-baseline-boot-qemu.log"
+	baseline_serial_socket="$SMOKE_DIR/rescue-baseline-serial.sock"
+	baseline_monitor_socket="$SMOKE_DIR/rescue-baseline-monitor.sock"
+	serial_log="$SMOKE_DIR/rescue-iso.log"
+	qemu_log="$SMOKE_DIR/rescue-qemu.log"
+	monitor_socket="$SMOKE_DIR/rescue-monitor.sock"
+	rm -f "$vars_copy" "$baseline_serial_log" "$baseline_qemu_log" \
+		"$baseline_serial_socket" "$baseline_monitor_socket" "$serial_log" \
+		"$qemu_log" "$monitor_socket"
+	cp "$QEMU_OVMF_VARS" "$vars_copy"
+
+	log "Booting baseline OpenWrt and creating rescue evidence"
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$baseline_qemu_log" \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none \
+		-chardev "socket,id=serial0,path=$baseline_serial_socket,server=on,wait=off,logfile=$baseline_serial_log" \
+		-serial chardev:serial0 -monitor "unix:$baseline_monitor_socket,server=on,wait=off" \
+		-drive "if=pflash,format=raw,readonly=on,file=$QEMU_OVMF_CODE" \
+		-drive "if=pflash,format=raw,file=$vars_copy" \
+		-drive "file=$target_disk,format=qcow2,if=virtio" -boot c \
+		-nic user,model=e1000 -nic user,model=e1000
+	baseline_pid="$QEMU_STARTED_PID"
+	wait_for_log_marker "$baseline_serial_log" "Please press Enter to activate this console." "$baseline_pid" "$QEMU_INSTALL_WAIT"
+	{
+		printf '\r'
+		sleep 1
+		printf '%s\r' 'uci set system.@system[0].hostname="rescue-source-qemu"; uci commit system'
+		sleep 1
+		printf '%s\r' 'uci set network.lan.ipaddr="10.66.77.1"; uci commit network'
+		sleep 1
+		printf '%s\r' 'mkdir -p /etc/owrt-installer /etc/uci-defaults; echo stale-source > /etc/owrt-installer/stale-source; echo stale-source > /etc/openwrt-installer-release'
+		sleep 1
+		printf '%s\r' 'printf "#!/bin/sh\nexit 77\n" > /etc/uci-defaults/98-installer-network; chmod 755 /etc/uci-defaults/98-installer-network'
+		sleep 1
+		printf '%s\r' 'sync; echo OWRT_RESCUE_SOURCE_READY=1; poweroff'
+	} | nc -N -U "$baseline_serial_socket" >/dev/null 2>&1 || die "Could not prepare rescue baseline"
+	wait_for_log_marker "$baseline_serial_log" "OWRT_RESCUE_SOURCE_READY=1" "$baseline_pid" "$QEMU_INSTALL_WAIT"
+	wait "$baseline_pid" || true
+
+	log "Starting RAM rescue, bounded reinstall, and restore smoke test"
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$qemu_log" \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none -vga std -serial "file:$serial_log" \
+		-monitor "unix:$monitor_socket,server=on,wait=off" \
+		-kernel "$ISO_STAGED_KERNEL" -initrd "$ISO_STAGED_INITRAMFS" \
+		-append "console=tty1 console=ttyS0,115200n8 rdinit=/init owrt.mouse=1" \
+		-drive "file=$target_disk,format=qcow2,if=virtio" \
+		-nic user,model=e1000 -nic user,model=e1000
+	install_pid="$QEMU_STARTED_PID"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=existing-system-action" "$install_pid" "$QEMU_INSTALL_WAIT"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_EXISTING_RESCUE=ready"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=rescue-scope" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" down ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=rescue-full-warning" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=config-import-network" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=rescue-ready" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-layout" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" down ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-summary" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-action" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=final-erase-info" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=exact-erase" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" shift-e shift-r shift-a shift-s shift-e spc slash d e v slash v d a ret
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS=100" "$install_pid" "$QEMU_INSTALL_WAIT"
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_ROOTFS_VERIFIED_MIB=" "$install_pid" "$QEMU_INSTALL_WAIT"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=installation-success" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=post-install-menu" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" down down ret
+	sleep 2
+	hmp_command "$monitor_socket" quit
+	wait "$install_pid" || true
+
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_RESCUE_READY=$OPENWRT_VERSION:full"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_STORAGE_LAYOUT=bounded"
+	assert_log_not_contains "$serial_log" "Installation failed"
+	verify_installed_geometry bounded "$target_disk" "$vars_copy" 8388608 1 rescue
+	verify_rescued_system "$target_disk" "$vars_copy" full
+	run_standard_upgrade_handoff_smoke "$target_disk"
+	log "Existing OpenWrt RAM rescue, restore, reboot, and handoff smoke passed"
 }
 
 prepare_config_import_usb() {
@@ -583,6 +1047,8 @@ run_config_import_smoke() {
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=config-import-ready" "$install_pid" "$QEMU_INSTALL_WAIT"
 	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-layout" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-summary" "$install_pid" "$QEMU_INSTALL_WAIT"
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-action" "$install_pid" "$QEMU_INSTALL_WAIT"
@@ -657,10 +1123,12 @@ run_online_install_smoke() {
 		bios)
 			online_image_type="ext4-combined"
 			online_boot_label="BIOS"
+			online_storage_layout="bounded"
 			;;
 		uefi)
 			online_image_type="ext4-combined-efi"
 			online_boot_label="UEFI"
+			online_storage_layout="fill"
 			;;
 		*) die "Unsupported QEMU online install mode: $online_mode" ;;
 	esac
@@ -681,7 +1149,11 @@ run_online_install_smoke() {
 	rm -f "$target_disk" "$serial_log" "$qemu_log" "$monitor_socket" \
 		"$boot_serial_log" "$boot_qemu_log" "$boot_serial_socket" \
 		"$boot_monitor_socket" "$vars_copy"
-	ensure_qcow2 "$target_disk"
+	if [ "$online_mode" = "bios" ]; then
+		create_qcow2 "$target_disk" 6G
+	else
+		ensure_qcow2 "$target_disk"
+	fi
 
 	set -- \
 		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
@@ -756,6 +1228,12 @@ run_online_install_smoke() {
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=install-type" "$install_pid" "$QEMU_ONLINE_WAIT"
 	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-layout" "$install_pid" "$QEMU_ONLINE_WAIT"
+	if [ "$online_storage_layout" = "bounded" ]; then
+		hmp_send_keys "$monitor_socket" down ret
+	else
+		hmp_send_keys "$monitor_socket" ret
+	fi
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-interface" "$install_pid" "$QEMU_ONLINE_WAIT"
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan-interface-auto" "$install_pid" "$QEMU_ONLINE_WAIT"
@@ -787,6 +1265,7 @@ run_online_install_smoke() {
 	assert_log_not_contains "$serial_log" "Installation failed"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS=100"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_NETINSTALL_IMAGE=openwrt-$online_version-x86-64-generic-$online_image_type.img.gz"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_STORAGE_LAYOUT=$online_storage_layout"
 
 	set -- \
 		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
@@ -825,6 +1304,10 @@ run_online_install_smoke() {
 	assert_log_contains "$boot_serial_log" "image_type=$online_image_type"
 	assert_log_contains "$boot_serial_log" "boot_mode=$online_boot_label"
 	assert_log_contains "$boot_serial_log" "target_disk=/dev/vda"
+	assert_log_contains "$boot_serial_log" "storage_layout=$online_storage_layout"
+	if [ "$online_storage_layout" = "bounded" ]; then
+		assert_log_contains "$boot_serial_log" "rootfs_target_mib=4096"
+	fi
 	log "$online_boot_label online download/install/boot smoke passed with OpenWrt $online_version"
 }
 
@@ -1028,8 +1511,8 @@ run_uefi_smoke() {
 }
 
 case "$MODE" in
-	all|bios|uefi|hardware|vga|install|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing) ;;
-	*) die "Usage: $0 [all|bios|uefi|hardware|vga|install|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing]" ;;
+	all|bios|uefi|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|rescue|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing) ;;
+	*) die "Usage: $0 [all|bios|uefi|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|rescue|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing]" ;;
 esac
 
 [ -s "$ISO_IMAGE" ] || die "Hybrid ISO is missing. Run: make iso"
@@ -1037,18 +1520,18 @@ require_cmd timeout
 require_cmd grep
 require_cmd tail
 case "$MODE" in
-	all|hardware|vga|install|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing)
+	all|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|rescue|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing)
 		require_cmd nc
 		;;
 esac
 case "$MODE" in
-	all|hardware|online|online-bios|online-uefi)
+	all|hardware|rescue|online|online-bios|online-uefi)
 		[ -s "$ISO_STAGED_KERNEL" ] || die "Staged ISO kernel is missing. Run: make iso"
 		[ -s "$ISO_STAGED_INITRAMFS" ] || die "Staged ISO initramfs is missing. Run: make iso"
 		;;
 esac
 case "$MODE" in
-	all|config-import|local-disk|local-disk-bios|local-disk-uefi)
+	all|rescue|config-import|local-disk|local-disk-bios|local-disk-uefi)
 		require_cmd gzip
 		require_cmd fdisk
 		[ -s "$TARGET_IMAGE" ] || die "Target image is missing. Run: make target"
@@ -1057,8 +1540,14 @@ case "$MODE" in
 		;;
 esac
 case "$MODE" in
-	all|vga|install)
+	all|vga|install|storage|storage-bounded|storage-image|storage-custom)
 		require_cmd od
+		;;
+esac
+case "$MODE" in
+	all|storage|storage-bounded|storage-image|storage-custom)
+		require_cmd fdisk
+		require_cmd sfdisk
 		;;
 esac
 mkdir -p "$SMOKE_DIR"
@@ -1077,6 +1566,10 @@ case "$MODE" in
 		run_hardware_flag_smoke
 		run_vga_smoke
 		run_install_smoke
+		run_storage_layout_smoke bounded
+		run_storage_layout_smoke image
+		run_storage_layout_smoke custom
+		run_rescue_smoke
 		run_config_import_smoke
 		;;
 	bios)
@@ -1093,6 +1586,23 @@ case "$MODE" in
 		;;
 	install)
 		run_install_smoke
+		;;
+	storage)
+		run_storage_layout_smoke bounded
+		run_storage_layout_smoke image
+		run_storage_layout_smoke custom
+		;;
+	storage-bounded)
+		run_storage_layout_smoke bounded
+		;;
+	storage-image)
+		run_storage_layout_smoke image
+		;;
+	storage-custom)
+		run_storage_layout_smoke custom
+		;;
+	rescue)
+		run_rescue_smoke
 		;;
 	config-import)
 		run_config_import_smoke

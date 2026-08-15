@@ -1,0 +1,855 @@
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+storage_clear_rescue_workspace() {
+	case "${STORAGE_RESCUE_WORKDIR:-}" in
+		"${TMPDIR:-/tmp}"/owrt-rescue.*) rm -rf "$STORAGE_RESCUE_WORKDIR" ;;
+	esac
+	STORAGE_RESCUE_WORKDIR=""
+}
+
+storage_cleanup() {
+	if [ "${STORAGE_PROBE_MOUNTED:-0}" = "1" ]; then
+		umount "$STORAGE_PROBE_MOUNTDIR" >> "$INSTALL_LOG" 2>&1 ||
+			umount -l "$STORAGE_PROBE_MOUNTDIR" >> "$INSTALL_LOG" 2>&1 || true
+		STORAGE_PROBE_MOUNTED=0
+	fi
+	case "${STORAGE_PROBE_MOUNTDIR:-}" in
+		"${TMPDIR:-/tmp}"/owrt-storage-mnt.*) rmdir "$STORAGE_PROBE_MOUNTDIR" 2>/dev/null || true ;;
+	esac
+	STORAGE_PROBE_MOUNTDIR=""
+	storage_clear_rescue_workspace
+	for storage_tmp in "${STORAGE_LAYOUT_IMAGE:-}" "${STORAGE_LAYOUT_REPORT:-}"; do
+		case "$storage_tmp" in
+			"${TMPDIR:-/tmp}"/owrt-installer-*) rm -f "$storage_tmp" ;;
+		esac
+	done
+	STORAGE_LAYOUT_IMAGE=""
+	STORAGE_LAYOUT_REPORT=""
+}
+
+storage_set_error() {
+	STORAGE_ERROR="$1"
+	return 1
+}
+
+storage_is_nonnegative_integer() {
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+storage_read_le32() {
+	storage_le_file="$1"
+	storage_le_offset="$2"
+	storage_le_bytes="$(hexdump -v -e '4/1 "%u "' -s "$storage_le_offset" -n 4 \
+		"$storage_le_file" 2>/dev/null)" || return 1
+	read -r storage_le_b1 storage_le_b2 storage_le_b3 storage_le_b4 <<EOF
+$storage_le_bytes
+EOF
+	for storage_le_byte in "$storage_le_b1" "$storage_le_b2" "$storage_le_b3" "$storage_le_b4"; do
+		storage_is_nonnegative_integer "$storage_le_byte" || return 1
+		[ "$storage_le_byte" -le 255 ] || return 1
+	done
+	printf '%s\n' "$((storage_le_b1 + storage_le_b2 * 256 + \
+		storage_le_b3 * 65536 + storage_le_b4 * 16777216))"
+}
+
+storage_validate_payload_ext4_geometry() {
+	storage_ext4_prefix_bytes=$((STORAGE_ROOT_START_SECTOR * STORAGE_PAYLOAD_SECTOR_SIZE + 4096))
+	storage_ext4_prefix_mib=$(((storage_ext4_prefix_bytes + 1048575) / 1048576))
+	if ! gzip -dc "$storage_payload" 2>/dev/null |
+		dd of="$STORAGE_LAYOUT_IMAGE" bs=1M count="$storage_ext4_prefix_mib" \
+			iflag=fullblock conv=notrunc status=none >> "$INSTALL_LOG" 2>&1; then
+		storage_set_error "Could not read the payload root-filesystem superblock."
+		return 1
+	fi
+	storage_ext4_super=$((STORAGE_ROOT_START_SECTOR * STORAGE_PAYLOAD_SECTOR_SIZE + 1024))
+	storage_ext4_magic="$(hexdump -v -e '2/1 "%02x "' \
+		-s "$((storage_ext4_super + 56))" -n 2 "$STORAGE_LAYOUT_IMAGE" 2>/dev/null)" || true
+	if [ "$storage_ext4_magic" != "53 ef" ]; then
+		storage_set_error "The payload partition 2 does not contain a recognizable ext4 filesystem."
+		return 1
+	fi
+	storage_ext4_blocks_low="$(storage_read_le32 "$STORAGE_LAYOUT_IMAGE" "$((storage_ext4_super + 4))")" || {
+		storage_set_error "Could not read the payload ext4 block count."
+		return 1
+	}
+	storage_ext4_log_block="$(storage_read_le32 "$STORAGE_LAYOUT_IMAGE" "$((storage_ext4_super + 24))")" || {
+		storage_set_error "Could not read the payload ext4 block size."
+		return 1
+	}
+	storage_ext4_blocks_high="$(storage_read_le32 "$STORAGE_LAYOUT_IMAGE" "$((storage_ext4_super + 336))")" || {
+		storage_set_error "Could not read the payload ext4 high block count."
+		return 1
+	}
+	[ "$storage_ext4_log_block" -le 6 ] || {
+		storage_set_error "The payload ext4 block size is unsupported."
+		return 1
+	}
+	storage_ext4_partition_bytes=$((STORAGE_ROOT_IMAGE_SECTORS * STORAGE_PAYLOAD_SECTOR_SIZE))
+	storage_ext4_max_blocks=$((storage_ext4_partition_bytes / 1024))
+	[ "$storage_ext4_blocks_high" -le "$((storage_ext4_max_blocks / 4294967296))" ] || {
+		storage_set_error "The payload ext4 block count exceeds partition 2."
+		return 1
+	}
+	storage_ext4_blocks=$((storage_ext4_blocks_low + storage_ext4_blocks_high * 4294967296))
+	storage_ext4_block_size=$((1024 * (1 << storage_ext4_log_block)))
+	storage_ext4_bytes=$((storage_ext4_blocks * storage_ext4_block_size))
+	storage_ext4_slack=$((storage_ext4_partition_bytes - storage_ext4_bytes))
+	if ! { [ "$storage_ext4_blocks" -gt 0 ] && [ "$storage_ext4_slack" -ge 0 ] &&
+		[ "$storage_ext4_slack" -lt "$storage_ext4_block_size" ]; }; then
+		storage_set_error "The payload ext4 filesystem does not fill partition 2."
+		return 1
+	fi
+	STORAGE_ROOT_IMAGE_FS_BYTES="$storage_ext4_bytes"
+}
+
+storage_inspect_payload_layout() {
+	storage_payload="$1"
+	storage_payload_size="$2"
+	storage_expected_mode="${3:-any}"
+	STORAGE_ERROR=""
+
+	[ -s "$storage_payload" ] ||
+		storage_set_error "The OpenWrt payload is missing: $storage_payload" || return 1
+	is_positive_integer "$storage_payload_size" ||
+		storage_set_error "The payload manifest has an invalid uncompressed size." || return 1
+	[ "$storage_payload_size" -ge 8388608 ] ||
+		storage_set_error "The payload is too small to be an OpenWrt combined x86 image." || return 1
+	for storage_cmd in dd gzip fdisk awk hexdump sed; do
+		command -v "$storage_cmd" >/dev/null 2>&1 ||
+			storage_set_error "$storage_cmd is required to inspect the OpenWrt disk layout." || return 1
+	done
+
+	STORAGE_LAYOUT_IMAGE="$(tmp_file storage-layout)"
+	STORAGE_LAYOUT_REPORT="$(tmp_file storage-report)"
+	dd if=/dev/null of="$STORAGE_LAYOUT_IMAGE" bs=1 seek="$storage_payload_size" count=0 status=none \
+		>> "$INSTALL_LOG" 2>&1 ||
+		storage_set_error "Could not create the sparse payload-layout probe." || return 1
+	if ! gzip -dc "$storage_payload" 2>/dev/null |
+		dd of="$STORAGE_LAYOUT_IMAGE" bs=1M count=4 iflag=fullblock conv=notrunc status=none \
+			>> "$INSTALL_LOG" 2>&1; then
+		storage_set_error "Could not read the payload partition-table prefix."
+		return 1
+	fi
+	if ! LC_ALL=C fdisk -l -o Device,Start,End,Sectors "$STORAGE_LAYOUT_IMAGE" \
+		> "$STORAGE_LAYOUT_REPORT" 2>&1; then
+		storage_set_error "fdisk rejected the OpenWrt payload partition table."
+		return 1
+	fi
+
+	STORAGE_TABLE_TYPE="$(sed -n 's/^Disklabel type: //p' "$STORAGE_LAYOUT_REPORT" | sed -n '1p')"
+	case "$STORAGE_TABLE_TYPE" in
+		gpt|dos) ;;
+		*) storage_set_error "The payload has an unsupported partition table." || return 1 ;;
+	esac
+	case "$storage_expected_mode:$STORAGE_TABLE_TYPE" in
+		any:*|uefi:gpt|bios:dos) ;;
+		uefi:*) storage_set_error "The selected UEFI payload does not use the expected GPT layout." || return 1 ;;
+		bios:*) storage_set_error "The selected BIOS payload does not use the expected MBR layout." || return 1 ;;
+		*) storage_set_error "Unsupported payload boot mode: $storage_expected_mode" || return 1 ;;
+	esac
+
+	case "$STORAGE_LAYOUT_IMAGE" in
+		*[0-9]) storage_partition_prefix="${STORAGE_LAYOUT_IMAGE}p" ;;
+		*) storage_partition_prefix="$STORAGE_LAYOUT_IMAGE" ;;
+	esac
+	storage_boot_row="$(awk -v dev="$storage_partition_prefix" '
+		$1 == dev "1" { print $2 "|" $3 "|" $4; found++ }
+		END { if (found != 1) exit 1 }
+	' "$STORAGE_LAYOUT_REPORT")" || {
+		storage_set_error "The payload must contain exactly one boot partition 1."
+		return 1
+	}
+	storage_root_row="$(awk -v dev="$storage_partition_prefix" '
+		$1 == dev "2" { print $2 "|" $3 "|" $4; found++ }
+		END { if (found != 1) exit 1 }
+	' "$STORAGE_LAYOUT_REPORT")" || {
+		storage_set_error "The payload must contain exactly one root partition 2."
+		return 1
+	}
+	storage_partition_summary="$(awk -v dev="$storage_partition_prefix" '
+		index($1, dev) == 1 {
+			suffix = substr($1, length(dev) + 1)
+			if (suffix ~ /^[0-9]+$/) {
+				count++
+				if (suffix == "128") auxiliary++
+				else if (suffix != "1" && suffix != "2") unexpected++
+			}
+		}
+		END { print count + 0 "|" auxiliary + 0 "|" unexpected + 0 }
+	' "$STORAGE_LAYOUT_REPORT")"
+	IFS='|' read -r storage_partition_count storage_auxiliary_count storage_unexpected_count <<EOF
+$storage_partition_summary
+EOF
+	if ! { [ "$storage_unexpected_count" -eq 0 ] &&
+		[ "$storage_partition_count" -eq "$((2 + storage_auxiliary_count))" ] &&
+		[ "$storage_auxiliary_count" -le 1 ] &&
+		{ [ "$storage_auxiliary_count" -eq 0 ] || [ "$STORAGE_TABLE_TYPE" = "gpt" ]; }; }; then
+		storage_set_error "The payload contains unexpected partitions."
+		return 1
+	fi
+	IFS='|' read -r STORAGE_BOOT_START_SECTOR STORAGE_BOOT_END_SECTOR STORAGE_BOOT_SECTORS <<EOF
+$storage_boot_row
+EOF
+	IFS='|' read -r STORAGE_ROOT_START_SECTOR STORAGE_ROOT_IMAGE_END_SECTOR STORAGE_ROOT_IMAGE_SECTORS <<EOF
+$storage_root_row
+EOF
+	for storage_value in \
+		"$STORAGE_BOOT_START_SECTOR" "$STORAGE_BOOT_END_SECTOR" "$STORAGE_BOOT_SECTORS" \
+		"$STORAGE_ROOT_START_SECTOR" "$STORAGE_ROOT_IMAGE_END_SECTOR" "$STORAGE_ROOT_IMAGE_SECTORS"
+	do
+		is_positive_integer "$storage_value" || {
+			storage_set_error "The payload partition geometry is invalid."
+			return 1
+		}
+	done
+	if ! { [ "$STORAGE_BOOT_END_SECTOR" -ge "$STORAGE_BOOT_START_SECTOR" ] &&
+		[ "$STORAGE_BOOT_SECTORS" -eq "$((STORAGE_BOOT_END_SECTOR - STORAGE_BOOT_START_SECTOR + 1))" ] &&
+		[ "$STORAGE_ROOT_IMAGE_END_SECTOR" -ge "$STORAGE_ROOT_START_SECTOR" ] &&
+		[ "$STORAGE_BOOT_END_SECTOR" -lt "$STORAGE_ROOT_START_SECTOR" ] &&
+		[ "$STORAGE_ROOT_IMAGE_SECTORS" -eq "$((STORAGE_ROOT_IMAGE_END_SECTOR - STORAGE_ROOT_START_SECTOR + 1))" ]; }; then
+			storage_set_error "The payload root partition geometry is inconsistent."
+			return 1
+	fi
+	if [ "$storage_auxiliary_count" -eq 1 ]; then
+		storage_auxiliary_row="$(awk -v dev="${storage_partition_prefix}128" '
+			$1 == dev { print $2 "|" $3 "|" $4; found++ }
+			END { if (found != 1) exit 1 }
+		' "$STORAGE_LAYOUT_REPORT")" || {
+			storage_set_error "The payload GPT auxiliary partition is ambiguous."
+			return 1
+		}
+		IFS='|' read -r storage_auxiliary_start storage_auxiliary_end storage_auxiliary_sectors <<EOF
+$storage_auxiliary_row
+EOF
+		for storage_value in "$storage_auxiliary_start" "$storage_auxiliary_end" "$storage_auxiliary_sectors"; do
+			is_positive_integer "$storage_value" || {
+				storage_set_error "The payload GPT auxiliary partition geometry is invalid."
+				return 1
+			}
+		done
+		if ! { [ "$storage_auxiliary_end" -ge "$storage_auxiliary_start" ] &&
+			[ "$storage_auxiliary_sectors" -eq "$((storage_auxiliary_end - storage_auxiliary_start + 1))" ] &&
+			[ "$storage_auxiliary_end" -lt "$STORAGE_BOOT_START_SECTOR" ] &&
+			[ "$storage_auxiliary_sectors" -le 2048 ]; }; then
+			storage_set_error "The payload GPT auxiliary partition geometry is unsafe."
+			return 1
+		fi
+	fi
+	STORAGE_PAYLOAD_SECTOR_SIZE=512
+	storage_payload_sectors=$((storage_payload_size / STORAGE_PAYLOAD_SECTOR_SIZE))
+	[ "$STORAGE_ROOT_IMAGE_END_SECTOR" -lt "$storage_payload_sectors" ] || {
+		storage_set_error "The payload partition table extends beyond the image."
+		return 1
+	}
+	STORAGE_ROOT_IMAGE_MIB="$(((STORAGE_ROOT_IMAGE_SECTORS + 2047) / 2048))"
+	storage_validate_payload_ext4_geometry || return 1
+	rm -f "$STORAGE_LAYOUT_IMAGE" "$STORAGE_LAYOUT_REPORT"
+	STORAGE_LAYOUT_IMAGE=""
+	STORAGE_LAYOUT_REPORT=""
+	return 0
+}
+
+storage_target_sysfs_value() {
+	storage_target_name="$1"
+	storage_target_field="$2"
+	case "$storage_target_field" in
+		sectors)
+			if [ "${OWRT_STORAGE_TEST_MODE:-0}" = "1" ] &&
+				is_positive_integer "${OWRT_STORAGE_TEST_DISK_SECTORS:-}"; then
+				printf '%s\n' "$OWRT_STORAGE_TEST_DISK_SECTORS"
+				return 0
+			fi
+			cat "/sys/block/$storage_target_name/size" 2>/dev/null
+			;;
+		logical-sector)
+			if [ "${OWRT_STORAGE_TEST_MODE:-0}" = "1" ] &&
+				is_positive_integer "${OWRT_STORAGE_TEST_LOGICAL_SECTOR_SIZE:-}"; then
+				printf '%s\n' "$OWRT_STORAGE_TEST_LOGICAL_SECTOR_SIZE"
+				return 0
+			fi
+			cat "/sys/block/$storage_target_name/queue/logical_block_size" 2>/dev/null
+			;;
+	esac
+}
+
+storage_prepare_target_geometry() {
+	storage_target="$1"
+	STORAGE_ERROR=""
+	storage_target_name="$(disk_name_from_path "$storage_target")"
+	STORAGE_DISK_SECTORS="$(storage_target_sysfs_value "$storage_target_name" sectors || true)"
+	STORAGE_DISK_LOGICAL_SECTOR_SIZE="$(storage_target_sysfs_value "$storage_target_name" logical-sector || true)"
+	is_positive_integer "$STORAGE_DISK_SECTORS" ||
+		storage_set_error "Could not determine the exact size of $storage_target." || return 1
+	is_positive_integer "$STORAGE_DISK_LOGICAL_SECTOR_SIZE" ||
+		storage_set_error "Could not determine the logical sector size of $storage_target." || return 1
+	[ "$STORAGE_DISK_LOGICAL_SECTOR_SIZE" -eq 512 ] ||
+		storage_set_error "$storage_target uses $STORAGE_DISK_LOGICAL_SECTOR_SIZE-byte logical sectors; this installer currently requires 512-byte sectors." || return 1
+	[ "${STORAGE_PAYLOAD_SECTOR_SIZE:-0}" -eq 512 ] ||
+		storage_set_error "The payload sector size is unsupported." || return 1
+	case "$STORAGE_TABLE_TYPE" in
+		gpt) STORAGE_DISK_USABLE_END_SECTOR=$((STORAGE_DISK_SECTORS - 34)) ;;
+		dos) STORAGE_DISK_USABLE_END_SECTOR=$((STORAGE_DISK_SECTORS - 1)) ;;
+		*) storage_set_error "Payload geometry has not been inspected." || return 1 ;;
+	esac
+	[ "$STORAGE_DISK_USABLE_END_SECTOR" -ge "$STORAGE_ROOT_IMAGE_END_SECTOR" ] ||
+		storage_set_error "$storage_target is too small for the selected OpenWrt image." || return 1
+	STORAGE_DISK_BYTES=$((STORAGE_DISK_SECTORS * 512))
+	STORAGE_DISK_MIB=$((STORAGE_DISK_SECTORS / 2048))
+	storage_calculate_layout fill || return 1
+}
+
+storage_parse_size_mib() {
+	storage_size_input="$1"
+	storage_size_normalized="$(printf '%s' "$storage_size_input" |
+		tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz' |
+		sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]][[:space:]]*/ /g')"
+	storage_size_number=""
+	storage_size_multiplier=1
+	case "$storage_size_normalized" in
+		*[[:space:]]gib) storage_size_number="${storage_size_normalized% gib}"; storage_size_multiplier=1024 ;;
+		*[[:space:]]gb) storage_size_number="${storage_size_normalized% gb}"; storage_size_multiplier=1024 ;;
+		*[[:space:]]g) storage_size_number="${storage_size_normalized% g}"; storage_size_multiplier=1024 ;;
+		*gib) storage_size_number="${storage_size_normalized%gib}"; storage_size_multiplier=1024 ;;
+		*gb) storage_size_number="${storage_size_normalized%gb}"; storage_size_multiplier=1024 ;;
+		*g) storage_size_number="${storage_size_normalized%g}"; storage_size_multiplier=1024 ;;
+		*[[:space:]]mib) storage_size_number="${storage_size_normalized% mib}" ;;
+		*[[:space:]]mb) storage_size_number="${storage_size_normalized% mb}" ;;
+		*[[:space:]]m) storage_size_number="${storage_size_normalized% m}" ;;
+		*mib) storage_size_number="${storage_size_normalized%mib}" ;;
+		*mb) storage_size_number="${storage_size_normalized%mb}" ;;
+		*m) storage_size_number="${storage_size_normalized%m}" ;;
+		*) storage_size_number="$storage_size_normalized" ;;
+	esac
+	is_positive_integer "$storage_size_number" || return 1
+	case "$storage_size_multiplier" in
+		1024) [ "$storage_size_number" -le 4398046511 ] 2>/dev/null || return 1 ;;
+		*) [ "$storage_size_number" -le 4503599627370 ] 2>/dev/null || return 1 ;;
+	esac
+	STORAGE_PARSED_SIZE_MIB=$((storage_size_number * storage_size_multiplier))
+	is_positive_integer "$STORAGE_PARSED_SIZE_MIB"
+}
+
+storage_calculate_layout() {
+	storage_requested_layout="$1"
+	storage_requested_mib="${2:-}"
+	STORAGE_ERROR=""
+	case "$storage_requested_layout" in
+		fill)
+			STORAGE_LAYOUT="fill"
+			STORAGE_ROOT_TARGET_END_SECTOR="$STORAGE_DISK_USABLE_END_SECTOR"
+			;;
+		image)
+			STORAGE_LAYOUT="image"
+			STORAGE_ROOT_TARGET_END_SECTOR="$STORAGE_ROOT_IMAGE_END_SECTOR"
+			;;
+		bounded)
+			is_positive_integer "$storage_requested_mib" ||
+				storage_set_error "The requested OpenWrt partition size is invalid." || return 1
+			storage_requested_sectors=$((storage_requested_mib * 2048))
+			STORAGE_ROOT_TARGET_END_SECTOR=$((STORAGE_ROOT_START_SECTOR + storage_requested_sectors - 1))
+			[ "$STORAGE_ROOT_TARGET_END_SECTOR" -ge "$STORAGE_ROOT_IMAGE_END_SECTOR" ] ||
+				storage_set_error "The requested partition is smaller than the OpenWrt image root partition (${STORAGE_ROOT_IMAGE_MIB} MiB minimum)." || return 1
+			[ "$STORAGE_ROOT_TARGET_END_SECTOR" -le "$STORAGE_DISK_USABLE_END_SECTOR" ] ||
+				storage_set_error "The requested partition does not fit on the selected disk." || return 1
+			STORAGE_LAYOUT="bounded"
+			;;
+		*) storage_set_error "Unsupported storage layout: $storage_requested_layout" || return 1 ;;
+	esac
+	STORAGE_ROOT_TARGET_SECTORS=$((STORAGE_ROOT_TARGET_END_SECTOR - STORAGE_ROOT_START_SECTOR + 1))
+	STORAGE_ROOT_TARGET_MIB="$(((STORAGE_ROOT_TARGET_SECTORS + 2047) / 2048))"
+	ROOTFS_TARGET_MIB="$STORAGE_ROOT_TARGET_MIB"
+	STORAGE_UNALLOCATED_SECTORS=$((STORAGE_DISK_USABLE_END_SECTOR - STORAGE_ROOT_TARGET_END_SECTOR))
+	STORAGE_UNALLOCATED_MIB=$((STORAGE_UNALLOCATED_SECTORS / 2048))
+	return 0
+}
+
+storage_layout_label() {
+	case "$STORAGE_LAYOUT" in
+		fill) printf 'Use entire disk (%s MiB root)' "$STORAGE_ROOT_TARGET_MIB" ;;
+		image) printf 'Keep image size (%s MiB root)' "$STORAGE_ROOT_TARGET_MIB" ;;
+		bounded) printf '%s MiB root; %s MiB unallocated' "$STORAGE_ROOT_TARGET_MIB" "$STORAGE_UNALLOCATED_MIB" ;;
+		*) printf '%s' "unknown" ;;
+	esac
+}
+
+storage_partition_geometry() {
+	storage_geometry_disk="$1"
+	storage_geometry_number="$2"
+	storage_geometry_line="$(LC_ALL=C parted -m -s "$storage_geometry_disk" unit s print 2>> "$INSTALL_LOG" |
+		awk -F: -v number="$storage_geometry_number" '$1 == number { print $2 "|" $3; found++ } END { if (found != 1) exit 1 }')" || return 1
+	IFS='|' read -r STORAGE_ACTUAL_START_SECTOR STORAGE_ACTUAL_END_SECTOR <<EOF
+$storage_geometry_line
+EOF
+	STORAGE_ACTUAL_START_SECTOR="${STORAGE_ACTUAL_START_SECTOR%s}"
+	STORAGE_ACTUAL_END_SECTOR="${STORAGE_ACTUAL_END_SECTOR%s}"
+	is_positive_integer "$STORAGE_ACTUAL_START_SECTOR" && is_positive_integer "$STORAGE_ACTUAL_END_SECTOR"
+}
+
+storage_enumerate_target_partitions() {
+	: > "$STORAGE_PARTITION_LIST"
+	if [ "${OWRT_STORAGE_TEST_MODE:-0}" = "1" ]; then
+		[ -r "${OWRT_STORAGE_TEST_PARTITIONS_FILE:-}" ] || return 0
+		cat "$OWRT_STORAGE_TEST_PARTITIONS_FILE" > "$STORAGE_PARTITION_LIST"
+		return 0
+	fi
+	storage_target_name="$(disk_name_from_path "$TARGET")"
+	for storage_sysdev in /sys/class/block/*; do
+		[ -f "$storage_sysdev/partition" ] || continue
+		storage_parent_name="$(basename "$(dirname "$(readlink -f "$storage_sysdev")")")"
+		[ "$storage_parent_name" = "$storage_target_name" ] || continue
+		storage_part_name="$(basename "$storage_sysdev")"
+		storage_device="/dev/$storage_part_name"
+		[ -b "$storage_device" ] || continue
+		storage_fstype="$(blkid -o value -s TYPE "$storage_device" 2>/dev/null || true)"
+		storage_label="$(blkid -o value -s LABEL "$storage_device" 2>/dev/null || true)"
+		storage_start="$(cat "$storage_sysdev/start" 2>/dev/null || true)"
+		storage_sectors="$(cat "$storage_sysdev/size" 2>/dev/null || true)"
+		printf '%s|%s|%s||%s|%s\n' "$storage_device" "$storage_fstype" \
+			"$(config_import_sanitize_field "$storage_label")" "$storage_start" "$storage_sectors" \
+			>> "$STORAGE_PARTITION_LIST"
+	done
+}
+
+storage_unmount_probe() {
+	if [ "${STORAGE_PROBE_MOUNTED:-0}" = "1" ]; then
+		umount "$STORAGE_PROBE_MOUNTDIR" >> "$INSTALL_LOG" 2>&1 ||
+			umount -l "$STORAGE_PROBE_MOUNTDIR" >> "$INSTALL_LOG" 2>&1 || true
+		STORAGE_PROBE_MOUNTED=0
+	fi
+	case "${STORAGE_PROBE_MOUNTDIR:-}" in
+		"${TMPDIR:-/tmp}"/owrt-storage-mnt.*) rmdir "$STORAGE_PROBE_MOUNTDIR" 2>/dev/null || true ;;
+	esac
+	STORAGE_PROBE_MOUNTDIR=""
+}
+
+storage_mount_probe() {
+	storage_probe_device="$1"
+	storage_probe_test_dir="${2:-}"
+	storage_unmount_probe
+	if [ "${OWRT_STORAGE_TEST_MODE:-0}" = "1" ]; then
+		[ -d "$storage_probe_test_dir" ] || return 1
+		STORAGE_PROBE_MOUNTDIR="$storage_probe_test_dir"
+		STORAGE_PROBE_MOUNTED=0
+		return 0
+	fi
+	STORAGE_PROBE_MOUNTDIR="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/owrt-storage-mnt.XXXXXX")" || return 1
+	chmod 0700 "$STORAGE_PROBE_MOUNTDIR" || {
+		storage_unmount_probe
+		return 1
+	}
+	if ! mount -t ext4 -o ro,noload,nosuid,nodev,noexec "$storage_probe_device" \
+		"$STORAGE_PROBE_MOUNTDIR" >> "$INSTALL_LOG" 2>&1; then
+		storage_unmount_probe
+		return 1
+	fi
+	STORAGE_PROBE_MOUNTED=1
+}
+
+storage_release_value() {
+	storage_release_file="$1"
+	storage_release_key="$2"
+	awk -v key="$storage_release_key" '
+		index($0, key "=") == 1 {
+			value = substr($0, length(key) + 2)
+			if (value ~ /^\047.*\047$/) value = substr(value, 2, length(value) - 2)
+			else if (value ~ /^".*"$/) value = substr(value, 2, length(value) - 2)
+			print value
+			found++
+		}
+		END { if (found != 1) exit 1 }
+	' "$storage_release_file"
+}
+
+storage_directory_has_regular_file() {
+	storage_regular_directory="$1"
+	[ -d "$storage_regular_directory" ] || return 1
+	for storage_regular_candidate in "$storage_regular_directory"/*; do
+		[ -f "$storage_regular_candidate" ] || continue
+		[ -L "$storage_regular_candidate" ] && continue
+		return 0
+	done
+	return 1
+}
+
+storage_probe_partition() {
+	storage_probe_line="$1"
+	IFS='|' read -r storage_probe_device storage_probe_fstype storage_probe_label storage_probe_test_dir storage_probe_start storage_probe_sectors <<EOF
+$storage_probe_line
+EOF
+	[ "$storage_probe_fstype" = "ext4" ] || return 1
+	storage_mount_probe "$storage_probe_device" "$storage_probe_test_dir" || return 1
+	storage_release_file="$STORAGE_PROBE_MOUNTDIR/etc/openwrt_release"
+	if [ ! -f "$storage_release_file" ] || [ -L "$storage_release_file" ]; then
+		storage_unmount_probe
+		return 1
+	fi
+	storage_release_id="$(storage_release_value "$storage_release_file" DISTRIB_ID 2>/dev/null || true)"
+	storage_release_version="$(storage_release_value "$storage_release_file" DISTRIB_RELEASE 2>/dev/null || true)"
+	storage_release_revision="$(storage_release_value "$storage_release_file" DISTRIB_REVISION 2>/dev/null || true)"
+	storage_release_target="$(storage_release_value "$storage_release_file" DISTRIB_TARGET 2>/dev/null || true)"
+	if ! { [ "$storage_release_id" = "OpenWrt" ] &&
+		printf '%s\n' "$storage_release_version" | LC_ALL=C grep -Eq '^[A-Za-z0-9._+-]+$' &&
+		printf '%s\n' "$storage_release_target" | LC_ALL=C grep -Eq '^x86/64([[:space:]]|$)'; }; then
+			storage_unmount_probe
+			return 1
+	fi
+	STORAGE_EXISTING_FOUND=1
+	STORAGE_EXISTING_ROOT_PART="$storage_probe_device"
+	STORAGE_EXISTING_VERSION="$storage_release_version"
+	if printf '%s\n' "$storage_release_revision" | LC_ALL=C grep -Eq '^[A-Za-z0-9._+-]*$'; then
+		STORAGE_EXISTING_REVISION="$storage_release_revision"
+	else
+		STORAGE_EXISTING_REVISION="unknown"
+	fi
+	STORAGE_EXISTING_TARGET="$storage_release_target"
+	STORAGE_EXISTING_ROOT_START_SECTOR="$storage_probe_start"
+	STORAGE_EXISTING_ROOT_SECTORS="$storage_probe_sectors"
+	STORAGE_EXISTING_TEST_ROOT="$storage_probe_test_dir"
+	if storage_directory_has_regular_file "$STORAGE_PROBE_MOUNTDIR/etc/config"; then
+		STORAGE_EXISTING_RESCUE_AVAILABLE=1
+		STORAGE_EXISTING_PROBE_REASON="ready"
+	else
+		STORAGE_EXISTING_RESCUE_AVAILABLE=0
+		STORAGE_EXISTING_PROBE_REASON="The installation has no readable regular UCI files in /etc/config."
+	fi
+	storage_unmount_probe
+	return 0
+}
+
+storage_probe_existing_openwrt() {
+	STORAGE_EXISTING_FOUND=0
+	STORAGE_EXISTING_ROOT_PART=""
+	STORAGE_EXISTING_VERSION=""
+	STORAGE_EXISTING_REVISION=""
+	STORAGE_EXISTING_TARGET=""
+	STORAGE_EXISTING_BOOT_PART=""
+	STORAGE_EXISTING_ROOT_START_SECTOR=""
+	STORAGE_EXISTING_ROOT_SECTORS=""
+	STORAGE_EXISTING_TEST_ROOT=""
+	STORAGE_EXISTING_RESCUE_AVAILABLE=0
+	STORAGE_EXISTING_PROBE_REASON="No supported OpenWrt root was found."
+	storage_enumerate_target_partitions
+	storage_expected_root="$(get_partition_path "$TARGET" 2)"
+	while IFS= read -r storage_probe_line; do
+		[ -n "$storage_probe_line" ] || continue
+		storage_probe_device="${storage_probe_line%%|*}"
+		storage_probe_label="$(printf '%s' "$storage_probe_line" | awk -F'|' '{ print $3 }')"
+		[ "$storage_probe_label" = "kernel" ] && STORAGE_EXISTING_BOOT_PART="$storage_probe_device"
+		[ "$storage_probe_device" = "$storage_expected_root" ] || continue
+		storage_probe_partition "$storage_probe_line" && break
+	done < "$STORAGE_PARTITION_LIST"
+	if [ "$STORAGE_EXISTING_FOUND" != "1" ]; then
+		while IFS= read -r storage_probe_line; do
+			[ -n "$storage_probe_line" ] || continue
+			storage_probe_partition "$storage_probe_line" && break
+		done < "$STORAGE_PARTITION_LIST"
+	fi
+	storage_unmount_probe
+	if [ "$STORAGE_EXISTING_FOUND" != "1" ] && [ -n "$STORAGE_EXISTING_BOOT_PART" ]; then
+		while IFS='|' read -r storage_probe_device storage_probe_fstype storage_probe_label storage_probe_test_dir storage_probe_start storage_probe_sectors; do
+			case "$storage_probe_fstype" in
+				ext4|squashfs)
+					STORAGE_EXISTING_FOUND=1
+					STORAGE_EXISTING_ROOT_PART="$storage_probe_device"
+					STORAGE_EXISTING_VERSION="unknown"
+					STORAGE_EXISTING_REVISION="unknown"
+					STORAGE_EXISTING_TARGET="x86/64 (unverified)"
+					STORAGE_EXISTING_ROOT_START_SECTOR="$storage_probe_start"
+					STORAGE_EXISTING_ROOT_SECTORS="$storage_probe_sectors"
+					STORAGE_EXISTING_RESCUE_AVAILABLE=0
+					if [ "$storage_probe_fstype" = "squashfs" ]; then
+						STORAGE_EXISTING_PROBE_REASON="Squashfs/overlay rescue is not supported by this installer."
+					else
+						STORAGE_EXISTING_PROBE_REASON="The ext4 OpenWrt root could not be validated read-only; automatic fsck is intentionally disabled."
+					fi
+					break
+					;;
+			esac
+		done < "$STORAGE_PARTITION_LIST"
+	fi
+	[ "$STORAGE_EXISTING_FOUND" = "1" ]
+}
+
+storage_rescue_should_skip() {
+	case "$1" in
+		etc/owrt-installer|etc/owrt-installer/*|etc/openwrt-installer-release|etc/uci-defaults/98-installer-network) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+storage_rescue_collect_tree() {
+	storage_collect_source="$1"
+	storage_collect_destination="$2"
+	storage_collect_relative="$3"
+	storage_collect_stats="$STORAGE_RESCUE_WORKDIR/collector.stats"
+	: > "$storage_collect_stats"
+	if ! find "$storage_collect_source" -xdev -exec sh -eu -c '
+		base="$1"; prefix="$2"; stats="$3"; shift 3
+		for path do
+			[ "$path" = "$base" ] && continue
+			rel=${path#"$base"/}
+			if printf "%s" "$rel" | LC_ALL=C grep "[[:cntrl:]]" >/dev/null 2>&1; then
+				exit 70
+			fi
+			full="$prefix/$rel"
+			case "$full" in
+				etc/owrt-installer|etc/owrt-installer/*|etc/openwrt-installer-release|etc/uci-defaults/98-installer-network)
+					printf "S 0\n" >> "$stats"; continue ;;
+			esac
+			if [ -L "$path" ]; then
+				printf "S 0\n" >> "$stats"
+			elif [ -d "$path" ]; then
+				printf "D 0\n" >> "$stats"
+			elif [ -f "$path" ]; then
+				size=$(stat -c "%s" "$path")
+				case "$size" in ""|*[!0-9]*) exit 71 ;; esac
+				printf "F %s\n" "$size" >> "$stats"
+			else
+				printf "S 0\n" >> "$stats"
+			fi
+		done
+	' sh "$storage_collect_source" "$storage_collect_relative" "$storage_collect_stats" '{}' +; then
+		storage_set_error "The existing configuration contains an unsupported filename or unreadable file."
+		return 1
+	fi
+	storage_collect_result="$(awk \
+		-v max_members="$CONFIG_IMPORT_MAX_MEMBERS" \
+		-v max_member="$CONFIG_IMPORT_MAX_MEMBER_BYTES" \
+		-v max_total="$CONFIG_IMPORT_MAX_UNPACKED_BYTES" '
+			$1 == "S" { skipped++; next }
+			$1 != "D" && $1 != "F" { exit 1 }
+			$2 !~ /^[0-9]+$/ || $2 > max_member { exit 1 }
+			{ members++; total += $2 }
+			members > max_members || total > max_total { exit 1 }
+			END { print members + 0, total + 0, skipped + 0 }
+		' "$storage_collect_stats")" || {
+		storage_set_error "The existing configuration exceeds the RAM rescue limits."
+		return 1
+	}
+	read -r storage_collect_members storage_collect_total storage_collect_skipped <<EOF
+$storage_collect_result
+EOF
+	STORAGE_RESCUE_MEMBER_COUNT=$((STORAGE_RESCUE_MEMBER_COUNT + storage_collect_members))
+	STORAGE_RESCUE_UNPACKED_SIZE=$((STORAGE_RESCUE_UNPACKED_SIZE + storage_collect_total))
+	STORAGE_RESCUE_SKIPPED=$((STORAGE_RESCUE_SKIPPED + storage_collect_skipped))
+	if ! { [ "$STORAGE_RESCUE_MEMBER_COUNT" -le "$CONFIG_IMPORT_MAX_MEMBERS" ] &&
+		[ "$STORAGE_RESCUE_UNPACKED_SIZE" -le "$CONFIG_IMPORT_MAX_UNPACKED_BYTES" ]; }; then
+		storage_set_error "The existing configuration exceeds the RAM rescue limits."
+		return 1
+	fi
+
+	if ! find "$storage_collect_source" -xdev -type d -exec sh -eu -c '
+		base="$1"; destination="$2"; prefix="$3"; shift 3
+		for path do
+			[ "$path" = "$base" ] && continue
+			rel=${path#"$base"/}; full="$prefix/$rel"
+			case "$full" in
+				etc/owrt-installer|etc/owrt-installer/*|etc/openwrt-installer-release|etc/uci-defaults/98-installer-network) continue ;;
+			esac
+			mkdir -p "$destination/$rel"
+			mode=$(stat -c "%a" "$path")
+			case "$mode" in ""|*[!0-7]*) exit 72 ;; esac
+			chmod "$mode" "$destination/$rel"
+		done
+	' sh "$storage_collect_source" "$storage_collect_destination" "$storage_collect_relative" '{}' +; then
+		storage_set_error "Could not create the rescue staging directories."
+		return 1
+	fi
+	if ! find "$storage_collect_source" -xdev -type f -exec sh -eu -c '
+		base="$1"; destination="$2"; prefix="$3"; shift 3
+		for path do
+			rel=${path#"$base"/}; full="$prefix/$rel"
+			case "$full" in
+				etc/owrt-installer|etc/owrt-installer/*|etc/openwrt-installer-release|etc/uci-defaults/98-installer-network) continue ;;
+			esac
+			cp -p "$path" "$destination/$rel"
+		done
+	' sh "$storage_collect_source" "$storage_collect_destination" "$storage_collect_relative" '{}' +; then
+		storage_set_error "Could not copy the existing configuration into RAM."
+		return 1
+	fi
+}
+
+storage_collect_package_inventory() {
+	storage_package_output="$STORAGE_RESCUE_WORKDIR/packages.txt"
+	storage_package_unsorted="$STORAGE_RESCUE_WORKDIR/packages.unsorted"
+	: > "$storage_package_unsorted"
+	storage_package_db="$STORAGE_PROBE_MOUNTDIR/lib/apk/db/installed"
+	storage_package_db_size="$(stat -c '%s' "$storage_package_db" 2>/dev/null || true)"
+	if [ -f "$storage_package_db" ] && [ ! -L "$storage_package_db" ] &&
+		storage_is_nonnegative_integer "$storage_package_db_size" &&
+		[ "$storage_package_db_size" -le "$CONFIG_IMPORT_MAX_MEMBER_BYTES" ]; then
+		awk '/^P:[A-Za-z0-9+_.-]+$/ { print substr($0, 3) }' \
+			"$storage_package_db" > "$storage_package_unsorted"
+	else
+		storage_package_db="$STORAGE_PROBE_MOUNTDIR/usr/lib/opkg/status"
+		storage_package_db_size="$(stat -c '%s' "$storage_package_db" 2>/dev/null || true)"
+	fi
+	if [ ! -s "$storage_package_unsorted" ] && [ -f "$storage_package_db" ] &&
+		[ ! -L "$storage_package_db" ] &&
+		storage_is_nonnegative_integer "$storage_package_db_size" &&
+		[ "$storage_package_db_size" -le "$CONFIG_IMPORT_MAX_MEMBER_BYTES" ]; then
+		awk '/^Package: [A-Za-z0-9+_.-]+$/ { print $2 }' \
+			"$storage_package_db" > "$storage_package_unsorted"
+	fi
+	LC_ALL=C sort -u "$storage_package_unsorted" > "$storage_package_output" || return 1
+	chmod 0600 "$storage_package_output" || return 1
+	STORAGE_RESCUE_PACKAGE_COUNT="$(wc -l < "$storage_package_output" | tr -d ' ')"
+	storage_is_nonnegative_integer "$STORAGE_RESCUE_PACKAGE_COUNT" || return 1
+}
+
+storage_prepare_rescue_snapshot() {
+	storage_rescue_scope="$1"
+	STORAGE_ERROR=""
+	[ "$STORAGE_EXISTING_RESCUE_AVAILABLE" = "1" ] ||
+		storage_set_error "$STORAGE_EXISTING_PROBE_REASON" || return 1
+	case "$storage_rescue_scope" in
+		config-only|full) ;;
+		*) storage_set_error "Unsupported rescue scope: $storage_rescue_scope" || return 1 ;;
+	esac
+	storage_mount_probe "$STORAGE_EXISTING_ROOT_PART" "${STORAGE_EXISTING_TEST_ROOT:-}" ||
+		storage_set_error "Could not mount the existing OpenWrt root read-only for rescue." || return 1
+	storage_rescue_available="$(config_import_mem_available_bytes || true)"
+	is_positive_integer "$storage_rescue_available" || {
+		storage_unmount_probe
+		storage_set_error "Could not determine available RAM for rescue."
+		return 1
+	}
+	storage_rescue_required=$((CONFIG_IMPORT_MAX_UNPACKED_BYTES * 3 + \
+		CONFIG_IMPORT_MAX_COMPRESSED_BYTES * 2 + CONFIG_IMPORT_RAM_RESERVE_BYTES))
+	[ "$storage_rescue_available" -ge "$storage_rescue_required" ] || {
+		storage_unmount_probe
+		storage_set_error "Not enough free RAM to rescue and validate the existing configuration safely."
+		return 1
+	}
+	STORAGE_RESCUE_WORKDIR="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/owrt-rescue.XXXXXX")" || {
+		storage_unmount_probe
+		storage_set_error "Could not create the private RAM rescue workspace."
+		return 1
+	}
+	chmod 0700 "$STORAGE_RESCUE_WORKDIR" || {
+		storage_unmount_probe
+		storage_clear_rescue_workspace
+		storage_set_error "Could not secure the RAM rescue workspace."
+		return 1
+	}
+	storage_collect_package_inventory || {
+		storage_unmount_probe
+		storage_clear_rescue_workspace
+		storage_set_error "Could not create the installed-package inventory."
+		return 1
+	}
+	storage_rescue_stage="$STORAGE_RESCUE_WORKDIR/stage"
+	mkdir -p "$storage_rescue_stage/etc" || {
+		storage_unmount_probe
+		storage_clear_rescue_workspace
+		storage_set_error "Could not create the RAM rescue staging tree."
+		return 1
+	}
+	STORAGE_RESCUE_MEMBER_COUNT=1
+	STORAGE_RESCUE_UNPACKED_SIZE=0
+	STORAGE_RESCUE_SKIPPED=0
+	case "$storage_rescue_scope" in
+		config-only)
+			[ -d "$STORAGE_PROBE_MOUNTDIR/etc/config" ] || {
+				storage_unmount_probe
+				storage_clear_rescue_workspace
+				storage_set_error "The existing OpenWrt installation has no /etc/config directory."
+				return 1
+			}
+			mkdir -p "$storage_rescue_stage/etc/config" || {
+				storage_unmount_probe
+				storage_clear_rescue_workspace
+				storage_set_error "Could not create the RAM rescue configuration directory."
+				return 1
+			}
+			storage_config_mode="$(stat -c '%a' "$STORAGE_PROBE_MOUNTDIR/etc/config" 2>/dev/null || true)"
+			case "$storage_config_mode" in
+				''|*[!0-7]*)
+					storage_unmount_probe
+					storage_clear_rescue_workspace
+					storage_set_error "Could not read the source configuration directory mode."
+					return 1
+					;;
+			esac
+			chmod "$storage_config_mode" "$storage_rescue_stage/etc/config" || {
+				storage_unmount_probe
+				storage_clear_rescue_workspace
+				storage_set_error "Could not preserve the source configuration directory mode."
+				return 1
+			}
+			STORAGE_RESCUE_MEMBER_COUNT=$((STORAGE_RESCUE_MEMBER_COUNT + 1))
+			storage_rescue_collect_tree "$STORAGE_PROBE_MOUNTDIR/etc/config" \
+				"$storage_rescue_stage/etc/config" "etc/config" || {
+				storage_unmount_probe
+				storage_clear_rescue_workspace
+				return 1
+			}
+			;;
+		full)
+			[ -d "$STORAGE_PROBE_MOUNTDIR/etc" ] || {
+				storage_unmount_probe
+				storage_clear_rescue_workspace
+				storage_set_error "The existing OpenWrt installation has no /etc directory."
+				return 1
+			}
+			storage_etc_mode="$(stat -c '%a' "$STORAGE_PROBE_MOUNTDIR/etc" 2>/dev/null || true)"
+			case "$storage_etc_mode" in
+				''|*[!0-7]*)
+					storage_unmount_probe
+					storage_clear_rescue_workspace
+					storage_set_error "Could not read the source /etc directory mode."
+					return 1
+					;;
+			esac
+			chmod "$storage_etc_mode" "$storage_rescue_stage/etc" || {
+				storage_unmount_probe
+				storage_clear_rescue_workspace
+				storage_set_error "Could not preserve the source /etc directory mode."
+				return 1
+			}
+			storage_rescue_collect_tree "$STORAGE_PROBE_MOUNTDIR/etc" \
+				"$storage_rescue_stage/etc" "etc" || {
+				storage_unmount_probe
+				storage_clear_rescue_workspace
+				return 1
+			}
+			;;
+	esac
+	storage_unmount_probe
+	storage_rescue_archive="$STORAGE_RESCUE_WORKDIR/rescue.tar.gz"
+	(umask 077; tar -czf "$storage_rescue_archive" -C "$storage_rescue_stage" etc) \
+		>> "$INSTALL_LOG" 2>&1 ||
+		{ storage_clear_rescue_workspace; storage_set_error "Could not create the RAM rescue archive."; return 1; }
+	config_import_prepare_file "$storage_rescue_archive" || {
+		STORAGE_ERROR="$CONFIG_IMPORT_ERROR"
+		storage_clear_rescue_workspace
+		return 1
+	}
+	config_import_prepare_policy "$storage_rescue_scope" || {
+		STORAGE_ERROR="$CONFIG_IMPORT_ERROR"
+		storage_clear_rescue_workspace
+		return 1
+	}
+	STORAGE_RESCUE_PACKAGE_LIST="$CONFIG_IMPORT_WORKDIR/rescued-packages.txt"
+	cp "$STORAGE_RESCUE_WORKDIR/packages.txt" "$STORAGE_RESCUE_PACKAGE_LIST" || {
+		storage_clear_rescue_workspace
+		storage_set_error "Could not retain the rescued package inventory in RAM."
+		return 1
+	}
+	chmod 0600 "$STORAGE_RESCUE_PACKAGE_LIST" || {
+		storage_clear_rescue_workspace
+		storage_set_error "Could not secure the rescued package inventory."
+		return 1
+	}
+	CONFIG_IMPORT_SOURCE_LABEL="Existing OpenWrt $STORAGE_EXISTING_VERSION on $STORAGE_EXISTING_ROOT_PART"
+	STORAGE_RESCUE_SCOPE="$storage_rescue_scope"
+	STORAGE_RESCUE_SOURCE_VERSION="$STORAGE_EXISTING_VERSION"
+	STORAGE_RESCUE_SOURCE_PART="$STORAGE_EXISTING_ROOT_PART"
+	storage_clear_rescue_workspace
+	return 0
+}

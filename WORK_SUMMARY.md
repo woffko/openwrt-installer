@@ -2,6 +2,33 @@
 
 Дата фиксации: 2026-08-15.
 
+## Alpha.11 Storage/Rescue Development
+
+- Опубликованный prerelease: `v1.0-alpha.10`,
+  `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.10`.
+- Текущий runtime: `v1.0-alpha.11`. Это development state, а не frozen
+  candidate и не опубликованный release.
+- Реализованы `fill`, `image`, 4/8/16/32 GiB presets и custom MiB/GiB rootfs;
+  fixed layout оставляет хвост диска неразмеченным.
+- MBR/GPT payload inspector считает exact 512-byte sectors и до `ERASE`
+  проверяет ext4 superblock/partition invariant. 4 KiB logical-sector disks
+  намеренно отклоняются.
+- Существующая x86 ext4 OpenWrt обнаруживается только на выбранном диске,
+  монтируется `ro,noload,nosuid,nodev,noexec`, а config-only/full snapshot
+  полностью копируется и повторно проверяется в RAM до записи target.
+- Full rescue удаляет stale installer state, сохраняет regular files и modes,
+  копирует hardlinks как независимые files и оставляет package inventory только
+  информационным.
+- Unknown/SNAPSHOT version relation требует ручного подтверждения; CLI rescue
+  его отклоняет. Standard upgrade action является zero-write handoff и не
+  запускает `sysupgrade` из live ISO.
+- Пройдены full fast smoke, UEFI fill/image/preset/custom install+boot, full
+  rescue+boot, zero-write handoff и official OpenWrt `25.12.5` online BIOS/MBR
+  и UEFI/GPT install+boot.
+- Hardware report обновлен до schema 3. Публикация alpha.11 заблокирована до
+  clean freeze и реального SATA+NVMe+rescue+power-cycle отчета по
+  `PHYSICAL_X86_STORAGE_RESCUE_TEST.md`.
+
 ## Актуальное состояние
 
 - Локальная папка проекта: `/home/w0w/owrt_installer`.
@@ -9,10 +36,11 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последняя опубликованная функциональная версия: обязательный `pv`, честный byte-percent записи payload, раздельный контроль `gzip`/`pv`/`dd`, cleanup FIFO/processes и полный QEMU install+boot smoke; release runtime `v1.0-alpha.7`.
-- Текущий frozen release-candidate runtime: `v1.0-alpha.9`, commit `8e8593c5891ff69f98a9ee3ef5fcdd23444d2b51`, metadata `release/v1.0-alpha.9-candidate.env`. Unified GRUB installer включает keyboard и experimental local VGA mouse через stock Linux `mousedev`; публикация и заявленная поддержка мыши по-прежнему ждут physical x86 gate.
-- Последний опубликованный release: `v1.0-alpha.7`.
-- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.7`.
+- Последний опубликованный release: `v1.0-alpha.10`.
+- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.10`.
+- Текущий development runtime: `v1.0-alpha.11`; clean candidate еще не заморожен.
+- `v1.0-alpha.9` candidate и его metadata сохранены как исторические и не
+  являются основанием для нового release.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
 - Старые releases `v1.0-alpha.1`...`v1.0-alpha.6` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
 - Опубликованный `v1.0-alpha.7` ISO содержит обязательные `whiptail` и `pv`; SHA-256: `89f9e2c89df7fe27f882d1d2db7114caefff226ad840b70b92b1205458ddfa7c`.
@@ -34,7 +62,9 @@
 - Netinstall RAM-workspace больше не меняет process-wide `umask`, а config-import копирует только проверенное содержимое `etc/` и нормализует режим каталога. QEMU post-import boot подтверждает доступные `0755` режимы `/` и `/etc`, импортированные UCI и отсутствие stale installer state.
 - `scripts/common.sh` фиксирует `umask 022`, чтобы ImageBuilder не создавал rootfs с `0700/0600` при запуске из hardened runner; добавлен `make build-env-smoke`.
 - Для physical gate сохранен скрытый kernel flag `owrt.hardware-test=1`: его временно добавляют через GRUB edit к unified entry, он принудительно включает `--dry-run`, а `owrt-hardware-report` создает ограниченный отчет без сетевых и аппаратных серийных идентификаторов.
-- Physical report schema v2 фиксирует безопасный enum подключения, обязательные ручные проверки и итог `physical_flow_result`; `scripts/verify-physical-report.sh` принимает первый alpha gate только для полного wired USB HID pass и отвергает receiver/PS2 или неполный отчет.
+- Physical report schema v3 объединяет wired USB HID с обязательными
+  storage/rescue checks для SATA, NVMe, restored boot и pre-ERASE power-cycle;
+  schema v2 остается только историческим форматом.
 - `make freeze-candidate VERSION=...` создает metadata только из clean non-dev commit и проверенных свежих artifacts; commit не выполняется автоматически. Manifest содержит `build_commit`/`build_dirty` и находится также в корне ISO.
 - `make release-gate CANDIDATE=... REPORT=...` использует data-only parser, требует committed metadata, сверяет physical report, commit, ISO/sidecar/embedded manifest и отвергает tracked/staged/untracked/unexpected-ignored runtime. Изолированный Git smoke покрывает injection, dirty, checksum, hash и embedded-manifest rejection.
 - GitHub Actions smoke gate опубликован в `main`: push/PR workflow запускает `make smoke` без разрешения на запись в repository. Первый run `31657834111` для commit `9e63814` успешно завершен за 43 секунды.

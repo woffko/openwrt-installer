@@ -21,6 +21,7 @@ kmod-nls-iso8859-1
 parted
 fdisk
 e2fsprogs
+dumpe2fs
 resize2fs
 blkid
 lsblk

@@ -147,7 +147,7 @@ expect_rejected 'candidate metadata overwrite' "$freeze" v1.0-alpha.9
 
 report="$work_dir/wired-report.txt"
 cat > "$report" <<'EOF'
-report_schema=2
+report_schema=3
 installer_version=v1.0-alpha.9
 kernel_mouse_flag=yes
 kernel_hardware_test_flag=yes
@@ -162,6 +162,11 @@ manual_wheel=pass
 manual_wheel_skip_reason=not-applicable
 manual_keyboard=pass
 manual_exact_prompt_mouse_stop=pass
+manual_storage_rescue_navigation=pass
+manual_sata_root_size_and_boot=pass
+manual_nvme_root_size_and_boot=pass
+manual_rescue_restore=pass
+manual_pre_erase_power_cycle_no_change=pass
 relative_pointer_count=1
 physical_flow_result=pass
 EOF

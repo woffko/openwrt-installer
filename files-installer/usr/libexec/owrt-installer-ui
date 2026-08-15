@@ -116,6 +116,14 @@ ui_ready_marker() {
 		"Offline fallback") ui_ready_name="online-fallback" ;;
 		"Select target disk") ui_ready_name="target-disk" ;;
 		"Select installation type") ui_ready_name="install-type" ;;
+		"Select installation action") ui_ready_name="existing-system-action" ;;
+		"Select OpenWrt partition size") ui_ready_name="storage-layout" ;;
+		"Custom OpenWrt partition size") ui_ready_name="storage-custom" ;;
+		"Select rescue scope") ui_ready_name="rescue-scope" ;;
+		"Full rescue warning") ui_ready_name="rescue-full-warning" ;;
+		"Rescue version warning") ui_ready_name="rescue-version-warning" ;;
+		"Rescue ready") ui_ready_name="rescue-ready" ;;
+		"Standard OpenWrt upgrade") ui_ready_name="existing-upgrade" ;;
 		"Select backup archive") ui_ready_name="config-import-archive" ;;
 		"Select import scope") ui_ready_name="config-import-scope" ;;
 		"Imported network configuration") ui_ready_name="config-import-network" ;;
@@ -408,6 +416,7 @@ ui_step_name() {
 	title="$1"
 	case "$title" in
 		*disk*|*Disk*) printf '%s\n' "DISK" ;;
+		*partition*|*Partition*|*rescue*|*Rescue*|*backup*|*Backup*|*installation\ action*) printf '%s\n' "STORAGE" ;;
 		*LAN*) printf '%s\n' "LAN" ;;
 		*WAN*|*PPPoE*|*Static*) printf '%s\n' "WAN" ;;
 		*summary*|*Summary*|*Review*|*ERASE*|*erase*) printf '%s\n' "REVIEW" ;;
@@ -419,7 +428,7 @@ ui_step_name() {
 ui_steps_text() {
 	active="$1"
 	out="Steps:"
-	for step in DISK LAN WAN REVIEW INSTALL; do
+	for step in DISK STORAGE LAN WAN REVIEW INSTALL; do
 		if [ "$step" = "$active" ]; then
 			out="$out [$step]"
 		else
@@ -1212,20 +1221,39 @@ ui_summary_screen() {
 	ui_ready_marker "Review installation"
 	if ui_dialog_active; then
 		body="Target disk: $TARGET
+Target info: ${TARGET_DISK_DESCRIPTION:-unknown}
+Mode: ${INSTALL_MODE:-clean}
 Image source: $PAYLOAD_SOURCE_LABEL
 OpenWrt: ${PAYLOAD_VERSION:-unknown} ($PAYLOAD_BOOT_MODE)
 Image: $PAYLOAD_FILENAME
-SHA-256: $PAYLOAD_SHA256"
+SHA-256: $PAYLOAD_SHA256
+Storage: $(storage_layout_label)
+Image root: $STORAGE_ROOT_IMAGE_MIB MiB
+Geometry: partition 2 sectors $STORAGE_ROOT_START_SECTOR-$STORAGE_ROOT_TARGET_END_SECTOR"
+		if [ -n "${STORAGE_EXISTING_ROOT_SECTORS:-}" ] &&
+			storage_is_nonnegative_integer "$STORAGE_EXISTING_ROOT_SECTORS"; then
+			body="$body
+Existing root: $(((STORAGE_EXISTING_ROOT_SECTORS + 2047) / 2048)) MiB on $STORAGE_EXISTING_ROOT_PART"
+		fi
 		if [ "$PAYLOAD_SOURCE_ID" = "downloaded-official" ]; then
 			body="$body
 RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
 		fi
-		if [ "${INSTALL_MODE:-clean}" = "import" ]; then
+		case "${INSTALL_MODE:-clean}" in
+		import|rescue)
 			body="$body
 Config: $CONFIG_IMPORT_SOURCE_LABEL
 Import: $CONFIG_IMPORT_POLICY, $CONFIG_IMPORT_MEMBER_COUNT members, $(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE")
 Import SHA-256: $CONFIG_IMPORT_SHA256"
-		fi
+			if [ "$INSTALL_MODE" = "rescue" ]; then
+				body="$body
+Rescue: OpenWrt $STORAGE_RESCUE_SOURCE_VERSION from $STORAGE_RESCUE_SOURCE_PART; skipped=$STORAGE_RESCUE_SKIPPED
+Packages: $STORAGE_RESCUE_PACKAGE_COUNT names recorded; not installed"
+				body="$body
+RAM warning: rescued configuration exists only in volatile memory until installation completes"
+			fi
+			;;
+		esac
 		if [ "${NETWORK_SOURCE:-wizard}" = "imported" ]; then
 			body="$body
 Network: imported from backup"
@@ -1268,18 +1296,35 @@ ALL DATA ON $TARGET WILL BE ERASED."
 	ui_ansi_active || return 1
 	ui_screen_begin "Review installation"
 	ui_line "Target disk: $TARGET"
+	ui_line "Target info: ${TARGET_DISK_DESCRIPTION:-unknown}"
+	ui_line "Mode: ${INSTALL_MODE:-clean}"
 	ui_line "Image source: $PAYLOAD_SOURCE_LABEL"
 	ui_line "OpenWrt: ${PAYLOAD_VERSION:-unknown} ($PAYLOAD_BOOT_MODE)"
 	ui_line "Image: $PAYLOAD_FILENAME"
 	ui_line "SHA-256: $PAYLOAD_SHA256"
+	ui_line "Storage: $(storage_layout_label)"
+	ui_line "Image root: $STORAGE_ROOT_IMAGE_MIB MiB"
+	ui_line "Geometry: partition 2 sectors $STORAGE_ROOT_START_SECTOR-$STORAGE_ROOT_TARGET_END_SECTOR"
+	if [ -n "${STORAGE_EXISTING_ROOT_SECTORS:-}" ] &&
+		storage_is_nonnegative_integer "$STORAGE_EXISTING_ROOT_SECTORS"; then
+		ui_line "Existing root: $(((STORAGE_EXISTING_ROOT_SECTORS + 2047) / 2048)) MiB on $STORAGE_EXISTING_ROOT_PART"
+	fi
 	if [ "$PAYLOAD_SOURCE_ID" = "downloaded-official" ]; then
 		ui_line "RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
 	fi
-	if [ "${INSTALL_MODE:-clean}" = "import" ]; then
+	case "${INSTALL_MODE:-clean}" in
+	import|rescue)
 		ui_line "Config: $CONFIG_IMPORT_SOURCE_LABEL"
 		ui_line "Import: $CONFIG_IMPORT_POLICY, $CONFIG_IMPORT_MEMBER_COUNT members, $(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE")"
 		ui_line "Import SHA-256: $CONFIG_IMPORT_SHA256"
-	fi
+		[ "$INSTALL_MODE" = "rescue" ] &&
+			ui_line "Rescue: OpenWrt $STORAGE_RESCUE_SOURCE_VERSION from $STORAGE_RESCUE_SOURCE_PART; skipped=$STORAGE_RESCUE_SKIPPED"
+		[ "$INSTALL_MODE" = "rescue" ] &&
+			ui_line "Packages: $STORAGE_RESCUE_PACKAGE_COUNT names recorded; not installed"
+		[ "$INSTALL_MODE" = "rescue" ] &&
+			ui_line_warning "RAM ONLY: rescued configuration is volatile until installation completes."
+		;;
+	esac
 	if [ "${NETWORK_SOURCE:-wizard}" = "imported" ]; then
 		ui_line "Network: imported from backup"
 	elif [ "$SKIP_NETWORK" = "1" ]; then

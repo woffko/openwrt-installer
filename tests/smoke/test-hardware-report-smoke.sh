@@ -46,7 +46,7 @@ cat > "$work_dir/install.log" <<'EOF'
 [owrt-installer-mouse] stopped
 INFO: Dry run complete; no changes were made
 EOF
-printf '%s\n' '#!/bin/sh' 'INSTALLER_VERSION="v1.0-alpha.10"' > "$work_dir/owrt-install"
+printf '%s\n' '#!/bin/sh' 'INSTALLER_VERSION="v1.0-alpha.11"' > "$work_dir/owrt-install"
 
 report="$work_dir/report.txt"
 OWRT_HW_REPORT_NONINTERACTIVE=1 \
@@ -65,10 +65,15 @@ OWRT_HW_MOUSE_STATE="$work_dir/missing-state" \
 	OWRT_HW_MANUAL_WHEEL=pass \
 	OWRT_HW_MANUAL_KEYBOARD=pass \
 	OWRT_HW_MANUAL_EXACT=pass \
+	OWRT_HW_MANUAL_STORAGE_NAVIGATION=pass \
+	OWRT_HW_MANUAL_SATA_LAYOUT=pass \
+	OWRT_HW_MANUAL_NVME_LAYOUT=pass \
+	OWRT_HW_MANUAL_RESCUE_RESTORE=pass \
+	OWRT_HW_MANUAL_POWER_CYCLE=pass \
 	"$REPORTER" "$report" >/dev/null
 
-assert_contains "$report" "report_schema=2"
-assert_contains "$report" "installer_version=v1.0-alpha.10"
+assert_contains "$report" "report_schema=3"
+assert_contains "$report" "installer_version=v1.0-alpha.11"
 assert_contains "$report" "kernel_mouse_flag=yes"
 assert_contains "$report" "kernel_hardware_test_flag=yes"
 assert_contains "$report" "gpm_daemon_version=1.20.7-r5"
@@ -82,6 +87,11 @@ assert_contains "$report" "pointer_connection=usb-wired"
 assert_contains "$report" "manual_click=pass"
 assert_contains "$report" "manual_wheel=pass"
 assert_contains "$report" "manual_wheel_skip_reason=not-applicable"
+assert_contains "$report" "manual_storage_rescue_navigation=pass"
+assert_contains "$report" "manual_sata_root_size_and_boot=pass"
+assert_contains "$report" "manual_nvme_root_size_and_boot=pass"
+assert_contains "$report" "manual_rescue_restore=pass"
+assert_contains "$report" "manual_pre_erase_power_cycle_no_change=pass"
 assert_contains "$report" "relative_pointer_1=event0,bus=0003,vendor=1234,product=5678"
 assert_contains "$report" "relative_pointer_count=1"
 assert_contains "$report" "physical_flow_result=pass"
@@ -116,6 +126,7 @@ OWRT_HW_MOUSE_STATE="$work_dir/missing-state" \
 	"$REPORTER" "$incomplete_report" >/dev/null || incomplete_status=$?
 [ "$incomplete_status" -eq 2 ] || fail "Incomplete report must exit with status 2"
 assert_contains "$incomplete_report" "pointer_connection=unknown"
+assert_contains "$incomplete_report" "manual_rescue_restore=skipped"
 assert_contains "$incomplete_report" "physical_flow_result=incomplete"
 
 printf 'Hardware report smoke tests passed.\n'

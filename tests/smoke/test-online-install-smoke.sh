@@ -297,12 +297,13 @@ write_fake_fdisk() {
 	{
 		printf '%s\n' '#!/bin/sh'
 		printf '%s\n' 'if [ "${FAKE_BAD_LAYOUT:-0}" = 1 ]; then printf "Disklabel type: unknown\n"; exit 0; fi'
+		printf '%s\n' 'image=""; for arg do image=$arg; done; case "$image" in *[0-9]) part="${image}p" ;; *) part="$image" ;; esac'
 		printf '%s\n' 'case "$OWRT_NETINSTALL_TEST_BOOT_MODE" in'
 		printf '%s\n' '  uefi)'
-		printf '%s\n' '    printf "Disklabel type: gpt\nprobe1 Linux filesystem\nprobe2 Linux filesystem\n"'
+		printf '%s\n' '    printf "Disklabel type: gpt\nDevice Start End Sectors Size Type\n%s1 512 2047 1536 768K Linux filesystem\n%s2 2048 16383 14336 7M Linux filesystem\n" "$part" "$part"'
 		printf '%s\n' '    ;;'
 		printf '%s\n' '  bios)'
-		printf '%s\n' '    printf "Disklabel type: dos\nprobe1 83 Linux\nprobe2 83 Linux\n"'
+		printf '%s\n' '    printf "Disklabel type: dos\nDevice Start End Sectors Size Id Type\n%s1 512 2047 1536 768K 83 Linux\n%s2 2048 16383 14336 7M 83 Linux\n" "$part" "$part"'
 		printf '%s\n' '    ;;'
 		printf '%s\n' 'esac'
 	} > "$path"
@@ -402,6 +403,10 @@ raw_image="$work_dir/image.raw"
 valid_payload="$work_dir/image.img.gz"
 invalid_payload="$work_dir/not-gzip.img.gz"
 dd if=/dev/zero of="$raw_image" bs=1M count=9 status=none
+# Minimal ext4 superblock for a 7 MiB root at sector 2048.
+printf '\000\034\000\000' | dd of="$raw_image" bs=1 seek=1049604 conv=notrunc status=none
+printf '\000\000\000\000' | dd of="$raw_image" bs=1 seek=1049624 conv=notrunc status=none
+printf '\123\357' | dd of="$raw_image" bs=1 seek=1049656 conv=notrunc status=none
 gzip -c "$raw_image" > "$valid_payload"
 printf 'not a gzip stream\n' > "$invalid_payload"
 valid_payload_sha="$(sha256sum "$valid_payload" | awk '{ print $1 }')"
@@ -416,7 +421,7 @@ FAKE_USIGN_FAIL=1 run_acquire_case bad-signature bios 1 'manifest signature is i
 FAKE_BAD_CHECKSUM=1 run_acquire_case checksum-mismatch bios 1 'SHA-256 does not match the signed manifest'
 FAKE_PAYLOAD_PATH="$invalid_payload" FAKE_PAYLOAD_SHA="$invalid_payload_sha" \
 	run_acquire_case truncated-gzip bios 1 'invalid or truncated gzip stream'
-FAKE_BAD_LAYOUT=1 run_acquire_case wrong-layout uefi 1 'does not have the expected x86 GPT combined layout'
+FAKE_BAD_LAYOUT=1 run_acquire_case wrong-layout uefi 1 'unsupported partition table'
 TEST_MEM_AVAILABLE=1 run_acquire_case insufficient-ram bios 1 'Insufficient RAM'
 
 fallback_output="$work_dir/fallback.txt"
@@ -443,6 +448,14 @@ OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
 	netinstall_has_default_route() { return 0; }
 	select_from_menu() { SELECTED_VALUE=embedded; }
 	autostart_serial_marker() { [ "$1" = "OWRT_INSTALLER_NETINSTALL_FALLBACK=embedded" ]; }
+	storage_inspect_payload_layout() {
+		STORAGE_TABLE_TYPE=gpt
+		STORAGE_PAYLOAD_SECTOR_SIZE=512
+		STORAGE_ROOT_START_SECTOR=2048
+		STORAGE_ROOT_IMAGE_END_SECTOR=16383
+		STORAGE_ROOT_IMAGE_SECTORS=14336
+		STORAGE_ROOT_IMAGE_MIB=7
+	}
 	prepare_online_payload
 	verify_payload
 	ui_set_payload_version "$PAYLOAD_VERSION"

@@ -3,6 +3,13 @@
 This procedure validates the experimental local-console mouse path on bare
 metal without allowing the installer to write a disk.
 
+The mouse path was also checked on a real machine for published
+`v1.0-alpha.10`. This document remains useful for mouse diagnostics, but its
+old schema 2 report is no longer sufficient for a new release. Current
+storage/rescue candidates must follow
+[PHYSICAL_X86_STORAGE_RESCUE_TEST.md](PHYSICAL_X86_STORAGE_RESCUE_TEST.md) and
+produce one combined schema 3 report.
+
 ## Historical Release Candidate
 
 The previous physical alpha candidate was:
@@ -17,7 +24,7 @@ It is retained only as historical evidence. Runtime and image changes after
 that build invalidated it, so it must not be used for a new physical report or
 release.
 
-## Current Release Candidate
+## Historical Alpha.9 Candidate
 
 The frozen candidate for the next physical report is:
 
@@ -50,9 +57,8 @@ cd output
 sha256sum -c sha256sums.txt
 ```
 
-For an actual gate, the hybrid ISO line must match the current `v1.0-alpha.9`
-candidate block and committed metadata exactly, not the historical
-`v1.0-alpha.8` block above.
+The hashes above are retained only to identify the old alpha.9 artifact. Do
+not use either historical block for a current release gate.
 
 ## Required Hardware
 
@@ -62,11 +68,9 @@ candidate block and committed metadata exactly, not the historical
 - at least one target disk visible to the installer;
 - at least two network interfaces, physical or USB, for the complete wizard.
 
-One successful wired USB HID run closes the physical gate for an experimental
-alpha release whose main entry enables mouse input. A second platform class,
-preferably a laptop with an internal PS/2-compatible pointer or a different USB
-receiver/controller, remains required before calling mouse input generally
-supported.
+A wired USB HID run closes only the mouse portion of the current physical
+gate. SATA, NVMe, root-size, rescue, and pre-ERASE power-cycle results remain
+separate required checks.
 
 ## Procedure
 
@@ -93,14 +97,16 @@ supported.
    owrt-hardware-report
    ```
 
-10. Answer each manual gate with `p`, `f`, or `s`. Preserve the resulting
-    `/tmp/owrt-hardware-report.txt` before rebooting the RAM-root system.
-11. On the build host, validate the preserved report before release:
+10. Answer each manual gate with `p`, `f`, or `s`. For a mouse-only diagnostic,
+    mark unperformed storage checks as skipped; the final result will correctly
+    remain incomplete. Preserve `/tmp/owrt-hardware-report.txt` before reboot.
+11. For a release, complete the storage/rescue procedure and then validate the
+    combined report on the build host:
 
     ```sh
     ./scripts/verify-physical-report.sh /path/to/owrt-hardware-report.txt
     make release-gate \
-      CANDIDATE=release/v1.0-alpha.9-candidate.env \
+      CANDIDATE=release/v1.0-alpha.N-candidate.env \
       REPORT=/path/to/owrt-hardware-report.txt
     ```
 
@@ -108,7 +114,7 @@ supported.
     sidecar and ISO-embedded manifest, build provenance, and absence of later
     tracked, staged, untracked, or unexpected ignored runtime changes.
 
-## Pass Criteria
+## Mouse Subcriteria
 
 The report must contain:
 
@@ -125,7 +131,6 @@ manual_keyboard=pass
 manual_exact_prompt_mouse_stop=pass
 pointer_connection=usb-wired
 relative_pointer_count=1
-physical_flow_result=pass
 ```
 
 `relative_pointer_count` may be greater than one. `manual_wheel=skipped` is
@@ -133,9 +138,11 @@ acceptable only when the available lists cannot scroll; otherwise it must be
 `pass`. The report records this exception as
 `manual_wheel_skip_reason=no-scrollable-list`. Any `fail`, missing automatic
 `yes`, unknown connection type, or remaining GPM runtime file keeps the
-physical gate open. The alpha gate verifier additionally requires
+physical gate open. The verifier additionally requires
 `pointer_connection=usb-wired`; receiver and PS/2 reports remain useful as
-secondary-platform evidence but cannot close the first gate.
+secondary-platform evidence. `physical_flow_result=pass` is emitted only when
+the schema 3 storage/rescue checks also pass. Historical schema 2 reports are
+intentionally rejected by the current release gate.
 
 Record the machine model, firmware mode, and pointer connection type next to
 the report after reviewing them. Do not include DMI serial numbers, disk

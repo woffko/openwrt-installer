@@ -5,11 +5,12 @@
 Minimal OpenWrt-based disk installer for x86_64 routers. The project builds an
 OpenWrt `25.12.5` live USB image containing a prebuilt target image. The
 `owrt-install` wizard writes that payload to an SSD, NVMe, SATA, or virtual
-disk and expands its ext4 root filesystem. An optional boot-menu path can
+disk and either keeps, bounds, or expands its ext4 root filesystem. An optional boot-menu path can
 instead download and verify the latest official stable OpenWrt x86 image in
 RAM before running the same installation flow. After target selection, the
 interactive installer can also restore a validated OpenWrt configuration
-backup from a read-only USB partition instead of performing a clean install.
+backup from a read-only USB partition, or rescue configuration from an
+existing ext4 OpenWrt installation before reinstalling it.
 
 Repository: <https://github.com/woffko/openwrt-installer>
 
@@ -20,7 +21,8 @@ names do not need to match names used by the live installer.
 
 ## Warning
 
-Installation completely erases the selected disk. Review the target carefully.
+Installation completely erases the selected disk, including any partitions in
+the space that will become unallocated. Review the target carefully.
 Do not select the USB device that booted the installer. Removable disks are
 blocked unless `--allow-removable` is passed explicitly.
 
@@ -173,6 +175,64 @@ owrt-install --target /dev/nvme0n1 \
 Use `--config-import-policy full` only for a trusted complete backup. Use
 `--import-network wizard` to configure LAN/WAN after importing it.
 
+### Partition size and existing-install rescue
+
+After selecting a target, the wizard can use the entire disk, keep the root
+partition at the original image size, select a fitting `4`, `8`, `16`, or
+`32 GiB` preset, or accept a custom whole-number MiB/GiB size. Fixed-size
+layouts leave the remaining tail unallocated. They do not preserve partitions
+or data that were already in that tail: the selected whole disk remains a
+destructive target.
+
+The geometry path supports the official x86/64 ext4 combined layouts: MBR for
+BIOS and GPT for UEFI. It calculates in 512-byte sectors, verifies the actual
+partition boundary after resizing, runs ext4 checks and resize, and verifies
+the resulting filesystem before writing configuration. Disks exposing 4 KiB
+logical sectors are rejected in this release instead of being guessed at.
+The payload partition table and ext4 superblock geometry are checked before
+the destructive confirmation, so an image-size mismatch cannot first surface
+after the disk has been written. Only the expected boot and root partitions
+are accepted, plus the small standard OpenWrt GPT auxiliary partition 128 when
+present. In image-size mode the backup GPT is explicitly relocated to the end
+of the selected disk and checked again by the QEMU storage test.
+
+When the selected disk contains a readable x86 ext4 OpenWrt installation, the
+wizard offers **Rescue and upgrade**. It mounts the old root read-only with
+`ro,noload,nosuid,nodev,noexec`, parses release metadata without executing it,
+copies either `/etc/config` or a bounded `/etc` snapshot into private RAM,
+unmounts the source, and validates the snapshot through the same strict import
+path used for USB backups. Package inventory is retained as metadata and is
+not installed automatically. The review shows source and target versions,
+snapshot hash, network policy, and storage geometry before the exact erase
+phrase.
+
+With the default archive limits, rescue requires at least `576 MiB` of free
+RAM before it reads the old configuration. This conservative budget covers
+the source tree/archive, the independent import copy and extraction, the
+filtered apply tree, and runtime reserve at their configured maxima.
+
+The RAM snapshot has no persistence across cancel, reboot, or power loss.
+**Boot existing OpenWrt for standard upgrade** performs no disk write and
+hands control back to the existing system; the live ISO does not run
+`sysupgrade` in a chroot. A later standard combined-image upgrade may reset a
+custom root layout, so verify its root-size options before using it.
+
+CLI parity is available for controlled automation:
+
+```sh
+owrt-install --target /dev/nvme0n1 --root-size 8GiB \
+  --lan-mac xx:xx:xx:xx:xx:xx \
+  --wan-mac yy:yy:yy:yy:yy:yy \
+  --yes-i-know-this-will-erase-data
+
+owrt-install --target /dev/nvme0n1 \
+  --rescue-existing --rescue-scope config-only --root-size 8GiB \
+  --import-network keep \
+  --yes-i-know-this-will-erase-data
+```
+
+Non-interactive rescue never silently falls back to a clean installation.
+
 Useful diagnostics:
 
 ```sh
@@ -221,9 +281,10 @@ the exact `ERASE /dev/...` phrase. That destructive phrase is always entered
 with the keyboard. The previous direct-evdev implementation passed QEMU but
 failed its VMware cursor test and has been replaced by the kernel multiplexer.
 The replacement path passed the automated QEMU USB, PS/2, absolute-tablet,
-crash, cleanup, and fallback matrix, and its VMware cursor test on 2026-08-14.
-The mode remains experimental and the release gate remains blocked until the
-separate physical x86 acceptance is completed.
+crash, cleanup, and fallback matrix, its VMware cursor test on 2026-08-14, and
+a real-machine mouse check for `v1.0-alpha.10`. The mode remains experimental.
+The storage/rescue release remains blocked until its separate physical SATA
+and NVMe acceptance is completed.
 
 For bare-metal validation, highlight **OpenWrt x86 Installer**, press `e`, and
 append `owrt.hardware-test=1` to its `linux` line before booting with Ctrl+X or
@@ -233,8 +294,10 @@ explicit no-changes dialog. Run `owrt-hardware-report` afterward to create a
 privacy-safe acceptance report with a machine-readable verdict.
 After preserving that report, validate the wired USB alpha gate on the build
 host with `./scripts/verify-physical-report.sh REPORT`. Follow
-[PHYSICAL_X86_MOUSE_TEST.md](PHYSICAL_X86_MOUSE_TEST.md); use a disposable test
-machine and non-essential target disk even in dry-run mode.
+[PHYSICAL_X86_MOUSE_TEST.md](PHYSICAL_X86_MOUSE_TEST.md). Storage/rescue
+candidates additionally require
+[PHYSICAL_X86_STORAGE_RESCUE_TEST.md](PHYSICAL_X86_STORAGE_RESCUE_TEST.md);
+use a disposable machine and non-essential disks.
 
 UI mode can be forced for debugging:
 
@@ -253,8 +316,9 @@ remains available. The optional `dialog --mouse` backend is still supported,
 but OpenWrt `25.12.5` does not currently provide that package in this feed.
 
 Before the final destructive confirmation, the review screen offers a safe
-action menu: continue to the exact `ERASE /dev/...` prompt, edit LAN/WAN
-interfaces and network settings, or cancel back to the shell.
+action menu: continue to the exact `ERASE /dev/...` prompt, edit storage size,
+rescue/import policy, LAN/WAN interfaces and network settings, or cancel back
+to the shell.
 
 During the payload write, the installer uses the packaged `pv` utility and the
 manifest's uncompressed size to show byte-accurate percentage progress. The
@@ -311,11 +375,14 @@ The installed system also contains `/etc/openwrt-installer-release`.
 
 ## Future Work
 
-- Implement the [single-disk storage sizing and existing-install rescue
-  plan](STORAGE_AND_RESCUE_PLAN.md): selectable OpenWrt ext4 root size,
-  unallocated remaining space, read-only RAM rescue, and a zero-write handoff
-  to an installed OpenWrt for standard upgrades. RAID is intentionally out of
-  scope.
+- Export a validated RAM rescue snapshot to a selected USB device before the
+  destructive confirmation.
+- Investigate read-only rescue for squashfs plus overlay installations.
+- Validate how `owut --rootfs-size` interacts with installer-created bounded
+  layouts.
+
+RAID is intentionally out of scope: this project does not modify the OpenWrt
+kernel, initramfs, or sysupgrade platform path required to support it safely.
 
 ## Checks
 
@@ -357,11 +424,25 @@ Run the deterministic USB backup validation and restore matrix without QEMU:
 make config-import-smoke
 ```
 
+Run deterministic storage geometry and RAM-rescue validation without QEMU:
+
+```sh
+make storage-rescue-smoke
+```
+
 After `make iso`, run only the USB backup install and installed-system boot
 acceptance:
 
 ```sh
 make config-import-qemu-smoke
+```
+
+Run focused UEFI bounded/image storage and existing-install rescue/reboot
+acceptance after `make iso`:
+
+```sh
+make storage-qemu-smoke
+make rescue-qemu-smoke
 ```
 
 Run the experimental local-console mouse QEMU matrix after `make iso`:
@@ -377,9 +458,9 @@ and target-disk immutability.
 
 Run the full automated hybrid ISO gate after `make iso`. It covers BIOS, UEFI,
 local-disk conditional default and its missing-disk path, the hidden
-hardware-test kernel flag, the VGA
-curses framebuffer, clean installation to a disposable qcow2 disk, USB backup
-import, and boot validation of both installed systems:
+hardware-test kernel flag, the VGA curses framebuffer, clean fill and bounded
+installation, exact partition geometry, existing-install rescue, zero-write
+standard-upgrade handoff, USB backup import, and installed-system boot:
 
 ```sh
 make iso-smoke
@@ -425,6 +506,7 @@ make iso
 make smoke
 make mouse-qemu-smoke
 make iso-smoke
+make online-install-qemu-smoke
 make freeze-candidate VERSION=v1.0-alpha.N
 ```
 
@@ -434,8 +516,8 @@ from another or dirty commit. Review and commit the newly created
 `release/v1.0-alpha.N-candidate.env` before collecting a physical report. Do
 not rebuild or change runtime files afterward.
 
-After completing the documented wired USB test, run the immutable gate before
-creating the alpha release:
+After completing the documented wired USB, SATA, NVMe, and rescue test, run the
+immutable gate before creating the alpha release:
 
 ```sh
 make release-gate \
@@ -463,5 +545,6 @@ See `tests/qemu/README.md` for the guest workflow.
 ## MVP limits
 
 The MVP intentionally does not implement a web installer, package selection,
-VLANs, multiple LAN ports, Wi-Fi setup, encrypted installation, Secure Boot,
-or non-ext4 target filesystems.
+RAID, preservation of extra target-disk partitions, VLANs, multiple LAN ports,
+Wi-Fi setup, encrypted installation, Secure Boot, 4 KiB logical-sector target
+disks, or non-ext4 target filesystems.

@@ -11,10 +11,11 @@
 
 ## Current Artifacts
 
-- Current published alpha release: `v1.0-alpha.7`.
-- Current frozen local release candidate: `v1.0-alpha.9`, runtime commit `8e8593c5891ff69f98a9ee3ef5fcdd23444d2b51`, metadata `release/v1.0-alpha.9-candidate.env` (not published before the physical x86 gate).
+- Current published alpha release: `v1.0-alpha.10`.
+- Current development runtime: `v1.0-alpha.11`; it is not frozen or published before the physical SATA, NVMe, rescue, and pre-ERASE power-cycle gate.
 - Current hybrid ISO: `output/openwrt-x86-64-installer-hybrid.iso`.
-- Current candidate ISO SHA-256: `2b570a2e5747b0a9f2cd46c8252059dd64f101d35c0e14c06fdb69402cffd851`.
+- Read the current development ISO checksum from `output/sha256sums.txt`; do not treat it as a release candidate until the freeze workflow succeeds.
+- Historical `v1.0-alpha.9` candidate metadata remains under `release/`; do not move it.
 - Older alpha release tags are preserved; do not move them.
 
 ## Semantic Navigation With LSP MCP

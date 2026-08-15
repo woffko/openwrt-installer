@@ -147,6 +147,7 @@ run_parse_args_smoke() {
 			--config-backup /tmp/router-backup.tar.gz \
 			--config-import-policy full \
 			--import-network wizard \
+			--root-size 8GiB \
 			--skip-network-wizard \
 			--dry-run \
 			--yes-i-know-this-will-erase-data \
@@ -162,6 +163,7 @@ run_parse_args_smoke() {
 		printf "import=%s policy=%s network=%s\n" \
 			"$CONFIG_IMPORT_SOURCE_REQUEST" "$CONFIG_IMPORT_POLICY_REQUEST" \
 			"$CONFIG_IMPORT_NETWORK_REQUEST"
+		printf "root_size=%s\n" "$STORAGE_LAYOUT_REQUEST"
 		cleanup
 	' sh "$INSTALLER" > "$out_file" 2>&1
 
@@ -173,6 +175,105 @@ run_parse_args_smoke() {
 	assert_contains "$out_file" "lan=10.10.10.1/24 255.255.255.0"
 	assert_contains "$out_file" "wan=disabled wan6=disabled"
 	assert_contains "$out_file" "import=/tmp/router-backup.tar.gz policy=full network=wizard"
+	assert_contains "$out_file" "root_size=8GiB"
+}
+
+run_rescue_parse_args_smoke() {
+	work_dir="$1"
+	out_file="$work_dir/rescue-parse.out"
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+		. "$1"
+		parse_args --target /dev/testdisk --rescue-existing \
+			--rescue-scope config-only --import-network keep --root-size image --dry-run
+		printf "rescue=%s scope=%s network=%s root=%s\n" \
+			"$RESCUE_EXISTING" "$RESCUE_SCOPE_REQUEST" "$CONFIG_IMPORT_NETWORK_REQUEST" \
+			"$STORAGE_LAYOUT_REQUEST"
+		cleanup
+	' sh "$INSTALLER" > "$out_file" 2>&1
+	assert_contains "$out_file" "rescue=1 scope=config-only network=keep root=image"
+
+	set +e
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+		. "$1"
+		parse_args --target /dev/testdisk --rescue-existing
+	' sh "$INSTALLER" > "$work_dir/rescue-invalid.out" 2>&1
+	status=$?
+	set -e
+	[ "$status" -eq 1 ] || fail "Rescue without explicit scope was not rejected"
+	assert_contains "$work_dir/rescue-invalid.out" "--rescue-existing requires --rescue-scope"
+}
+
+run_storage_cli_and_version_gate_smoke() {
+	work_dir="$1"
+
+	set +e
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+		. "$1"
+		parse_args --root-size 8GiB
+	' sh "$INSTALLER" > "$work_dir/root-size-no-target.out" 2>&1
+	status=$?
+	set -e
+	[ "$status" -eq 1 ] || fail "--root-size without --target was not rejected"
+	assert_contains "$work_dir/root-size-no-target.out" "--root-size requires --target"
+
+	set +e
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+		. "$1"
+		parse_args --target /dev/testdisk --root-size 8.5GiB
+	' sh "$INSTALLER" > "$work_dir/root-size-invalid.out" 2>&1
+	status=$?
+	set -e
+	[ "$status" -eq 1 ] || fail "Invalid --root-size was not rejected"
+	assert_contains "$work_dir/root-size-invalid.out" "Invalid --root-size value: 8.5GiB"
+
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+		. "$1"
+		printf "newer=%s\n" "$(release_version_relation 25.12.6 25.12.5)"
+		printf "equal=%s\n" "$(release_version_relation 25.12.5 25.12.5)"
+		printf "older=%s\n" "$(release_version_relation 25.12.4 25.12.5)"
+		printf "snapshot=%s\n" "$(release_version_relation SNAPSHOT 25.12.5)"
+		printf "main=%s\n" "$(release_version_relation main 25.12.5)"
+		printf "empty=%s\n" "$(release_version_relation 25.12.5 "")"
+		cleanup
+	' sh "$INSTALLER" > "$work_dir/version-relations.out" 2>&1
+	assert_contains "$work_dir/version-relations.out" "newer=newer"
+	assert_contains "$work_dir/version-relations.out" "equal=equal"
+	assert_contains "$work_dir/version-relations.out" "older=older"
+	assert_contains "$work_dir/version-relations.out" "snapshot=unknown"
+	assert_contains "$work_dir/version-relations.out" "main=unknown"
+	assert_contains "$work_dir/version-relations.out" "empty=unknown"
+
+	set +e
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+		. "$1"
+		TARGET=/dev/testdisk
+		PAYLOAD_VERSION=25.12.5
+		storage_probe_existing_openwrt() {
+			STORAGE_EXISTING_RESCUE_AVAILABLE=1
+			STORAGE_EXISTING_VERSION=SNAPSHOT
+			return 0
+		}
+		storage_prepare_rescue_snapshot() { exit 91; }
+		prepare_requested_rescue
+	' sh "$INSTALLER" > "$work_dir/rescue-unknown-version.out" 2>&1
+	status=$?
+	set -e
+	[ "$status" -eq 1 ] || fail "Non-interactive rescue accepted an unknown version relation"
+	assert_contains "$work_dir/rescue-unknown-version.out" "cannot be compared safely"
+
+	cleanup_dir="$work_dir/owrt-rescue.exit-trap"
+	set +e
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+		. "$1"
+		STORAGE_RESCUE_WORKDIR="$2"
+		mkdir -p "$STORAGE_RESCUE_WORKDIR"
+		printf "%s\n" sensitive-fixture > "$STORAGE_RESCUE_WORKDIR/shadow"
+		exit 7
+	' sh "$INSTALLER" "$cleanup_dir" > "$work_dir/exit-cleanup.out" 2>&1
+	status=$?
+	set -e
+	[ "$status" -eq 7 ] || fail "EXIT cleanup changed the original status $status"
+	[ ! -e "$cleanup_dir" ] || fail "EXIT cleanup left rescued configuration in RAM"
 }
 
 run_dry_run_skip_network_smoke() {
@@ -209,6 +310,20 @@ run_dry_run_skip_network_smoke() {
 		}
 		ui_set_payload_version() { record "payload_title:$1"; }
 		validate_target_disk() { record "validate_target:$1"; }
+		storage_prepare_target_geometry() {
+			record "storage_geometry:$1"
+			STORAGE_ROOT_START_SECTOR=33280
+			STORAGE_ROOT_IMAGE_END_SECTOR=557567
+			STORAGE_DISK_USABLE_END_SECTOR=16777182
+			STORAGE_ROOT_IMAGE_MIB=256
+		}
+		prepare_requested_storage_layout() {
+			record prepare_requested_storage_layout
+			STORAGE_LAYOUT=fill
+			STORAGE_ROOT_TARGET_END_SECTOR=16777182
+			STORAGE_ROOT_TARGET_MIB=8176
+			STORAGE_UNALLOCATED_MIB=0
+		}
 		review_and_confirm() { record review_and_confirm; }
 		select_target_disk() { forbidden select_target_disk; }
 		select_network() { forbidden select_network; }
@@ -227,6 +342,8 @@ run_dry_run_skip_network_smoke() {
 	assert_contains "$calls_file" "verify_payload"
 	assert_contains "$calls_file" "payload_title:25.12.5"
 	assert_contains "$calls_file" "validate_target:/dev/testdisk"
+	assert_contains "$calls_file" "storage_geometry:/dev/testdisk"
+	assert_contains "$calls_file" "prepare_requested_storage_layout"
 	assert_contains "$calls_file" "review_and_confirm"
 	assert_contains "$out_file" "Dry run complete; no changes were made"
 	assert_not_contains "$calls_file" "select_network"
@@ -453,6 +570,8 @@ work_dir="$(mktemp -d "$TMPDIR/owrt-install-flow-smoke.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT INT TERM
 
 run_parse_args_smoke "$work_dir"
+run_rescue_parse_args_smoke "$work_dir"
+run_storage_cli_and_version_gate_smoke "$work_dir"
 run_dry_run_skip_network_smoke "$work_dir"
 run_network_back_state_smoke "$work_dir"
 run_line_network_wizard_back_smoke "$work_dir"

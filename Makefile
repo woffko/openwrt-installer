@@ -1,6 +1,6 @@
 SHELLCHECK ?= $(if $(wildcard build/host-tools/usr/bin/shellcheck),build/host-tools/usr/bin/shellcheck,shellcheck)
 
-.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke build-env-smoke release-base-smoke ui-smoke config-import-smoke config-import-qemu-smoke local-mouse-smoke hardware-report-smoke online-install-smoke online-install-qemu-smoke local-disk-boot-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke freeze-candidate release-gate release-gate-smoke shellcheck syntax-check
+.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke build-env-smoke release-base-smoke ui-smoke config-import-smoke storage-rescue-smoke storage-qemu-smoke rescue-qemu-smoke config-import-qemu-smoke local-mouse-smoke hardware-report-smoke online-install-smoke online-install-qemu-smoke local-disk-boot-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke freeze-candidate release-gate release-gate-smoke shellcheck syntax-check
 
 all: target installer
 
@@ -33,6 +33,7 @@ smoke:
 	$(MAKE) release-base-smoke
 	$(MAKE) ui-smoke
 	$(MAKE) config-import-smoke
+	$(MAKE) storage-rescue-smoke
 	$(MAKE) local-mouse-smoke
 	$(MAKE) hardware-report-smoke
 	$(MAKE) online-install-smoke
@@ -50,6 +51,15 @@ ui-smoke:
 
 config-import-smoke:
 	./tests/smoke/test-config-import-smoke.sh
+
+storage-rescue-smoke:
+	./tests/smoke/test-storage-rescue-smoke.sh
+
+storage-qemu-smoke:
+	./scripts/test-qemu-iso-smoke.sh storage
+
+rescue-qemu-smoke:
+	./scripts/test-qemu-iso-smoke.sh rescue
 
 config-import-qemu-smoke:
 	./scripts/test-qemu-iso-smoke.sh config-import
@@ -97,6 +107,7 @@ shellcheck:
 	$(SHELLCHECK) -x scripts/*.sh files-installer/usr/sbin/owrt-install \
 		files-installer/usr/libexec/owrt-installer-ui \
 		files-installer/usr/libexec/owrt-installer-config-import \
+		files-installer/usr/libexec/owrt-installer-storage \
 		files-installer/usr/libexec/owrt-installer-local-mouse \
 		files-installer/usr/sbin/owrt-hardware-report \
 		scripts/verify-physical-report.sh \

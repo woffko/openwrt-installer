@@ -304,7 +304,7 @@ run_ansi_menu_snapshot_smoke() {
 
 	assert_contains "$clean_file" "OPENWRT HELLFORGE INSTALLER"
 	assert_contains "$clean_file" "OPENWRT HELLFORGE INSTALLER | OpenWrt 25.12.5 | smoke"
-	assert_contains "$clean_file" "Steps: [DISK] ->  LAN  ->  WAN  ->  REVIEW  ->  INSTALL"
+	assert_contains "$clean_file" "Steps: [DISK] ->  STORAGE  ->  LAN  ->  WAN  ->  REVIEW  ->  INSTALL"
 	assert_contains "$clean_file" "Select target disk"
 	assert_contains "$clean_file" "WARNING: selected disk will be erased after final confirmation."
 	assert_contains "$clean_file" "> /dev/sda 119.2G SSD removable=no live=no"
