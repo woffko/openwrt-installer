@@ -201,19 +201,27 @@ start_vm() {
 
 click_target_ok() {
 	# GPM starts at cell 80x25 on the QEMU 160x50 console. Its default
-	# scaling maps ten small X deltas and twenty Y deltas to one cell.
+	# scaling maps ten small X deltas and twenty Y deltas to one cell. Keep
+	# movement and click in separate monitor transactions: the screendump is
+	# a processing barrier and records the pointer position on test failure.
 	{
 		for _ in $(seq 1 15); do
 			printf 'mouse_move -10 0\n'
 			sleep 0.1
 		done
 		printf 'mouse_move 0 20\nmouse_move 0 20\n'
-		sleep 0.2
+	} | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
+		die "Could not position the calibrated USB mouse"
+	sleep 0.2
+	capture_screen "$SMOKE_DIR/usb-relative-target-position.ppm"
+	{
 		printf 'mouse_button 1\n'
 		sleep 0.2
 		printf 'mouse_button 0\n'
 	} | nc -N -U "$MONITOR_SOCKET" >/dev/null 2>&1 ||
 		die "Could not send calibrated USB mouse click"
+	sleep 0.3
+	capture_screen "$SMOKE_DIR/usb-relative-click-after.ppm"
 }
 
 assert_relative_pointer_visible() {
