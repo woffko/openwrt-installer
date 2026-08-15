@@ -311,8 +311,11 @@ The installed system also contains `/etc/openwrt-installer-release`.
 
 ## Future Work
 
-- Validate experimental local VGA mouse input on physical x86 hardware before
-  enabling it by default or documenting it as a supported input path.
+- Implement the [single-disk storage sizing and existing-install rescue
+  plan](STORAGE_AND_RESCUE_PLAN.md): selectable OpenWrt ext4 root size,
+  unallocated remaining space, read-only RAM rescue, and a zero-write handoff
+  to an installed OpenWrt for standard upgrades. RAID is intentionally out of
+  scope.
 
 ## Checks
 
