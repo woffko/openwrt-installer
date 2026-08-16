@@ -3,4 +3,5 @@
 /files-installer/usr/share/owrt-installer/manifest.json
 /files-installer/usr/share/owrt-installer/target.img.gz
 /files-installer/usr/share/owrt-installer/98-installer-network
+/files-installer/usr/share/owrt-installer/storage-guard/
 /LOCAL_CONTEXT.md

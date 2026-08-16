@@ -1,37 +1,48 @@
 # Краткий итог работ
 
-Дата фиксации: 2026-08-15.
+Дата фиксации: 2026-08-16.
 
-## Alpha.11 Storage/Rescue Development
+## Alpha.12 Storage Profiles And Upgrade Safety
 
 - Опубликованный prerelease: `v1.0-alpha.10`,
   `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.10`.
-- Текущий frozen candidate: `v1.0-alpha.11`; runtime commit `a1009d7`,
-  metadata commit `1bce4e8`. Candidate не опубликован.
-- Hybrid ISO SHA-256:
-  `712f8c20793815b2a9d09d05ac0a3146a4b2985012fea1302875be4c071bd38e`;
-  manifest фиксирует `build_dirty=false` и runtime commit `a1009d7`.
-- Реализованы `fill`, `image`, 4/8/16/32 GiB presets и custom MiB/GiB rootfs;
-  fixed layout оставляет хвост диска неразмеченным.
+- Frozen `v1.0-alpha.11` сохранен без изменений как непубликовавшийся
+  кандидат первой storage/rescue итерации.
+- Текущий development runtime: `v1.0-alpha.12`. Новый candidate еще не
+  заморожен; checksum фиксируется только после финальной clean rebuild.
+- Recommended `compatible` сохраняет payload p1/p2, создает ext4 p3 на 80%
+  остатка и оставляет 20% unallocated SSD reserve. `expanded`, `fill` и
+  `custom` сохраняют выбор root size; custom поддерживает несколько ext4 data
+  partitions с label/mount point.
 - MBR/GPT payload inspector считает exact 512-byte sectors и до `ERASE`
   проверяет ext4 superblock/partition invariant. 4 KiB logical-sector disks
   намеренно отклоняются.
+- Target сохраняет UCI metadata, UUID fstab и mode `0600` layout snapshot;
+  installer пробует full-device discard только при подтвержденной поддержке,
+  target содержит `fstrim`.
 - Существующая x86 ext4 OpenWrt обнаруживается только на выбранном диске,
   монтируется `ro,noload,nosuid,nodev,noexec`, а config-only/full snapshot
   полностью копируется и повторно проверяется в RAM до записи target.
 - Full rescue удаляет stale installer state, сохраняет regular files и modes,
   копирует hardlinks как независимые files и оставляет package inventory только
   информационным.
-- Unknown/SNAPSHOT version relation требует ручного подтверждения; CLI rescue
-  его отклоняет. Standard upgrade action является zero-write handoff и не
-  запускает `sysupgrade` из live ISO.
-- Пройдены full fast smoke, UEFI fill/image/preset/custom install+boot, full
-  rescue+boot, zero-write handoff и official OpenWrt `25.12.5` online BIOS/MBR
-  и UEFI/GPT install+boot. Дополнительный frozen-ISO matrix проверил AHCI
-  `/dev/sda`, NVMe `/dev/nvme0n1`, неизменность второго диска и нулевую запись
-  после RAM rescue snapshot при выключении на exact `ERASE` prompt.
-- Hardware report обновлен до schema 3. Публикация alpha.11 заблокирована до
-  реального SATA+NVMe+rescue+power-cycle отчета по
+- Persistent wrapper fail-closed блокирует `-p`, `-n`, URL, поврежденную
+  installed geometry и candidate с несовпадающими p1/p2. Два последовательных
+  standard `sysupgrade` warm-reboot цикла прошли в QEMU с сохранением p3,
+  config, GPT и восстановлением wrapper.
+- Hellforge Safe Upgrade сохраняет partition table/data, пишет только p1/p2,
+  расширяет ext4 до existing boundary, исправляет GRUB PARTUUID и
+  восстанавливает validated RAM configuration. До первой записи весь payload
+  распаковывается в private RAM file с проверкой `MemAvailable`, gzip status и
+  exact manifest size; p1/p2 ranges читаются только из regular file с
+  `iflag=fullblock`. Chunked gzip regression и полный QEMU install/upgrade/
+  reboot сценарий пройдены.
+- Пройдены full fast smoke, UEFI compatible/expanded/fill/custom, rescue,
+  config import и QEMU AHCI `/dev/sda` + NVMe `/dev/nvme0n1` compatible matrix
+  с exact 80/20 geometry, guard, unchanged second disk и pre-ERASE zero-write.
+- Hardware report и verifier обновлены до schema 4. Публикация следующего
+  alpha заблокирована до реального SATA+NVMe, standard/Safe Upgrade, rescue и
+  power-cycle отчета по
   `PHYSICAL_X86_STORAGE_RESCUE_TEST.md`.
 
 ## Актуальное состояние
@@ -43,14 +54,16 @@
 - Текущий commit: см. `git log -1 --oneline`.
 - Последний опубликованный release: `v1.0-alpha.10`.
 - Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.10`.
-- Текущий development runtime: `v1.0-alpha.11`; clean candidate еще не заморожен.
+- Текущий development runtime: `v1.0-alpha.12`; clean candidate еще не заморожен.
+- Актуальные локальные checksums всегда читаются из `output/sha256sums.txt`;
+  они не закрепляются в tracked документации до immutable candidate freeze.
 - `v1.0-alpha.9` candidate и его metadata сохранены как исторические и не
   являются основанием для нового release.
 - Старый release `v1.0-alpha` оставлен без изменений и уже не является актуальным.
 - Старые releases `v1.0-alpha.1`...`v1.0-alpha.6` оставлены без изменений; актуальный Hellforge ISO публикуется отдельным alpha tag.
 - Опубликованный `v1.0-alpha.7` ISO содержит обязательные `whiptail` и `pv`; SHA-256: `89f9e2c89df7fe27f882d1d2db7114caefff226ad840b70b92b1205458ddfa7c`.
 - Предыдущий замороженный `v1.0-alpha.8` release-candidate ISO собран из runtime commit `964fed6`; SHA-256: `f1131d7587d49b5accf0e1e6b96fc378114fd1f9293a7e1e1a0e5dc1772a22e5`. Он сохранен как исторический candidate, но не покрывает post-import runtime; для следующего release нужен новый physical pass и новая заморозка.
-- Текущий frozen `v1.0-alpha.9` hybrid ISO SHA-256: `2b570a2e5747b0a9f2cd46c8252059dd64f101d35c0e14c06fdb69402cffd851`; manifest SHA-256: `2d957a424664e7d6a5f75b0646e226289446d13205c12db83e0a32db4c26bd15`.
+- Historical frozen `v1.0-alpha.9` hybrid ISO SHA-256: `2b570a2e5747b0a9f2cd46c8252059dd64f101d35c0e14c06fdb69402cffd851`; manifest SHA-256: `2d957a424664e7d6a5f75b0646e226289446d13205c12db83e0a32db4c26bd15`.
 - Project Memory зарегистрирована с ключом `woffko/openwrt-installer`; test secrets выключены.
 - Локальная памятка с credential-путями: `LOCAL_CONTEXT.md`; файл намеренно добавлен в `.gitignore`.
 - План редизайна TUI: `UI_REDESIGN_PLAN.md` (`OpenWrt Hellforge Installer`, packaged `whiptail` на local console, ANSI SGR mouse для terminal emulators, line fallback и optional `dialog`).
@@ -108,7 +121,9 @@
 - блокирует detected live boot disk;
 - требует точное подтверждение `ERASE /dev/...`;
 - пишет target image на выбранный диск;
-- расширяет второй раздел и ext4 rootfs на весь диск;
+- применяет selected compatible/expanded/fill/custom storage profile;
+- для Safe Upgrade требует точное `UPGRADE /dev/...`, сохраняет таблицу и data
+  partitions и заменяет только OpenWrt partitions 1/2;
 - пишет `/etc/owrt-installer/interface-map`;
 - на первом boot установленная система настраивает `br-lan`, WAN, DHCP, DHCPv6, firewall и NAT.
 

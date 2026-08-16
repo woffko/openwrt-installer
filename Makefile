@@ -1,6 +1,6 @@
 SHELLCHECK ?= $(if $(wildcard build/host-tools/usr/bin/shellcheck),build/host-tools/usr/bin/shellcheck,shellcheck)
 
-.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke build-env-smoke release-base-smoke ui-smoke config-import-smoke storage-rescue-smoke storage-qemu-smoke rescue-qemu-smoke config-import-qemu-smoke local-mouse-smoke hardware-report-smoke online-install-smoke online-install-qemu-smoke local-disk-boot-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke freeze-candidate release-gate release-gate-smoke shellcheck syntax-check
+.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke build-env-smoke release-base-smoke ui-smoke config-import-smoke storage-rescue-smoke storage-profile-smoke storage-qemu-smoke storage-device-qemu-smoke safe-upgrade-qemu-smoke standard-upgrade-qemu-smoke rescue-qemu-smoke config-import-qemu-smoke local-mouse-smoke hardware-report-smoke online-install-smoke online-install-qemu-smoke local-disk-boot-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke freeze-candidate release-gate release-gate-smoke shellcheck syntax-check
 
 all: target installer
 
@@ -34,6 +34,7 @@ smoke:
 	$(MAKE) ui-smoke
 	$(MAKE) config-import-smoke
 	$(MAKE) storage-rescue-smoke
+	$(MAKE) storage-profile-smoke
 	$(MAKE) local-mouse-smoke
 	$(MAKE) hardware-report-smoke
 	$(MAKE) online-install-smoke
@@ -55,8 +56,20 @@ config-import-smoke:
 storage-rescue-smoke:
 	./tests/smoke/test-storage-rescue-smoke.sh
 
+storage-profile-smoke:
+	./tests/smoke/test-storage-profile-smoke.sh
+
 storage-qemu-smoke:
 	./scripts/test-qemu-iso-smoke.sh storage
+
+storage-device-qemu-smoke:
+	./tests/smoke/test-qemu-storage-device-matrix.sh all
+
+safe-upgrade-qemu-smoke:
+	./scripts/test-qemu-iso-smoke.sh safe-upgrade
+
+standard-upgrade-qemu-smoke:
+	./scripts/test-qemu-iso-smoke.sh standard-upgrade
 
 rescue-qemu-smoke:
 	./scripts/test-qemu-iso-smoke.sh rescue
@@ -114,6 +127,10 @@ shellcheck:
 		files-installer/etc/rc.local \
 		files-installer/usr/libexec/owrt-installer-autostart \
 		files-target/etc/uci-defaults/98-installer-network \
+		files-target/etc/owrt-installer/upgrade-guard \
+		files-target/etc/owrt-installer/sysupgrade-wrapper \
+		files-target/etc/owrt-installer/install-upgrade-guard \
+		files-target/etc/init.d/owrt-installer-guard \
 		tests/smoke/*.sh
 
 syntax-check:
@@ -124,3 +141,4 @@ clean:
 	rm -f files-installer/usr/share/owrt-installer/manifest.json
 	rm -f files-installer/usr/share/owrt-installer/target.img.gz
 	rm -f files-installer/usr/share/owrt-installer/98-installer-network
+	rm -rf files-installer/usr/share/owrt-installer/storage-guard

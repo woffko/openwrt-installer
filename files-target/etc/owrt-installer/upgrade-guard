@@ -1,0 +1,278 @@
+#!/bin/sh
+
+set -eu
+
+die() {
+	printf 'owrt-upgrade-guard: %s\n' "$*" >&2
+	exit 1
+}
+
+is_uint() {
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+config_value() {
+	key="$1"
+	if [ "${OWRT_UPGRADE_GUARD_TEST_MODE:-0}" = "1" ]; then
+		[ -r "${OWRT_UPGRADE_GUARD_TEST_METADATA:-}" ] || return 1
+		awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); found++ } END { if (found != 1) exit 1 }' \
+			"$OWRT_UPGRADE_GUARD_TEST_METADATA"
+	else
+		uci -q get "owrt-installer.layout.$key"
+	fi
+}
+
+data_value() {
+	index="$1"
+	key="$2"
+	if [ "${OWRT_UPGRADE_GUARD_TEST_MODE:-0}" = "1" ]; then
+		config_value "data_${index}_${key}"
+	else
+		uci -q get "owrt-installer.@data[$index].$key"
+	fi
+}
+
+set_root_partition() {
+	root_candidate="$1"
+	case "$root_candidate" in /dev/*) ;; *) return 1 ;; esac
+	root_resolved="$(readlink -f "$root_candidate" 2>/dev/null || printf '%s' "$root_candidate")"
+	[ -b "$root_resolved" ] || return 1
+	ROOT_PARTITION="$root_resolved"
+	return 0
+}
+
+detect_root_partition() {
+	if [ "${OWRT_UPGRADE_GUARD_TEST_MODE:-0}" = "1" ]; then
+		ROOT_PARTITION="${OWRT_UPGRADE_GUARD_TEST_ROOT_PARTITION:-/dev/testdisk2}"
+		return 0
+	fi
+	root_source="$(mount | awk '$3 == "/" { print $1; exit }')"
+	set_root_partition "$root_source" && return 0
+	if command -v findmnt >/dev/null 2>&1; then
+		root_source="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+		set_root_partition "$root_source" && return 0
+	fi
+	# shellcheck disable=SC2013 # Kernel cmdline is intentionally parsed as whitespace-delimited arguments.
+	for cmdline_arg in $(cat /proc/cmdline 2>/dev/null); do
+		case "$cmdline_arg" in
+			root=PARTUUID=*) root_lookup="PARTUUID=${cmdline_arg#root=PARTUUID=}" ;;
+			root=UUID=*) root_lookup="UUID=${cmdline_arg#root=UUID=}" ;;
+			root=/dev/*)
+				set_root_partition "${cmdline_arg#root=}" && return 0
+				continue
+				;;
+			*) continue ;;
+		esac
+		root_source="$(blkid -t "$root_lookup" -o device 2>/dev/null | sed -n '1p')"
+		set_root_partition "$root_source" && return 0
+	done
+	return 1
+}
+
+verify_installed_geometry() {
+	[ "${OWRT_UPGRADE_GUARD_TEST_MODE:-0}" != "1" ] || return 0
+	detect_root_partition || die "cannot identify the installed root partition"
+	root_name="${ROOT_PARTITION##*/}"
+	root_sys="/sys/class/block/$root_name"
+	[ -f "$root_sys/partition" ] || die "installed root is not a partition"
+	root_number="$(cat "$root_sys/partition" 2>/dev/null || true)"
+	[ "$root_number" = "2" ] || die "protected layout expects OpenWrt on partition 2"
+	root_start_actual="$(cat "$root_sys/start" 2>/dev/null || true)"
+	root_sectors_actual="$(cat "$root_sys/size" 2>/dev/null || true)"
+	if ! { [ "$root_start_actual" = "$ROOT_START" ] &&
+		[ "$root_sectors_actual" = "$ROOT_SECTORS" ]; }; then
+		die "installed root geometry no longer matches installer metadata"
+	fi
+	disk_name="$(basename "$(dirname "$(readlink -f "$root_sys")")")"
+	disk_device="/dev/$disk_name"
+	installed_table="$(LC_ALL=C fdisk -l "$disk_device" 2>/dev/null |
+		awk '/^Disklabel type:/ { print $3; found++ } END { if (found != 1) exit 1 }')" ||
+		die "cannot verify installed partition-table type"
+	[ "$installed_table" = "$TABLE_TYPE" ] ||
+		die "installed partition-table type no longer matches installer metadata"
+	boot_sys="/sys/class/block/${disk_name}1"
+	case "$disk_name" in *[0-9]) boot_sys="/sys/class/block/${disk_name}p1" ;; esac
+	[ -f "$boot_sys/partition" ] || die "cannot locate installed boot partition 1"
+	boot_start_actual="$(cat "$boot_sys/start" 2>/dev/null || true)"
+	boot_sectors_actual="$(cat "$boot_sys/size" 2>/dev/null || true)"
+	if ! { [ "$boot_start_actual" = "$BOOT_START" ] &&
+		[ "$boot_sectors_actual" = "$BOOT_SECTORS" ]; }; then
+		die "installed boot geometry no longer matches installer metadata"
+	fi
+
+	data_index=0
+	while [ "$data_index" -lt "$DATA_COUNT" ]; do
+		data_number="$(data_value "$data_index" number)" ||
+			die "missing data partition number metadata"
+		data_start="$(data_value "$data_index" start_sector)" ||
+			die "missing data partition start metadata"
+		data_end="$(data_value "$data_index" end_sector)" ||
+			die "missing data partition end metadata"
+		data_label="$(data_value "$data_index" label)" ||
+			die "missing data partition label metadata"
+		data_uuid="$(data_value "$data_index" uuid)" ||
+			die "missing data partition UUID metadata"
+		for value in "$data_number" "$data_start" "$data_end"; do
+			is_uint "$value" || die "data partition geometry metadata is invalid"
+		done
+		if ! { [ "$data_number" -eq "$((data_index + 3))" ] &&
+			[ "$data_end" -ge "$data_start" ]; }; then
+			die "data partition numbering or geometry metadata is invalid"
+		fi
+		data_name="${disk_name}${data_number}"
+		case "$disk_name" in *[0-9]) data_name="${disk_name}p${data_number}" ;; esac
+		data_sys="/sys/class/block/$data_name"
+		[ -f "$data_sys/partition" ] || die "managed data partition $data_number is missing"
+		data_start_actual="$(cat "$data_sys/start" 2>/dev/null || true)"
+		data_sectors_actual="$(cat "$data_sys/size" 2>/dev/null || true)"
+		data_sectors=$((data_end - data_start + 1))
+		if ! { [ "$data_start_actual" = "$data_start" ] &&
+			[ "$data_sectors_actual" = "$data_sectors" ]; }; then
+			die "managed data partition $data_number geometry no longer matches metadata"
+		fi
+		data_device="/dev/$data_name"
+		data_type_actual="$(blkid -o value -s TYPE "$data_device" 2>/dev/null || true)"
+		data_label_actual="$(blkid -o value -s LABEL "$data_device" 2>/dev/null || true)"
+		data_uuid_actual="$(blkid -o value -s UUID "$data_device" 2>/dev/null || true)"
+		if ! { [ "$data_type_actual" = "ext4" ] && [ "$data_label_actual" = "$data_label" ] &&
+			[ "$data_uuid_actual" = "$data_uuid" ]; }; then
+			die "managed data partition $data_number filesystem identity no longer matches metadata"
+		fi
+		data_index=$((data_index + 1))
+	done
+}
+
+image_prefix() {
+	image="$1"
+	prefix="$2"
+	magic="$(dd if="$image" bs=2 count=1 2>/dev/null | hexdump -v -e '2/1 "%02x"')"
+	case "$magic" in
+		1f8b)
+			CANDIDATE_GZIP=1
+			gzip -t "$image" >/dev/null 2>&1 || die "candidate gzip integrity check failed"
+			image_bytes="$(gzip -dc "$image" 2>/dev/null | wc -c | tr -d ' ')"
+			gzip -dc "$image" 2>/dev/null | head -c 32256 > "$prefix" ||
+				die "could not read candidate partition table"
+			;;
+		*)
+			CANDIDATE_GZIP=0
+			image_bytes="$(wc -c < "$image" | tr -d ' ')"
+			dd if="$image" of="$prefix" bs=512 count=63 2>/dev/null ||
+				die "could not read candidate partition table"
+			;;
+	esac
+	[ "$(wc -c < "$prefix" | tr -d ' ')" -eq 32256 ] ||
+		die "candidate partition-table prefix is incomplete"
+	is_uint "$image_bytes" || die "candidate uncompressed size is invalid"
+	if ! { [ "$image_bytes" -ge 32256 ] && [ "$((image_bytes % 512))" -eq 0 ]; }; then
+		die "candidate uncompressed size is not sector aligned"
+	fi
+	image_sectors=$((image_bytes / 512))
+	dd if=/dev/zero of="$prefix" bs=512 seek="$((image_sectors - 1))" count=1 \
+		conv=notrunc 2>/dev/null || die "could not create sparse candidate layout view"
+}
+
+verify_candidate_root_ext4() {
+	image="$1"
+	root_probe="$2"
+	if [ "$CANDIDATE_GZIP" = "1" ]; then
+		root_offset=$((ROOT_START * 512 + 1))
+		gzip -dc "$image" 2>/dev/null | tail -c "+$root_offset" |
+			head -c 4096 > "$root_probe" ||
+			die "could not read candidate root filesystem header"
+	else
+		dd if="$image" of="$root_probe" bs=512 skip="$ROOT_START" count=8 2>/dev/null ||
+			die "could not read candidate root filesystem header"
+	fi
+	[ "$(wc -c < "$root_probe" | tr -d ' ')" -eq 4096 ] ||
+		die "candidate root filesystem header is incomplete"
+	root_magic="$(dd if="$root_probe" bs=1 skip=1080 count=2 2>/dev/null |
+		hexdump -v -e '2/1 "%02x"')"
+	[ "$root_magic" = "53ef" ] ||
+		die "candidate partition 2 is not an ext4 root filesystem"
+}
+
+inspect_candidate() {
+	image="$1"
+	prefix="/tmp/owrt-upgrade-guard-prefix.$$"
+	report="/tmp/owrt-upgrade-guard-fdisk.$$"
+	root_probe="/tmp/owrt-upgrade-guard-root.$$"
+	trap 'rm -f "$prefix" "$report" "$root_probe"' EXIT INT TERM
+	image_prefix "$image" "$prefix"
+	verify_candidate_root_ext4 "$image" "$root_probe"
+	LC_ALL=C fdisk -l -o Device,Start,Sectors "$prefix" > "$report" 2>/dev/null ||
+		die "fdisk rejected the candidate partition table"
+	candidate_table="$(awk '/^Disklabel type:/ { print $3; found++ } END { if (found != 1) exit 1 }' "$report")" ||
+		die "candidate partition table type is ambiguous"
+	case "$candidate_table" in
+		gpt) candidate_table=gpt ;;
+		dos) candidate_table=dos ;;
+		*) die "candidate partition table type is unsupported" ;;
+	esac
+	[ "$candidate_table" = "$TABLE_TYPE" ] ||
+		die "candidate partition table type differs from the installed layout"
+
+	prefix_name="${prefix}"
+	case "$prefix_name" in *[0-9]) partition_prefix="${prefix_name}p" ;; *) partition_prefix="$prefix_name" ;; esac
+	boot_row="$(awk -v a="${partition_prefix}1" -v b="${prefix_name}1" '$1 == a || $1 == b { print $2 "|" $3; found++ } END { if (found != 1) exit 1 }' "$report")" ||
+		die "candidate must contain exactly one boot partition 1"
+	root_row="$(awk -v a="${partition_prefix}2" -v b="${prefix_name}2" '$1 == a || $1 == b { print $2 "|" $3; found++ } END { if (found != 1) exit 1 }' "$report")" ||
+		die "candidate must contain exactly one root partition 2"
+	unexpected="$(awk -v prefix="$partition_prefix" -v plain="$prefix_name" '
+		{ n = "" }
+		$1 == "Device" { next }
+		index($1, prefix) == 1 { n = substr($1, length(prefix) + 1) }
+		index($1, plain) == 1 && index($1, prefix) != 1 { n = substr($1, length(plain) + 1) }
+		n ~ /^[0-9]+$/ && n != 1 && n != 2 && n != 128 { print n }
+	' "$report")"
+	[ -z "$unexpected" ] || die "candidate contains a data or unexpected partition: $unexpected"
+	IFS='|' read -r candidate_boot_start candidate_boot_sectors <<EOF_BOOT
+$boot_row
+EOF_BOOT
+	IFS='|' read -r candidate_root_start candidate_root_sectors <<EOF_ROOT
+$root_row
+EOF_ROOT
+	if ! { [ "$candidate_boot_start" = "$BOOT_START" ] &&
+		[ "$candidate_boot_sectors" = "$BOOT_SECTORS" ]; }; then
+		die "candidate boot partition geometry does not match"
+	fi
+	if ! { [ "$candidate_root_start" = "$ROOT_START" ] &&
+		[ "$candidate_root_sectors" = "$ROOT_SECTORS" ]; }; then
+		die "candidate root partition geometry does not match"
+	fi
+	rm -f "$prefix" "$report" "$root_probe"
+	trap - EXIT INT TERM
+}
+
+[ "$#" -ge 1 ] || die "usage: upgrade-guard IMAGE [save-partitions] [keep-config]"
+IMAGE="$1"
+SAVE_PARTITIONS="${2:-1}"
+KEEP_CONFIG="${3:-1}"
+DATA_COUNT="$(config_value data_partition_count 2>/dev/null || printf 0)"
+is_uint "$DATA_COUNT" || die "installer storage metadata is invalid"
+[ "$DATA_COUNT" -gt 0 ] || exit 0
+[ "$SAVE_PARTITIONS" = "1" ] || die "sysupgrade -p is blocked because installer-managed data partitions exist"
+[ "$KEEP_CONFIG" = "1" ] || die "sysupgrade -n is blocked because it would remove the storage guard and mount metadata"
+case "$IMAGE" in
+	http://*|https://*) die "download the image locally so its exact partition geometry can be checked" ;;
+esac
+if ! { [ -f "$IMAGE" ] && [ -r "$IMAGE" ]; }; then
+	die "candidate image is not a readable local file"
+fi
+
+TABLE_TYPE="$(config_value table_type)" || die "missing partition-table metadata"
+BOOT_START="$(config_value boot_start_sector)" || die "missing boot geometry metadata"
+BOOT_SECTORS="$(config_value boot_sectors)" || die "missing boot geometry metadata"
+ROOT_START="$(config_value root_start_sector)" || die "missing root geometry metadata"
+ROOT_END="$(config_value root_end_sector)" || die "missing root geometry metadata"
+for value in "$BOOT_START" "$BOOT_SECTORS" "$ROOT_START" "$ROOT_END"; do
+	is_uint "$value" || die "installer geometry metadata is invalid"
+done
+ROOT_SECTORS=$((ROOT_END - ROOT_START + 1))
+[ "$ROOT_SECTORS" -gt 0 ] || die "installer root geometry metadata is invalid"
+verify_installed_geometry
+inspect_candidate "$IMAGE"
+printf 'owrt-upgrade-guard: candidate geometry is compatible; protected data partitions will not be written\n' >&2

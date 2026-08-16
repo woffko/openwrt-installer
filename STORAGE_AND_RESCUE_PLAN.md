@@ -2,32 +2,111 @@
 
 Дата: 2026-08-15.
 
-Статус: реализация и автоматизированная приемка завершены; physical SATA/NVMe
-gate и публикация prerelease еще не выполнены.
+Статус: первая итерация sizing/rescue завершена. Вторая итерация storage
+profiles, data partitions, fail-closed upgrade guard и Hellforge Safe Upgrade
+реализована в development runtime `v1.0-alpha.12` и прошла доступные fast/QEMU
+gates. Physical SATA/NVMe schema 4 gate, заморозка нового candidate и
+публикация следующего prerelease еще не выполнены.
 
 Базовая версия проекта: опубликованный prerelease `v1.0-alpha.10`.
 
+## Утвержденная Вторая Итерация
+
+Этот раздел заменяет ограничения первой итерации там, где они противоречат
+новому storage contract.
+
+### Профили
+
+1. `OpenWrt-compatible (recommended)` сохраняет точную геометрию payload
+   partitions 1 и 2, не использует `owut rootfs_size`, создает partition 3
+   `ext4` на 80% оставшегося usable space и оставляет последние 20%
+   неразмеченными.
+2. `Expanded OpenWrt` сохраняет пресеты и custom размер partition 2 и может
+   создавать data partitions, но показывает предупреждение о несовместимой
+   геометрии обычного x86 `sysupgrade`.
+3. `OpenWrt on entire disk` расширяет partition 2 до usable end и показывает
+   такое же предупреждение.
+4. `Custom partitioning` позволяет создать несколько data partitions с
+   размером, ext4 label и mount point. Обычный `sysupgrade` для этого профиля
+   не считается безопасным.
+
+### Compatible Geometry
+
+Все вычисления выполняются в 512-byte sectors с alignment 2048 sectors:
+
+```text
+p3_start = align_up(p2_end + 1, 2048)
+remaining = usable_end - p3_start + 1
+p3_size = align_down(floor(remaining * 80 / 100), 2048)
+p3_end = p3_start + p3_size - 1
+reserved = usable_end - p3_end
+```
+
+`usable_end` уже исключает backup GPT. Partition 3 получает GPT Linux
+filesystem type или MBR type `0x83`, ext4 label `owrt-data` и mount point
+`/mnt/data`. Target сохраняет profile, exact system geometry, filesystem UUID и
+reserved sectors в UCI metadata; `/etc/config/fstab` использует filesystem UUID.
+
+### Upgrade Contract
+
+- Compatible profile допускает standard x86 partition-preserving upgrade
+  только если candidate partitions 1/2 точно совпадают по number/start/size.
+- Candidate не может содержать data partition 3+, иначе partition-wise
+  `sysupgrade` перезапишет локальные данные. Разрешен только известный GPT
+  auxiliary partition 128.
+- Geometry mismatch, unsupported table или `sysupgrade -p` должны завершаться
+  fail-closed до первой записи.
+- Expanded/fill/custom profiles рекомендуют Hellforge Safe Upgrade либо
+  system-only image с точно совпадающими partitions 1/2 и без data partition.
+- Hellforge Safe Upgrade сохраняет partition table и data partitions, пишет
+  payload только в existing partitions 1/2, проверяет и расширяет ext4,
+  восстанавливает validated RAM configuration и заново проверяет boot/data
+  geometry.
+
+### SSD Reserve
+
+Неразмеченный хвост называется `SSD reserve`, а не гарантированным
+overprovisioning. После destructive confirmation installer может выполнить
+full-device discard только для unmounted target с подтвержденной discard
+support; при отсутствии или ошибке discard хвост остается unallocated с
+пометкой `discard not verified`. Чтение нулей не используется как проверка
+discard. Для data filesystem предпочтителен периодический `fstrim`.
+
+### Реализация И Gates
+
+1. Storage profile state, exact 80/20 arithmetic и multi-partition model.
+2. Partition creation, ext4, target UCI metadata, UUID fstab и review UI.
+3. Persistent fail-closed upgrade guard и проверка его восстановления после
+   последовательного standard upgrade.
+4. Hellforge Safe Upgrade без записи partition table или data partitions.
+5. Unit/smoke tests, QEMU BIOS/UEFI и AHCI/NVMe matrix, затем physical SATA/NVMe
+   install/upgrade gate.
+6. README/work summary, clean hybrid ISO и новый immutable release candidate;
+   frozen `v1.0-alpha.11` не изменяется.
+
 ## Короткий Вывод
 
-Следующая итерация состоит из двух связанных функций:
+Вторая итерация состоит из четырех связанных функций:
 
-1. После выбора одного целевого диска пользователь выбирает размер раздела
-   OpenWrt: исходный размер образа, весь доступный диск, готовый пресет или
-   собственный размер. Неиспользованный хвост остается неразмеченным.
-2. Если на выбранном диске найдена существующая ext4-установка OpenWrt,
-   installer предлагает `Rescue and upgrade`: безопасно копирует конфигурацию
-   в RAM, отключает старый раздел, устанавливает выбранный проверенный образ и
-   восстанавливает конфигурацию через уже существующий строгий import path.
+1. Recommended compatible profile сохраняет payload partitions 1/2, создает
+   ext4 p3 на 80% остатка и оставляет 20% неразмеченным SSD reserve.
+2. Expanded, fill и custom profiles дают управляемый root и несколько ext4
+   data partitions с явным предупреждением о стандартном `sysupgrade`.
+3. Установленная compatible-система получает persistent fail-closed wrapper,
+   допускающий только локальный image с точно совпадающими partitions 1/2.
+4. Для валидированной существующей Hellforge-разметки Safe Upgrade сохраняет
+   partition table и data partitions, заменяет только p1/p2 и восстанавливает
+   проверенную RAM-конфигурацию. Destructive rescue/reinstall остается
+   отдельным вариантом.
 
 RAID, изменение ядра, собственный MD/initramfs и модификация upstream
 `sysupgrade`/`platform.sh` исключены из этого плана.
 
-Стандартный `sysupgrade` нельзя безопасно запускать из live ISO или через
-`chroot`: он должен работать внутри реально загруженной установленной OpenWrt с
-ее `procd`, `ubus`, kernel cmdline и boot device. Поэтому wizard только
-предлагает загрузить существующую систему для штатного обновления через LuCI,
-`sysupgrade` или `owut`. Автоматический one-shot upgrade из ISO не входит в
-MVP.
+Стандартный `sysupgrade` по-прежнему не запускается из live ISO или через
+`chroot`: он работает внутри реально загруженной установленной OpenWrt с ее
+`procd`, `ubus`, kernel cmdline и boot device. Live ISO выполняет только
+собственный Safe Upgrade с другим контрактом записи: validated p1/p2 write,
+сохранение таблицы/data и последующая проверка.
 
 ## Исходное Поведение До Реализации
 
@@ -384,36 +463,41 @@ unallocated_mib=...
 - Не запускать live ISO `/sbin/sysupgrade` для выбранного target disk.
 - Не запускать installed `/sbin/sysupgrade` через `chroot`.
 - Не подменять `/lib/upgrade/platform.sh`.
-- Не инжектировать unattended one-shot init service в MVP.
 - Не обещать сохранение custom partition geometry обычным combined image.
+- Не разрешать `sysupgrade -p`, `sysupgrade -n`, remote URL или image с
+  несовпадающими partitions 1/2 при наличии managed data partitions.
 
 ### Поддерживаемый Путь
 
-Если existing OpenWrt выглядит загрузочной, action
-`Boot existing OpenWrt for standard upgrade`:
+Для compatible installation установленный persistent wrapper:
 
-1. Ничего не монтирует read-write и ничего не изменяет.
-2. Показывает detected version и доступную selected payload version.
-3. Предупреждает, что обычный x86 combined image может вернуть partition 2 к
-   размеру образа и уничтожить entries дополнительных partitions.
-4. Для custom root size предлагает проверить `owut --rootfs-size` в
-   установленной системе, если `owut` доступен.
-5. Предлагает reboot; local OpenWrt GRUB entry уже становится default.
+1. Проверяет текущие boot/root/data geometry, filesystem UUID/label и metadata.
+2. Принимает только читаемый локальный image; URL отклоняется.
+3. Проверяет table type, exact number/start/size partitions 1/2, отсутствие
+   candidate data partitions и ext4 superblock candidate root.
+4. Блокирует `-p` и `-n`, чтобы data и сам guard не могли быть потеряны.
+5. Передает валидный image оригинальному `/sbin/sysupgrade.openwrt`.
+6. Init service восстанавливает wrapper после первого boot.
 
-Прямой assisted handoff можно повторно рассмотреть только после отдельного
-QEMU proof. Минимальные gates для такого будущего эксперимента:
+Этот путь доказан двумя последовательными real `sysupgrade` циклами в одном
+QEMU процессе с самостоятельным warm reboot. После каждого цикла проверяются
+config, p3 data/mount/UUID, geometry, guard restore и kernel errors; полный GPT
+dump до и после совпадает.
 
-- installed system успешно загружается;
-- его собственный `/sbin/sysupgrade -T` принимает exact image;
-- image type совпадает с MBR/GPT layout;
-- target version не является downgrade;
-- достаточно persistent space и RAM;
-- нет дополнительных target partitions, которые sysupgrade может уничтожить;
-- failure не создает reboot loop;
-- стандартный `sysupgrade`, а не код installer, выполняет flash.
+Action `Boot existing OpenWrt for standard upgrade` остается zero-write
+handoff для любой распознанной existing installation. Expanded/fill/custom
+без exact system-only image используют Safe Upgrade, если managed metadata
+валидна, либо reinstall/rescue.
 
-До прохождения всех gates wizard не показывает автоматический sysupgrade как
-доступную команду.
+Live ISO Safe Upgrade не вызывает installed `sysupgrade`: после RAM snapshot и
+exact `UPGRADE /dev/...` он сохраняет таблицу, пишет p1/p2 отдельно, расширяет
+ext4 до существующей p2 boundary, исправляет GRUB PARTUUID, проверяет data до и
+после restore и устанавливает новый persistent guard. До первой записи весь
+распакованный payload создается как private file в RAM; проверяются exit status
+gzip, exact manifest size и наличие `payload size + 128 MiB` свободной памяти.
+Только обычный файл используется как источник byte-exact p1/p2 ranges, поэтому
+короткие чтения pipe не могут сместить sector offset. Ошибка staging завершает
+операцию до изменения p1.
 
 ## Review И Destructive Confirmation
 
@@ -562,15 +646,44 @@ ERASE /dev/...
 - [ ] Пройти physical SATA/NVMe rescue gate.
 - [ ] Опубликовать отдельный prerelease только после checksums и report.
 
+### Фаза 5: Storage Profiles И Safe Upgrade
+
+- [x] Добавить compatible/expanded/fill/custom profile state и review UI.
+- [x] Реализовать exact compatible p1/p2, ext4 p3 80% и SSD reserve 20%.
+- [x] Реализовать несколько custom ext4 data partitions с label/mount point.
+- [x] Сохранять UCI metadata, UUID fstab и mode `0600` layout snapshot.
+- [x] Добавить full-device discard attempt и target `fstrim` package.
+- [x] Добавить persistent fail-closed standard sysupgrade guard.
+- [x] Реализовать Hellforge Safe Upgrade с RAM restore и сохранением data.
+- [x] Пройти fast smoke, UEFI profile matrix, Safe Upgrade, rescue/import и два
+  последовательных standard sysupgrade цикла.
+- [x] Пройти QEMU AHCI/NVMe compatible matrix и pre-ERASE immutability.
+- [x] Поднять physical report и release verifier до schema 4.
+- [ ] Собрать и проверить clean `v1.0-alpha.12` candidate artifact.
+- [ ] Пройти physical SATA/NVMe compatible, standard/Safe Upgrade и rescue
+  schema 4 gate.
+- [ ] Опубликовать новый immutable prerelease после physical report.
+
 ## Автоматизированное Подтверждение
 
-На frozen candidate `v1.0-alpha.11` пройдены:
+Frozen candidate `v1.0-alpha.11` остается неизменным историческим артефактом
+первой sizing/rescue итерации. Development runtime `v1.0-alpha.12` на
+2026-08-16 прошел:
 
-- полный `make smoke`, включая ShellCheck, geometry/rescue fixtures, version
-  relation, EXIT cleanup, schema 3 hardware report и isolated release gate;
+- полный `make smoke`, включая ShellCheck, profile/geometry/rescue fixtures,
+  fail-closed guard cases, schema 4 hardware report и isolated release gate;
+- byte-exact Safe Upgrade staging regression с намеренным коротким первым
+  чтением gzip producer, exact file comparison и low-RAM отказом до записи;
 - UEFI `fill`, `image`, preset `4 GiB` и custom `5120 MiB` install/reboot с
-  проверкой exact sectors, ext4, PARTUUID, unallocated tail и backup GPT в
-  конце target disk;
+  несколькими data partitions, exact sectors, ext4, UUID fstab, PARTUUID,
+  unallocated tail и backup GPT в конце target disk;
+- compatible install/reboot с p3 `/mnt/data`, exact 80/20 calculation,
+  metadata и persistent guard;
+- два последовательных реальных standard `sysupgrade` цикла с warm reboot,
+  partition-wise p1/p2 writes, config/data preservation, guard restore,
+  отсутствием panic/oops и exact GPT comparison;
+- Safe Upgrade с исходной config/data evidence, неизменной p1/p2/p3 geometry,
+  восстановленной конфигурацией и повторной проверкой data после boot;
 - full `/etc` rescue существующей OpenWrt с удалением stale installer state,
   сохранением UCI и directory modes, package inventory и installed reboot;
 - zero-write standard-upgrade handoff через byte comparison qcow2;
@@ -579,35 +692,53 @@ ERASE /dev/...
 - pre-ERASE payload ext4-superblock invariant для embedded и официальных
   downloaded combined images; любой посторонний payload partition отклоняется,
   при этом поддерживается стандартный малый GPT auxiliary partition 128.
-- отдельный frozen-ISO device matrix: QEMU AHCI `/dev/sda` и NVMe
-  `/dev/nvme0n1`, exact target metadata после reboot, неизменный дополнительный
+- device matrix: QEMU AHCI `/dev/sda` и NVMe `/dev/nvme0n1`, compatible p3,
+  UUID fstab, exact 80/20 reserve, guard после boot, неизменный дополнительный
   диск и `qemu-img compare` source после RAM rescue snapshot с выключением на
   exact `ERASE` prompt.
 
-Эти результаты не закрывают physical gate. Реальные SATA и NVMe, физический
-power-cycle до `ERASE`, schema 3 report и prerelease остаются отдельными
-неотмеченными пунктами Фазы 4.
+Меняющиеся checksums development artifact и локальные longrun job IDs
+записываются в ignored `LOCAL_CONTEXT.md`. До physical gate и immutable
+freeze этот artifact не считается release candidate.
+
+TCG-диагностика отдельно установила, что QEMU 8.2 с двумя vCPU может замедлять
+guest clock после warm reset независимо от `sysupgrade`; тот же простой reboot
+с одним vCPU проходит. Поэтому standard-upgrade gate сохраняет настоящий warm
+reboot, но использует отдельный `QEMU_STANDARD_UPGRADE_SMP=1` профиль.
+
+Эти результаты не закрывают physical gate. Реальные SATA и NVMe, два
+standard upgrade цикла, Safe Upgrade, физический power-cycle до `ERASE`, schema
+4 report и prerelease остаются неотмеченными пунктами Фазы 5.
 
 ### Отложенная Фаза: Export И Assisted Upgrade
 
 - [ ] Export RAM rescue snapshot на выбранный USB до ERASE.
 - [ ] Исследовать read-only detection squashfs + overlay.
-- [ ] Проверить `owut --rootfs-size` на project-created layouts.
-- [ ] Решить, нужен ли вообще one-shot standard sysupgrade handoff.
 
 ## Definition Of Done
 
-Partition sizing готов, когда BIOS и UEFI установки с `image`, fixed/custom и
-`fill` размерами проходят QEMU boot, а фактическая partition/filesystem geometry
-совпадает с review.
+Storage profiles готовы, когда BIOS/UEFI и AHCI/NVMe установки compatible,
+expanded, fill и custom проходят installed boot, а фактические sectors,
+filesystems, UUID fstab, data mounts, reserve и review совпадают. Эти
+автоматические gates пройдены.
 
 Rescue готов, когда старая ext4 OpenWrt читается строго read-only, snapshot
 полностью находится и повторно проверяется в RAM до ERASE, source unmounted до
 write, новая система загружается и содержит ожидаемую конфигурацию.
 
-Стандартный upgrade считается поддержанным только как zero-write переход к
-существующей OpenWrt. Автоматический upgrade из live ISO не считается частью
-готовности и не должен появляться в UI без отдельного доказанного design.
+Standard upgrade готов автоматически, когда wrapper fail-closed проверяет
+installed/candidate geometry, два последовательных original OpenWrt
+`sysupgrade` проходят самостоятельный reboot, data/config сохраняются, а guard
+восстанавливается. Этот QEMU gate пройден; physical gate еще открыт.
+
+Safe Upgrade готов автоматически, когда RAM snapshot, p1/p2-only write,
+root resize/PARTUUID patch, data verification и installed boot доказаны. Этот
+QEMU gate пройден; physical gate еще открыт.
+
+Release iteration готова только после clean non-dev candidate build, schema 4
+bare-metal SATA/NVMe/standard/Safe Upgrade/rescue report, immutable release
+gate и публикации нового prerelease. До этого `v1.0-alpha.12` остается
+development runtime, а Goal не считается полностью закрытым.
 
 ## Ссылки
 

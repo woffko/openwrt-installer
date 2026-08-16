@@ -168,13 +168,15 @@ fi
 manual_keyboard="$(ask_result "Arrow keys and Enter remained usable" "${OWRT_HW_MANUAL_KEYBOARD:-}")"
 manual_exact="$(ask_result "Mouse input stopped before the exact ERASE prompt" "${OWRT_HW_MANUAL_EXACT:-}")"
 manual_storage_navigation="$(ask_result "Mouse and keyboard navigation worked on storage and rescue screens" "${OWRT_HW_MANUAL_STORAGE_NAVIGATION:-}")"
-manual_sata_layout="$(ask_result "A physical SATA SSD booted with the requested OpenWrt root size" "${OWRT_HW_MANUAL_SATA_LAYOUT:-}")"
-manual_nvme_layout="$(ask_result "A physical NVMe disk booted with the requested OpenWrt root size" "${OWRT_HW_MANUAL_NVME_LAYOUT:-}")"
+manual_sata_compatible="$(ask_result "A physical SATA SSD booted with compatible p1/p2, mounted p3, and unallocated reserve" "${OWRT_HW_MANUAL_SATA_COMPATIBLE:-}")"
+manual_nvme_compatible="$(ask_result "A physical NVMe disk booted with compatible p1/p2, mounted p3, and unallocated reserve" "${OWRT_HW_MANUAL_NVME_COMPATIBLE:-}")"
+manual_standard_sysupgrade="$(ask_result "Two sequential guarded standard sysupgrade cycles booted and preserved p3 data" "${OWRT_HW_MANUAL_STANDARD_SYSUPGRADE:-}")"
+manual_safe_upgrade="$(ask_result "Hellforge Safe Upgrade booted and preserved the managed layout, data, and restored configuration" "${OWRT_HW_MANUAL_SAFE_UPGRADE:-}")"
 manual_rescue_restore="$(ask_result "Rescue reinstalled OpenWrt and restored the changed LAN/WAN configuration" "${OWRT_HW_MANUAL_RESCUE_RESTORE:-}")"
 manual_power_cycle="$(ask_result "Cancelling or powering off after the RAM snapshot and before ERASE left the source disk unchanged" "${OWRT_HW_MANUAL_POWER_CYCLE:-}")"
 
 {
-	printf 'report_schema=3\n'
+	printf 'report_schema=4\n'
 	printf 'installer_version=%s\n' "$(value_or_unknown "$(installer_version)")"
 	printf 'architecture=%s\n' "$(uname -m 2>/dev/null || printf unknown)"
 	printf 'kernel=%s\n' "$(uname -r 2>/dev/null || printf unknown)"
@@ -196,8 +198,10 @@ manual_power_cycle="$(ask_result "Cancelling or powering off after the RAM snaps
 	printf 'manual_keyboard=%s\n' "$manual_keyboard"
 	printf 'manual_exact_prompt_mouse_stop=%s\n' "$manual_exact"
 	printf 'manual_storage_rescue_navigation=%s\n' "$manual_storage_navigation"
-	printf 'manual_sata_root_size_and_boot=%s\n' "$manual_sata_layout"
-	printf 'manual_nvme_root_size_and_boot=%s\n' "$manual_nvme_layout"
+	printf 'manual_sata_compatible_layout_and_boot=%s\n' "$manual_sata_compatible"
+	printf 'manual_nvme_compatible_layout_and_boot=%s\n' "$manual_nvme_compatible"
+	printf 'manual_standard_sysupgrade_two_cycles=%s\n' "$manual_standard_sysupgrade"
+	printf 'manual_safe_upgrade_preserves_data=%s\n' "$manual_safe_upgrade"
 	printf 'manual_rescue_restore=%s\n' "$manual_rescue_restore"
 	printf 'manual_pre_erase_power_cycle_no_change=%s\n' "$manual_power_cycle"
 } >> "$tmp_output"
@@ -241,7 +245,7 @@ case "$manual_move:$manual_click:$manual_keyboard:$manual_exact" in
 	*fail*) physical_result=fail ;;
 	*skipped*) [ "$physical_result" = "fail" ] || physical_result=incomplete ;;
 esac
-case "$manual_storage_navigation:$manual_sata_layout:$manual_nvme_layout:$manual_rescue_restore:$manual_power_cycle" in
+case "$manual_storage_navigation:$manual_sata_compatible:$manual_nvme_compatible:$manual_standard_sysupgrade:$manual_safe_upgrade:$manual_rescue_restore:$manual_power_cycle" in
 	*fail*) physical_result=fail ;;
 	*skipped*) [ "$physical_result" = "fail" ] || physical_result=incomplete ;;
 esac

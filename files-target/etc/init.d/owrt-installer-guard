@@ -1,0 +1,8 @@
+#!/bin/sh /etc/rc.common
+
+# shellcheck disable=SC2034 # rc.common consumes START.
+START=05
+
+start() {
+	/etc/owrt-installer/install-upgrade-guard /
+}

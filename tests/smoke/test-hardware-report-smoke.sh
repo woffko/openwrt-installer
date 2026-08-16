@@ -6,6 +6,12 @@ PROJECT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 REPORTER="$PROJECT_DIR/files-installer/usr/sbin/owrt-hardware-report"
 VERIFIER="$PROJECT_DIR/scripts/verify-physical-report.sh"
 TMPDIR="${TMPDIR:-/tmp}"
+INSTALLER_VERSION="$(sed -n 's/^INSTALLER_VERSION="\([^"]*\)"/\1/p' \
+	"$PROJECT_DIR/files-installer/usr/sbin/owrt-install")"
+[ -n "$INSTALLER_VERSION" ] || {
+	printf 'ERROR: Could not read current installer version\n' >&2
+	exit 1
+}
 
 fail() {
 	printf 'ERROR: %s\n' "$*" >&2
@@ -46,7 +52,7 @@ cat > "$work_dir/install.log" <<'EOF'
 [owrt-installer-mouse] stopped
 INFO: Dry run complete; no changes were made
 EOF
-printf '%s\n' '#!/bin/sh' 'INSTALLER_VERSION="v1.0-alpha.11"' > "$work_dir/owrt-install"
+printf '%s\n' '#!/bin/sh' "INSTALLER_VERSION=\"$INSTALLER_VERSION\"" > "$work_dir/owrt-install"
 
 report="$work_dir/report.txt"
 OWRT_HW_REPORT_NONINTERACTIVE=1 \
@@ -66,14 +72,16 @@ OWRT_HW_MOUSE_STATE="$work_dir/missing-state" \
 	OWRT_HW_MANUAL_KEYBOARD=pass \
 	OWRT_HW_MANUAL_EXACT=pass \
 	OWRT_HW_MANUAL_STORAGE_NAVIGATION=pass \
-	OWRT_HW_MANUAL_SATA_LAYOUT=pass \
-	OWRT_HW_MANUAL_NVME_LAYOUT=pass \
+	OWRT_HW_MANUAL_SATA_COMPATIBLE=pass \
+	OWRT_HW_MANUAL_NVME_COMPATIBLE=pass \
+	OWRT_HW_MANUAL_STANDARD_SYSUPGRADE=pass \
+	OWRT_HW_MANUAL_SAFE_UPGRADE=pass \
 	OWRT_HW_MANUAL_RESCUE_RESTORE=pass \
 	OWRT_HW_MANUAL_POWER_CYCLE=pass \
 	"$REPORTER" "$report" >/dev/null
 
-assert_contains "$report" "report_schema=3"
-assert_contains "$report" "installer_version=v1.0-alpha.11"
+assert_contains "$report" "report_schema=4"
+assert_contains "$report" "installer_version=$INSTALLER_VERSION"
 assert_contains "$report" "kernel_mouse_flag=yes"
 assert_contains "$report" "kernel_hardware_test_flag=yes"
 assert_contains "$report" "gpm_daemon_version=1.20.7-r5"
@@ -88,8 +96,10 @@ assert_contains "$report" "manual_click=pass"
 assert_contains "$report" "manual_wheel=pass"
 assert_contains "$report" "manual_wheel_skip_reason=not-applicable"
 assert_contains "$report" "manual_storage_rescue_navigation=pass"
-assert_contains "$report" "manual_sata_root_size_and_boot=pass"
-assert_contains "$report" "manual_nvme_root_size_and_boot=pass"
+assert_contains "$report" "manual_sata_compatible_layout_and_boot=pass"
+assert_contains "$report" "manual_nvme_compatible_layout_and_boot=pass"
+assert_contains "$report" "manual_standard_sysupgrade_two_cycles=pass"
+assert_contains "$report" "manual_safe_upgrade_preserves_data=pass"
 assert_contains "$report" "manual_rescue_restore=pass"
 assert_contains "$report" "manual_pre_erase_power_cycle_no_change=pass"
 assert_contains "$report" "relative_pointer_1=event0,bus=0003,vendor=1234,product=5678"

@@ -8,7 +8,7 @@ The mouse path was also checked on a real machine for published
 old schema 2 report is no longer sufficient for a new release. Current
 storage/rescue candidates must follow
 [PHYSICAL_X86_STORAGE_RESCUE_TEST.md](PHYSICAL_X86_STORAGE_RESCUE_TEST.md) and
-produce one combined schema 3 report.
+produce one combined schema 4 report.
 
 ## Historical Release Candidate
 
@@ -69,8 +69,8 @@ not use either historical block for a current release gate.
 - at least two network interfaces, physical or USB, for the complete wizard.
 
 A wired USB HID run closes only the mouse portion of the current physical
-gate. SATA, NVMe, root-size, rescue, and pre-ERASE power-cycle results remain
-separate required checks.
+gate. SATA/NVMe compatible layouts, standard sysupgrade, Safe Upgrade, rescue,
+and pre-ERASE power-cycle results remain separate required checks.
 
 ## Procedure
 
@@ -141,8 +141,8 @@ acceptable only when the available lists cannot scroll; otherwise it must be
 physical gate open. The verifier additionally requires
 `pointer_connection=usb-wired`; receiver and PS/2 reports remain useful as
 secondary-platform evidence. `physical_flow_result=pass` is emitted only when
-the schema 3 storage/rescue checks also pass. Historical schema 2 reports are
-intentionally rejected by the current release gate.
+the schema 4 storage/upgrade/rescue checks also pass. Historical schema 2 and
+3 reports are intentionally rejected by the current release gate.
 
 Record the machine model, firmware mode, and pointer connection type next to
 the report after reviewing them. Do not include DMI serial numbers, disk

@@ -32,6 +32,18 @@ assert_not_contains() {
 	fi
 }
 
+assert_before() {
+	file="$1"
+	first="$2"
+	second="$3"
+	first_line="$(grep -n -F -x -- "$first" "$file" | head -n 1 | cut -d: -f1)"
+	second_line="$(grep -n -F -x -- "$second" "$file" | head -n 1 | cut -d: -f1)"
+	if ! { [ -n "$first_line" ] && [ -n "$second_line" ] &&
+		[ "$first_line" -lt "$second_line" ]; }; then
+		fail "Expected '$first' before '$second' in $file"
+	fi
+}
+
 assert_no_fifo() {
 	path="$1"
 	if find "$path" -type p -print -quit | grep . >/dev/null 2>&1; then
@@ -203,6 +215,79 @@ run_rescue_parse_args_smoke() {
 	assert_contains "$work_dir/rescue-invalid.out" "--rescue-existing requires --rescue-scope"
 }
 
+run_safe_upgrade_parse_args_smoke() {
+	work_dir="$1"
+	out_file="$work_dir/safe-upgrade-parse.out"
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+		. "$1"
+		parse_args --target /dev/testdisk --safe-upgrade-existing \
+			--rescue-scope config-only --import-network keep --dry-run
+		printf "safe=%s rescue=%s scope=%s network=%s\n" \
+			"$SAFE_UPGRADE_EXISTING" "$RESCUE_EXISTING" "$RESCUE_SCOPE_REQUEST" \
+			"$CONFIG_IMPORT_NETWORK_REQUEST"
+		cleanup
+	' sh "$INSTALLER" > "$out_file" 2>&1
+	assert_contains "$out_file" "safe=1 rescue=0 scope=config-only network=keep"
+
+	for invalid_case in missing-scope storage-profile root-size data-partition dual-mode backup; do
+		case "$invalid_case" in
+			missing-scope)
+				set -- --target /dev/testdisk --safe-upgrade-existing
+				expected="--safe-upgrade-existing requires --rescue-scope"
+				;;
+			storage-profile)
+				set -- --target /dev/testdisk --safe-upgrade-existing --rescue-scope config-only --storage-profile compatible
+				expected="--safe-upgrade-existing cannot be combined with --storage-profile"
+				;;
+			root-size)
+				set -- --target /dev/testdisk --safe-upgrade-existing --rescue-scope config-only --root-size image
+				expected="--safe-upgrade-existing cannot be combined with --root-size"
+				;;
+			data-partition)
+				set -- --target /dev/testdisk --safe-upgrade-existing --rescue-scope config-only \
+					--storage-profile custom --root-size 1GiB --data-partition 1GiB:data:/mnt/data
+				expected="--safe-upgrade-existing cannot be combined with --storage-profile"
+				;;
+			dual-mode)
+				set -- --target /dev/testdisk --safe-upgrade-existing --rescue-existing --rescue-scope config-only
+				expected="--rescue-existing cannot be combined with --safe-upgrade-existing"
+				;;
+			backup)
+				set -- --target /dev/testdisk --safe-upgrade-existing --rescue-scope config-only \
+					--config-backup /tmp/backup.tar.gz
+				expected="--safe-upgrade-existing cannot be combined with --config-backup"
+				;;
+		esac
+		set +e
+		OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" \
+			sh -eu -c '. "$1"; shift; parse_args "$@"' sh "$INSTALLER" "$@" \
+			> "$work_dir/safe-upgrade-$invalid_case.out" 2>&1
+		status=$?
+		set -e
+		[ "$status" -eq 1 ] || fail "Safe Upgrade invalid case $invalid_case was not rejected"
+		assert_contains "$work_dir/safe-upgrade-$invalid_case.out" "$expected"
+	done
+}
+
+run_safe_upgrade_confirmation_smoke() {
+	work_dir="$1"
+	out_file="$work_dir/safe-upgrade-confirm.out"
+	printf '%s\n' 'UPGRADE /dev/testdisk' |
+		OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" sh -eu -c '
+			. "$1"
+			TARGET=/dev/testdisk
+			INSTALL_MODE=safe-upgrade
+			ui_confirm_erase_screen() { printf "screen=%s\n" "$1"; }
+			local_mouse_stop() { :; }
+			local_mouse_start() { :; }
+			confirm_erase
+			printf "confirmation=accepted\n"
+			cleanup
+		' sh "$INSTALLER" > "$out_file" 2>&1
+	assert_contains "$out_file" "screen=UPGRADE /dev/testdisk"
+	assert_contains "$out_file" "confirmation=accepted"
+}
+
 run_storage_cli_and_version_gate_smoke() {
 	work_dir="$1"
 
@@ -350,6 +435,93 @@ run_dry_run_skip_network_smoke() {
 	assert_not_contains "$calls_file" "write_payload"
 	assert_not_contains "$calls_file" "resize_rootfs"
 	assert_not_contains "$calls_file" "write_installed_config"
+}
+
+run_safe_upgrade_flow_smoke() {
+	work_dir="$1/safe-upgrade-flow"
+	mkdir -p "$work_dir"
+	out_file="$work_dir/run.out"
+	calls_file="$work_dir/calls"
+
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 TMPDIR="$work_dir" UI_LIB="$UI_LIB" \
+		OWRT_UI_MODE=line TERM=dumb sh -eu -c '
+			. "$1"
+			INSTALL_LOG="$2/install.log"
+			CALLS_FILE="$3"
+			parse_args --target /dev/testdisk --safe-upgrade-existing \
+				--rescue-scope config-only --skip-network-wizard \
+				--yes-i-know-this-will-erase-data
+
+			record() { printf "%s\n" "$1" >> "$CALLS_FILE"; }
+			forbidden() { record "$1"; exit 91; }
+			setup_ui() { record setup_ui; }
+			ui_welcome_screen() { record welcome; }
+			ui_install_stage() { record "stage:$1"; }
+			ui_set_payload_version() { record "payload:$1"; }
+			ui_success_screen() { record success; }
+			verify_payload() {
+				record verify_payload
+				PAYLOAD_VERSION=25.12.5
+				PAYLOAD_SHA256=fake-sha
+			}
+			validate_target_disk() { record validate_target; }
+			disk_label() { printf "%s" test-disk; }
+			storage_prepare_target_geometry() { record prepare_geometry; }
+			prepare_requested_safe_upgrade() {
+				record prepare_safe_upgrade
+				INSTALL_MODE=safe-upgrade
+				STORAGE_SAFE_UPGRADE=1
+				STORAGE_PROFILE=custom
+				STORAGE_LAYOUT=bounded
+				STORAGE_ROOT_START_SECTOR=33280
+				STORAGE_ROOT_TARGET_END_SECTOR=1081855
+				STORAGE_ROOT_IMAGE_MIB=256
+				STORAGE_DATA_PARTITION_COUNT=1
+				STORAGE_RESERVED_MIB=1024
+				STORAGE_DISCARD_STATUS=preserved-layout
+			}
+			record_storage_selection() { record record_storage; }
+			review_and_confirm() { record review; }
+			swapoff() { record swapoff; }
+			unmount_target_partitions() { record unmount_target; }
+			get_partition_path() { printf "%s2\n" "$1"; }
+			storage_enumerate_target_partitions() { record enumerate; }
+			storage_validate_existing_managed_layout() { record validate_managed; }
+			storage_adopt_existing_layout() { record adopt_managed; }
+			verify_preserved_data_partitions() { record verify_data; }
+			prepare_safe_upgrade_raw_payload() { record stage_payload; }
+			write_safe_upgrade_system_partitions() { record write_p1_p2; }
+			resize_preserved_rootfs() { record resize_preserved; }
+			patch_preserved_boot_partuuid() { record patch_boot; }
+			write_installed_config() { record write_config; }
+			attempt_target_discard() { forbidden discard; }
+			write_payload() { forbidden full_disk_write; }
+			resize_rootfs() { forbidden repartition_root; }
+			create_data_partitions() { forbidden create_data; }
+
+			run_install
+			cleanup
+		' sh "$INSTALLER" "$work_dir" "$calls_file" > "$out_file" 2>&1 || {
+			sed -n '1,240p' "$out_file" >&2 || true
+			fail "Safe Upgrade flow harness failed"
+		}
+
+	assert_before "$calls_file" prepare_safe_upgrade review
+	assert_before "$calls_file" review unmount_target
+	assert_before "$calls_file" unmount_target enumerate
+	assert_before "$calls_file" enumerate validate_managed
+	assert_before "$calls_file" validate_managed adopt_managed
+	assert_before "$calls_file" adopt_managed stage_payload
+	assert_before "$calls_file" stage_payload write_p1_p2
+	assert_before "$calls_file" write_p1_p2 resize_preserved
+	assert_before "$calls_file" resize_preserved patch_boot
+	assert_before "$calls_file" patch_boot write_config
+	[ "$(grep -c -F -x verify_data "$calls_file")" -eq 3 ] ||
+		fail "Safe Upgrade did not verify data before write, after system write, and after config"
+	assert_not_contains "$calls_file" discard
+	assert_not_contains "$calls_file" full_disk_write
+	assert_not_contains "$calls_file" repartition_root
+	assert_not_contains "$calls_file" create_data
 }
 
 run_network_back_state_smoke() {
@@ -571,8 +743,11 @@ trap 'rm -rf "$work_dir"' EXIT INT TERM
 
 run_parse_args_smoke "$work_dir"
 run_rescue_parse_args_smoke "$work_dir"
+run_safe_upgrade_parse_args_smoke "$work_dir"
+run_safe_upgrade_confirmation_smoke "$work_dir"
 run_storage_cli_and_version_gate_smoke "$work_dir"
 run_dry_run_skip_network_smoke "$work_dir"
+run_safe_upgrade_flow_smoke "$work_dir"
 run_network_back_state_smoke "$work_dir"
 run_line_network_wizard_back_smoke "$work_dir"
 run_payload_progress_smoke "$work_dir"

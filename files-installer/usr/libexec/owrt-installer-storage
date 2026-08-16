@@ -333,10 +333,158 @@ storage_parse_size_mib() {
 	is_positive_integer "$STORAGE_PARSED_SIZE_MIB"
 }
 
+storage_align_up() {
+	storage_align_value="$1"
+	storage_align_unit="$2"
+	printf '%s\n' "$((((storage_align_value + storage_align_unit - 1) / storage_align_unit) * storage_align_unit))"
+}
+
+storage_align_down() {
+	storage_align_value="$1"
+	storage_align_unit="$2"
+	printf '%s\n' "$(((storage_align_value / storage_align_unit) * storage_align_unit))"
+}
+
+storage_percent_floor() {
+	storage_percent_value="$1"
+	storage_percent="$2"
+	printf '%s\n' "$(((storage_percent_value / 100) * storage_percent +
+		(storage_percent_value % 100) * storage_percent / 100))"
+}
+
+storage_reset_data_layout() {
+	: > "$STORAGE_DATA_LAYOUT_LIST"
+	STORAGE_DATA_PARTITION_COUNT=0
+	STORAGE_DATA_TOTAL_SECTORS=0
+	STORAGE_DATA_TOTAL_MIB=0
+	STORAGE_RESERVED_SECTORS=0
+	STORAGE_RESERVED_MIB=0
+}
+
+storage_update_tail_geometry() {
+	storage_tail_used_end="$1"
+	STORAGE_UNALLOCATED_SECTORS=$((STORAGE_DISK_USABLE_END_SECTOR - storage_tail_used_end))
+	[ "$STORAGE_UNALLOCATED_SECTORS" -ge 0 ] || return 1
+	STORAGE_UNALLOCATED_MIB=$((STORAGE_UNALLOCATED_SECTORS / 2048))
+	STORAGE_RESERVED_SECTORS="$STORAGE_UNALLOCATED_SECTORS"
+	STORAGE_RESERVED_MIB="$STORAGE_UNALLOCATED_MIB"
+}
+
+storage_data_max_partition_number() {
+	case "$STORAGE_TABLE_TYPE" in
+		gpt) printf '%s\n' 15 ;;
+		dos) printf '%s\n' 4 ;;
+		*) return 1 ;;
+	esac
+}
+
+storage_validate_data_label() {
+	storage_data_label="$1"
+	[ -n "$storage_data_label" ] && [ "${#storage_data_label}" -le 16 ] &&
+		printf '%s\n' "$storage_data_label" | LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+}
+
+storage_validate_mountpoint() {
+	storage_mountpoint="$1"
+	case "$storage_mountpoint" in
+		/mnt/[A-Za-z0-9]*|/srv/[A-Za-z0-9]*) ;;
+		*) return 1 ;;
+	esac
+	case "$storage_mountpoint" in
+		*//*|*/../*|*/..|*/./*|*/.) return 1 ;;
+	esac
+	printf '%s\n' "$storage_mountpoint" |
+		LC_ALL=C grep -Eq '^/(mnt|srv)/[A-Za-z0-9._/-]+$'
+}
+
+storage_data_value_is_unique() {
+	storage_unique_field="$1"
+	storage_unique_value="$2"
+	[ -s "$STORAGE_DATA_LAYOUT_LIST" ] || return 0
+	! awk -F'|' -v field="$storage_unique_field" -v value="$storage_unique_value" \
+		'$field == value { found = 1 } END { exit found ? 0 : 1 }' \
+		"$STORAGE_DATA_LAYOUT_LIST"
+}
+
+storage_next_data_start_sector() {
+	if [ "$STORAGE_DATA_PARTITION_COUNT" -eq 0 ]; then
+		storage_align_up "$((STORAGE_ROOT_TARGET_END_SECTOR + 1))" 2048
+	else
+		storage_last_data_end="$(tail -n 1 "$STORAGE_DATA_LAYOUT_LIST" | awk -F'|' '{ print $3 }')"
+		is_positive_integer "$storage_last_data_end" || return 1
+		storage_align_up "$((storage_last_data_end + 1))" 2048
+	fi
+}
+
+storage_append_data_partition() {
+	storage_data_sectors="$1"
+	storage_data_label="$2"
+	storage_data_mountpoint="$3"
+	STORAGE_ERROR=""
+	is_positive_integer "$storage_data_sectors" ||
+		storage_set_error "The data partition size is invalid." || return 1
+	storage_validate_data_label "$storage_data_label" ||
+		storage_set_error "Data labels must be unique, 1-16 characters, and use letters, numbers, dot, underscore, or dash." || return 1
+	storage_validate_mountpoint "$storage_data_mountpoint" ||
+		storage_set_error "Data mount points must be absolute paths below /mnt or /srv." || return 1
+	storage_data_value_is_unique 4 "$storage_data_label" ||
+		storage_set_error "Data partition label '$storage_data_label' is already used." || return 1
+	storage_data_value_is_unique 5 "$storage_data_mountpoint" ||
+		storage_set_error "Data mount point '$storage_data_mountpoint' is already used." || return 1
+	storage_data_max="$(storage_data_max_partition_number)" ||
+		storage_set_error "Unsupported partition table for data partitions." || return 1
+	storage_data_number=$((STORAGE_DATA_PARTITION_COUNT + 3))
+	[ "$storage_data_number" -le "$storage_data_max" ] ||
+		storage_set_error "The selected partition table cannot contain another data partition." || return 1
+	storage_data_start="$(storage_next_data_start_sector)" ||
+		storage_set_error "Could not calculate the next data partition boundary." || return 1
+	storage_data_sectors="$(storage_align_down "$storage_data_sectors" 2048)"
+	[ "$storage_data_sectors" -ge 2048 ] ||
+		storage_set_error "A data partition must be at least 1 MiB after alignment." || return 1
+	storage_data_end=$((storage_data_start + storage_data_sectors - 1))
+	[ "$storage_data_end" -le "$STORAGE_DISK_USABLE_END_SECTOR" ] ||
+		storage_set_error "The data partition does not fit in the remaining disk space." || return 1
+	printf '%s|%s|%s|%s|%s\n' "$storage_data_number" "$storage_data_start" \
+		"$storage_data_end" "$storage_data_label" "$storage_data_mountpoint" \
+		>> "$STORAGE_DATA_LAYOUT_LIST" || return 1
+	STORAGE_DATA_PARTITION_COUNT=$((STORAGE_DATA_PARTITION_COUNT + 1))
+	STORAGE_DATA_TOTAL_SECTORS=$((STORAGE_DATA_TOTAL_SECTORS + storage_data_sectors))
+	STORAGE_DATA_TOTAL_MIB=$((STORAGE_DATA_TOTAL_SECTORS / 2048))
+	storage_update_tail_geometry "$storage_data_end"
+}
+
+storage_add_data_partition_mib() {
+	storage_data_mib="$1"
+	storage_data_label="$2"
+	storage_data_mountpoint="$3"
+	is_positive_integer "$storage_data_mib" ||
+		storage_set_error "The data partition size must be a positive whole MiB value." || return 1
+	storage_append_data_partition "$((storage_data_mib * 2048))" \
+		"$storage_data_label" "$storage_data_mountpoint"
+}
+
+storage_configure_compatible_profile() {
+	storage_calculate_layout image || return 1
+	STORAGE_PROFILE="compatible"
+	storage_data_start="$(storage_next_data_start_sector)" ||
+		storage_set_error "Could not align the OpenWrt-compatible data partition." || return 1
+	storage_remaining_sectors=$((STORAGE_DISK_USABLE_END_SECTOR - storage_data_start + 1))
+	[ "$storage_remaining_sectors" -ge 4096 ] ||
+		storage_set_error "The disk has no usable space for the OpenWrt-compatible data partition and reserve." || return 1
+	storage_data_sectors="$(storage_percent_floor "$storage_remaining_sectors" 80)"
+	storage_data_sectors="$(storage_align_down "$storage_data_sectors" 2048)"
+	[ "$storage_data_sectors" -ge 2048 ] ||
+		storage_set_error "The OpenWrt-compatible data partition would be too small." || return 1
+	storage_append_data_partition "$storage_data_sectors" owrt-data /mnt/data || return 1
+	[ "$STORAGE_RESERVED_SECTORS" -gt 0 ] ||
+		storage_set_error "The OpenWrt-compatible profile could not reserve an unallocated tail." || return 1
+}
+
 storage_calculate_layout() {
 	storage_requested_layout="$1"
 	storage_requested_mib="${2:-}"
 	STORAGE_ERROR=""
+	storage_reset_data_layout
 	case "$storage_requested_layout" in
 		fill)
 			STORAGE_LAYOUT="fill"
@@ -362,12 +510,17 @@ storage_calculate_layout() {
 	STORAGE_ROOT_TARGET_SECTORS=$((STORAGE_ROOT_TARGET_END_SECTOR - STORAGE_ROOT_START_SECTOR + 1))
 	STORAGE_ROOT_TARGET_MIB="$(((STORAGE_ROOT_TARGET_SECTORS + 2047) / 2048))"
 	ROOTFS_TARGET_MIB="$STORAGE_ROOT_TARGET_MIB"
-	STORAGE_UNALLOCATED_SECTORS=$((STORAGE_DISK_USABLE_END_SECTOR - STORAGE_ROOT_TARGET_END_SECTOR))
-	STORAGE_UNALLOCATED_MIB=$((STORAGE_UNALLOCATED_SECTORS / 2048))
+	storage_update_tail_geometry "$STORAGE_ROOT_TARGET_END_SECTOR" ||
+		storage_set_error "The calculated storage layout exceeds the selected disk." || return 1
 	return 0
 }
 
 storage_layout_label() {
+	if [ "${STORAGE_PROFILE:-}" = "compatible" ]; then
+		printf 'OpenWrt-compatible: %s MiB root, %s MiB data, %s MiB SSD reserve' \
+			"$STORAGE_ROOT_TARGET_MIB" "$STORAGE_DATA_TOTAL_MIB" "$STORAGE_RESERVED_MIB"
+		return 0
+	fi
 	case "$STORAGE_LAYOUT" in
 		fill) printf 'Use entire disk (%s MiB root)' "$STORAGE_ROOT_TARGET_MIB" ;;
 		image) printf 'Keep image size (%s MiB root)' "$STORAGE_ROOT_TARGET_MIB" ;;
@@ -387,6 +540,19 @@ EOF
 	STORAGE_ACTUAL_START_SECTOR="${STORAGE_ACTUAL_START_SECTOR%s}"
 	STORAGE_ACTUAL_END_SECTOR="${STORAGE_ACTUAL_END_SECTOR%s}"
 	is_positive_integer "$STORAGE_ACTUAL_START_SECTOR" && is_positive_integer "$STORAGE_ACTUAL_END_SECTOR"
+}
+
+storage_detect_discard_support() {
+	storage_discard_target="$1"
+	storage_discard_name="$(disk_name_from_path "$storage_discard_target")"
+	storage_discard_max="$(cat "/sys/block/$storage_discard_name/queue/discard_max_bytes" 2>/dev/null || printf 0)"
+	STORAGE_DISCARD_SUPPORTED=0
+	case "$storage_discard_max" in
+		''|*[!0-9]*) storage_discard_max=0 ;;
+	esac
+	if [ "$storage_discard_max" -gt 0 ] && command -v blkdiscard >/dev/null 2>&1; then
+		STORAGE_DISCARD_SUPPORTED=1
+	fi
 }
 
 storage_enumerate_target_partitions() {
@@ -464,6 +630,225 @@ storage_release_value() {
 	' "$storage_release_file"
 }
 
+storage_metadata_value() {
+	storage_metadata_file="$1"
+	storage_metadata_key="$2"
+	awk -F= -v key="$storage_metadata_key" '
+		$1 == key { print substr($0, length(key) + 2); found++ }
+		END { if (found != 1) exit 1 }
+	' "$storage_metadata_file"
+}
+
+storage_capture_managed_layout() {
+	storage_managed_root="$1"
+	storage_managed_file="$storage_managed_root/etc/owrt-installer/storage-layout"
+	STORAGE_EXISTING_MANAGED=0
+	STORAGE_EXISTING_MANAGED_REASON="No validated Hellforge storage metadata was found."
+	: > "$STORAGE_EXISTING_DATA_LAYOUT_LIST"
+	[ -f "$storage_managed_file" ] && [ ! -L "$storage_managed_file" ] || return 0
+	storage_managed_size="$(stat -c '%s' "$storage_managed_file" 2>/dev/null || true)"
+	if ! { storage_is_nonnegative_integer "$storage_managed_size" &&
+		[ "$storage_managed_size" -le 65536 ]; }; then
+		STORAGE_EXISTING_MANAGED_REASON="Hellforge storage metadata has an unsafe size."
+		return 0
+	fi
+	storage_managed_schema="$(storage_metadata_value "$storage_managed_file" schema 2>/dev/null || true)"
+	storage_managed_profile="$(storage_metadata_value "$storage_managed_file" profile 2>/dev/null || true)"
+	storage_managed_table="$(storage_metadata_value "$storage_managed_file" table_type 2>/dev/null || true)"
+	storage_managed_boot_start="$(storage_metadata_value "$storage_managed_file" boot_start_sector 2>/dev/null || true)"
+	storage_managed_boot_sectors="$(storage_metadata_value "$storage_managed_file" boot_sectors 2>/dev/null || true)"
+	storage_managed_root_start="$(storage_metadata_value "$storage_managed_file" root_start_sector 2>/dev/null || true)"
+	storage_managed_root_end="$(storage_metadata_value "$storage_managed_file" root_end_sector 2>/dev/null || true)"
+	storage_managed_data_count="$(storage_metadata_value "$storage_managed_file" data_partition_count 2>/dev/null || true)"
+	storage_managed_reserve="$(storage_metadata_value "$storage_managed_file" reserve_sectors 2>/dev/null || true)"
+	[ "$storage_managed_schema" = "1" ] || {
+		STORAGE_EXISTING_MANAGED_REASON="Hellforge storage metadata schema is unsupported."
+		return 0
+	}
+	case "$storage_managed_profile" in compatible|expanded|fill|custom) ;; *) return 0 ;; esac
+	case "$storage_managed_table" in gpt|dos) ;; *) return 0 ;; esac
+	for storage_managed_number in "$storage_managed_boot_start" "$storage_managed_boot_sectors" \
+		"$storage_managed_root_start" "$storage_managed_root_end" \
+		"$storage_managed_data_count" "$storage_managed_reserve"; do
+		storage_is_nonnegative_integer "$storage_managed_number" || {
+			STORAGE_EXISTING_MANAGED_REASON="Hellforge storage metadata contains an invalid number."
+			return 0
+		}
+	done
+	if ! { [ "$storage_managed_root_start" = "$STORAGE_EXISTING_ROOT_START_SECTOR" ] &&
+		[ "$storage_managed_root_end" -eq "$((STORAGE_EXISTING_ROOT_START_SECTOR + STORAGE_EXISTING_ROOT_SECTORS - 1))" ]; }; then
+		STORAGE_EXISTING_MANAGED_REASON="Hellforge root metadata does not match the detected root partition."
+		return 0
+	fi
+	storage_managed_rows="$(awk -F= '$1 == "data" { count++ } END { print count + 0 }' "$storage_managed_file")"
+	[ "$storage_managed_rows" = "$storage_managed_data_count" ] || {
+		STORAGE_EXISTING_MANAGED_REASON="Hellforge data partition count is inconsistent."
+		return 0
+	}
+	storage_managed_expected=3
+	while IFS= read -r storage_managed_line; do
+		case "$storage_managed_line" in data=*) storage_managed_line="${storage_managed_line#data=}" ;; *) continue ;; esac
+		IFS='|' read -r storage_managed_part storage_managed_start storage_managed_end \
+			storage_managed_label storage_managed_mount storage_managed_uuid storage_managed_extra <<EOF
+$storage_managed_line
+EOF
+		if ! { [ -z "$storage_managed_extra" ] && [ "$storage_managed_part" = "$storage_managed_expected" ] &&
+			storage_is_nonnegative_integer "$storage_managed_start" &&
+			storage_is_nonnegative_integer "$storage_managed_end" &&
+			[ "$storage_managed_end" -ge "$storage_managed_start" ] &&
+			storage_validate_data_label "$storage_managed_label" &&
+			storage_validate_mountpoint "$storage_managed_mount" &&
+			printf '%s\n' "$storage_managed_uuid" | LC_ALL=C grep -Eq '^[A-Fa-f0-9-]{16,64}$'; }; then
+			STORAGE_EXISTING_MANAGED_REASON="Hellforge data partition metadata is invalid."
+			: > "$STORAGE_EXISTING_DATA_LAYOUT_LIST"
+			return 0
+		fi
+		printf '%s|%s|%s|%s|%s|%s\n' "$storage_managed_part" "$storage_managed_start" \
+			"$storage_managed_end" "$storage_managed_label" "$storage_managed_mount" \
+			"$storage_managed_uuid" >> "$STORAGE_EXISTING_DATA_LAYOUT_LIST"
+		storage_managed_expected=$((storage_managed_expected + 1))
+	done < "$storage_managed_file"
+
+	STORAGE_EXISTING_PROFILE="$storage_managed_profile"
+	STORAGE_EXISTING_TABLE_TYPE="$storage_managed_table"
+	STORAGE_EXISTING_BOOT_START_SECTOR="$storage_managed_boot_start"
+	STORAGE_EXISTING_BOOT_SECTORS="$storage_managed_boot_sectors"
+	STORAGE_EXISTING_ROOT_END_SECTOR="$storage_managed_root_end"
+	STORAGE_EXISTING_DATA_PARTITION_COUNT="$storage_managed_data_count"
+	STORAGE_EXISTING_RESERVED_SECTORS="$storage_managed_reserve"
+	STORAGE_EXISTING_MANAGED=1
+	STORAGE_EXISTING_MANAGED_REASON="ready"
+}
+
+storage_validate_existing_managed_layout() {
+	[ "$STORAGE_EXISTING_MANAGED" = "1" ] || return 1
+	if [ "${OWRT_STORAGE_TEST_MODE:-0}" != "1" ]; then
+		storage_existing_table="$(LC_ALL=C parted -m -s "$TARGET" print 2>> "$INSTALL_LOG" |
+			awk -F: '$1 ~ /^\// { print $6; found++ } END { if (found != 1) exit 1 }')" || {
+			STORAGE_EXISTING_MANAGED_REASON="Could not verify the managed partition-table type."
+			STORAGE_EXISTING_MANAGED=0
+			return 1
+		}
+		[ "$storage_existing_table" = "$STORAGE_EXISTING_TABLE_TYPE" ] || {
+			STORAGE_EXISTING_MANAGED_REASON="Managed partition-table type does not match the disk."
+			STORAGE_EXISTING_MANAGED=0
+			return 1
+		}
+	fi
+	storage_existing_boot="$(get_partition_path "$TARGET" 1)"
+	storage_existing_boot_row="$(awk -F'|' -v dev="$storage_existing_boot" '$1 == dev { print; found++ } END { if (found != 1) exit 1 }' "$STORAGE_PARTITION_LIST")" || {
+		STORAGE_EXISTING_MANAGED_REASON="Managed boot partition 1 was not found."
+		STORAGE_EXISTING_MANAGED=0
+		return 1
+	}
+	IFS='|' read -r storage_existing_device storage_existing_fstype storage_existing_label \
+		storage_existing_test_dir storage_existing_start storage_existing_sectors <<EOF
+$storage_existing_boot_row
+EOF
+	if ! { [ "$storage_existing_start" = "$STORAGE_EXISTING_BOOT_START_SECTOR" ] &&
+		[ "$storage_existing_sectors" = "$STORAGE_EXISTING_BOOT_SECTORS" ]; }; then
+		STORAGE_EXISTING_MANAGED_REASON="Managed boot geometry does not match the disk."
+		STORAGE_EXISTING_MANAGED=0
+		return 1
+	fi
+	storage_existing_root="$(get_partition_path "$TARGET" 2)"
+	storage_existing_root_row="$(awk -F'|' -v dev="$storage_existing_root" '$1 == dev { print; found++ } END { if (found != 1) exit 1 }' "$STORAGE_PARTITION_LIST")" || {
+		STORAGE_EXISTING_MANAGED_REASON="Managed OpenWrt root partition 2 was not found."
+		STORAGE_EXISTING_MANAGED=0
+		return 1
+	}
+	IFS='|' read -r storage_existing_device storage_existing_fstype storage_existing_label \
+		storage_existing_test_dir storage_existing_start storage_existing_sectors <<EOF
+$storage_existing_root_row
+EOF
+	storage_existing_end=$((storage_existing_start + storage_existing_sectors - 1))
+	if ! { [ "$storage_existing_fstype" = "ext4" ] &&
+		[ "$storage_existing_start" = "$STORAGE_EXISTING_ROOT_START_SECTOR" ] &&
+		[ "$storage_existing_end" = "$STORAGE_EXISTING_ROOT_END_SECTOR" ]; }; then
+		STORAGE_EXISTING_MANAGED_REASON="Managed OpenWrt root geometry does not match the disk."
+		STORAGE_EXISTING_MANAGED=0
+		return 1
+	fi
+	while IFS='|' read -r storage_existing_number storage_existing_start storage_existing_end \
+		storage_existing_label storage_existing_mount storage_existing_uuid; do
+		storage_existing_part="$(get_partition_path "$TARGET" "$storage_existing_number")"
+		storage_existing_row="$(awk -F'|' -v dev="$storage_existing_part" '$1 == dev { print; found++ } END { if (found != 1) exit 1 }' "$STORAGE_PARTITION_LIST")" || {
+			STORAGE_EXISTING_MANAGED_REASON="Managed data partition $storage_existing_number was not found."
+			STORAGE_EXISTING_MANAGED=0
+			return 1
+		}
+		IFS='|' read -r storage_existing_device storage_existing_fstype storage_existing_actual_label \
+			storage_existing_test_dir storage_existing_actual_start storage_existing_actual_sectors <<EOF
+$storage_existing_row
+EOF
+		storage_existing_actual_end=$((storage_existing_actual_start + storage_existing_actual_sectors - 1))
+		if ! { [ "$storage_existing_fstype" = "ext4" ] &&
+			[ "$storage_existing_actual_label" = "$storage_existing_label" ] &&
+			[ "$storage_existing_actual_start" = "$storage_existing_start" ] &&
+			[ "$storage_existing_actual_end" = "$storage_existing_end" ]; }; then
+			STORAGE_EXISTING_MANAGED_REASON="Managed data partition $storage_existing_number does not match the disk."
+			STORAGE_EXISTING_MANAGED=0
+			return 1
+		fi
+		if [ "${OWRT_STORAGE_TEST_MODE:-0}" != "1" ]; then
+			storage_existing_actual_uuid="$(blkid -o value -s UUID "$storage_existing_part" 2>/dev/null || true)"
+			[ "$storage_existing_actual_uuid" = "$storage_existing_uuid" ] || {
+				STORAGE_EXISTING_MANAGED_REASON="Managed data UUID does not match partition $storage_existing_number."
+				STORAGE_EXISTING_MANAGED=0
+				return 1
+			}
+		fi
+	done < "$STORAGE_EXISTING_DATA_LAYOUT_LIST"
+	return 0
+}
+
+storage_adopt_existing_layout() {
+	STORAGE_ERROR=""
+	[ "$STORAGE_EXISTING_MANAGED" = "1" ] ||
+		storage_set_error "$STORAGE_EXISTING_MANAGED_REASON" || return 1
+	[ "$STORAGE_EXISTING_TABLE_TYPE" = "$STORAGE_TABLE_TYPE" ] ||
+		storage_set_error "The installed and selected image partition-table types differ." || return 1
+	[ "$STORAGE_EXISTING_BOOT_START_SECTOR" = "$STORAGE_BOOT_START_SECTOR" ] &&
+		[ "$STORAGE_EXISTING_BOOT_SECTORS" = "$STORAGE_BOOT_SECTORS" ] ||
+		storage_set_error "The selected image boot partition does not match the installed layout." || return 1
+	[ "$STORAGE_EXISTING_ROOT_START_SECTOR" = "$STORAGE_ROOT_START_SECTOR" ] ||
+		storage_set_error "The selected image root start does not match the installed layout." || return 1
+	[ "$STORAGE_ROOT_IMAGE_END_SECTOR" -le "$STORAGE_EXISTING_ROOT_END_SECTOR" ] ||
+		storage_set_error "The selected image root does not fit in the installed OpenWrt partition." || return 1
+	STORAGE_PROFILE="$STORAGE_EXISTING_PROFILE"
+	STORAGE_ROOT_TARGET_END_SECTOR="$STORAGE_EXISTING_ROOT_END_SECTOR"
+	STORAGE_ROOT_TARGET_SECTORS=$((STORAGE_ROOT_TARGET_END_SECTOR - STORAGE_ROOT_START_SECTOR + 1))
+	STORAGE_ROOT_TARGET_MIB=$(((STORAGE_ROOT_TARGET_SECTORS + 2047) / 2048))
+	ROOTFS_TARGET_MIB="$STORAGE_ROOT_TARGET_MIB"
+	if [ "$STORAGE_ROOT_TARGET_END_SECTOR" = "$STORAGE_ROOT_IMAGE_END_SECTOR" ]; then
+		STORAGE_LAYOUT=image
+	elif [ "$STORAGE_ROOT_TARGET_END_SECTOR" = "$STORAGE_DISK_USABLE_END_SECTOR" ]; then
+		STORAGE_LAYOUT=fill
+	else
+		STORAGE_LAYOUT=bounded
+	fi
+	storage_reset_data_layout
+	while IFS='|' read -r storage_existing_number storage_existing_start storage_existing_end \
+		storage_existing_label storage_existing_mount storage_existing_uuid; do
+		printf '%s|%s|%s|%s|%s\n' "$storage_existing_number" "$storage_existing_start" \
+			"$storage_existing_end" "$storage_existing_label" "$storage_existing_mount" \
+			>> "$STORAGE_DATA_LAYOUT_LIST"
+		storage_existing_sectors=$((storage_existing_end - storage_existing_start + 1))
+		STORAGE_DATA_PARTITION_COUNT=$((STORAGE_DATA_PARTITION_COUNT + 1))
+		STORAGE_DATA_TOTAL_SECTORS=$((STORAGE_DATA_TOTAL_SECTORS + storage_existing_sectors))
+	done < "$STORAGE_EXISTING_DATA_LAYOUT_LIST"
+	STORAGE_DATA_TOTAL_MIB=$((STORAGE_DATA_TOTAL_SECTORS / 2048))
+	if [ "$STORAGE_DATA_PARTITION_COUNT" -gt 0 ]; then
+		storage_existing_last_end="$(tail -n 1 "$STORAGE_DATA_LAYOUT_LIST" | awk -F'|' '{ print $3 }')"
+		storage_update_tail_geometry "$storage_existing_last_end" || return 1
+	else
+		storage_update_tail_geometry "$STORAGE_ROOT_TARGET_END_SECTOR" || return 1
+	fi
+	[ "$STORAGE_RESERVED_SECTORS" = "$STORAGE_EXISTING_RESERVED_SECTORS" ] ||
+		storage_set_error "The installed reserve geometry does not match Hellforge metadata." || return 1
+	STORAGE_SAFE_UPGRADE=1
+}
+
 storage_directory_has_regular_file() {
 	storage_regular_directory="$1"
 	[ -d "$storage_regular_directory" ] || return 1
@@ -516,6 +901,7 @@ EOF
 		STORAGE_EXISTING_RESCUE_AVAILABLE=0
 		STORAGE_EXISTING_PROBE_REASON="The installation has no readable regular UCI files in /etc/config."
 	fi
+	storage_capture_managed_layout "$STORAGE_PROBE_MOUNTDIR"
 	storage_unmount_probe
 	return 0
 }
@@ -532,6 +918,9 @@ storage_probe_existing_openwrt() {
 	STORAGE_EXISTING_TEST_ROOT=""
 	STORAGE_EXISTING_RESCUE_AVAILABLE=0
 	STORAGE_EXISTING_PROBE_REASON="No supported OpenWrt root was found."
+	STORAGE_EXISTING_MANAGED=0
+	STORAGE_EXISTING_MANAGED_REASON="No validated Hellforge storage metadata was found."
+	: > "$STORAGE_EXISTING_DATA_LAYOUT_LIST"
 	storage_enumerate_target_partitions
 	storage_expected_root="$(get_partition_path "$TARGET" 2)"
 	while IFS= read -r storage_probe_line; do
@@ -549,6 +938,9 @@ storage_probe_existing_openwrt() {
 		done < "$STORAGE_PARTITION_LIST"
 	fi
 	storage_unmount_probe
+	if [ "$STORAGE_EXISTING_MANAGED" = "1" ]; then
+		storage_validate_existing_managed_layout || true
+	fi
 	if [ "$STORAGE_EXISTING_FOUND" != "1" ] && [ -n "$STORAGE_EXISTING_BOOT_PART" ]; then
 		while IFS='|' read -r storage_probe_device storage_probe_fstype storage_probe_label storage_probe_test_dir storage_probe_start storage_probe_sectors; do
 			case "$storage_probe_fstype" in

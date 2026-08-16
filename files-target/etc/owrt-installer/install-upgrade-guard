@@ -1,0 +1,22 @@
+#!/bin/sh
+
+set -eu
+
+ROOT="${1:-/}"
+case "$ROOT" in /*) ;; *) printf 'install-upgrade-guard: ROOT must be absolute\n' >&2; exit 1 ;; esac
+[ -x "$ROOT/etc/owrt-installer/sysupgrade-wrapper" ] || exit 0
+[ -x "$ROOT/etc/owrt-installer/upgrade-guard" ] || exit 0
+[ -f "$ROOT/sbin/sysupgrade" ] || exit 0
+
+if grep -F 'OWRT_INSTALLER_SYSUPGRADE_WRAPPER=1' "$ROOT/sbin/sysupgrade" >/dev/null 2>&1; then
+	[ -x "$ROOT/sbin/sysupgrade.openwrt" ] || {
+		printf 'install-upgrade-guard: wrapper exists without original sysupgrade\n' >&2
+		exit 1
+	}
+	exit 0
+fi
+
+cp -f "$ROOT/sbin/sysupgrade" "$ROOT/sbin/sysupgrade.openwrt"
+chmod 0755 "$ROOT/sbin/sysupgrade.openwrt"
+cp -f "$ROOT/etc/owrt-installer/sysupgrade-wrapper" "$ROOT/sbin/sysupgrade"
+chmod 0755 "$ROOT/sbin/sysupgrade"

@@ -1,0 +1,46 @@
+#!/bin/sh
+
+# OWRT_INSTALLER_SYSUPGRADE_WRAPPER=1
+set -eu
+
+REAL_SYSUPGRADE="${OWRT_INSTALLER_REAL_SYSUPGRADE:-/sbin/sysupgrade.openwrt}"
+GUARD="${OWRT_INSTALLER_UPGRADE_GUARD:-/etc/owrt-installer/upgrade-guard}"
+
+[ -x "$REAL_SYSUPGRADE" ] || {
+	printf 'owrt-installer: original OpenWrt sysupgrade is unavailable\n' >&2
+	exit 1
+}
+
+for arg in "$@"; do
+	case "$arg" in
+		-b|--create-backup|-r|--restore-backup|-l|--list-backup|-h|--help)
+			exec "$REAL_SYSUPGRADE" "$@"
+			;;
+	esac
+done
+
+save_partitions=1
+keep_config=1
+image=""
+skip_next=0
+for arg in "$@"; do
+	if [ "$skip_next" = "1" ]; then
+		skip_next=0
+		continue
+	fi
+	case "$arg" in
+		-f) skip_next=1 ;;
+		-p) save_partitions=0 ;;
+		-n) keep_config=0 ;;
+		-*) ;;
+		*) image="$arg" ;;
+	esac
+done
+
+[ -n "$image" ] || exec "$REAL_SYSUPGRADE" "$@"
+[ -x "$GUARD" ] || {
+	printf 'owrt-installer: protected layout guard is missing; refusing firmware write\n' >&2
+	exit 1
+}
+"$GUARD" "$image" "$save_partitions" "$keep_config" || exit $?
+exec "$REAL_SYSUPGRADE" "$@"

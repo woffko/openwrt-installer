@@ -118,6 +118,12 @@ ui_ready_marker() {
 		"Select installation type") ui_ready_name="install-type" ;;
 		"Select installation action") ui_ready_name="existing-system-action" ;;
 		"Select OpenWrt partition size") ui_ready_name="storage-layout" ;;
+		"Select storage profile") ui_ready_name="storage-profile" ;;
+		"Configure data partitions") ui_ready_name="storage-data" ;;
+		"Sysupgrade compatibility warning") ui_ready_name="storage-warning" ;;
+		"Data partition "*" size") ui_ready_name="storage-data-size" ;;
+		"Data partition "*" label") ui_ready_name="storage-data-label" ;;
+		"Data partition "*" mount point") ui_ready_name="storage-data-mount" ;;
 		"Custom OpenWrt partition size") ui_ready_name="storage-custom" ;;
 		"Select rescue scope") ui_ready_name="rescue-scope" ;;
 		"Full rescue warning") ui_ready_name="rescue-full-warning" ;;
@@ -140,6 +146,7 @@ ui_ready_marker() {
 		"Review installation") ui_ready_name="review-summary" ;;
 		"Review action") ui_ready_name="review-action" ;;
 		"Final erase confirmation") ui_ready_name="final-erase-info" ;;
+		"Final system upgrade confirmation") ui_ready_name="final-upgrade-info" ;;
 		"Installation success") ui_ready_name="installation-success" ;;
 		"Installation completed") ui_ready_name="post-install-menu" ;;
 		*) return 0 ;;
@@ -1228,8 +1235,22 @@ OpenWrt: ${PAYLOAD_VERSION:-unknown} ($PAYLOAD_BOOT_MODE)
 Image: $PAYLOAD_FILENAME
 SHA-256: $PAYLOAD_SHA256
 Storage: $(storage_layout_label)
+Profile: $STORAGE_PROFILE
 Image root: $STORAGE_ROOT_IMAGE_MIB MiB
 Geometry: partition 2 sectors $STORAGE_ROOT_START_SECTOR-$STORAGE_ROOT_TARGET_END_SECTOR"
+		while IFS='|' read -r data_number data_start data_end data_label data_mountpoint; do
+			body="$body
+Data p$data_number: $(((data_end - data_start + 1) / 2048)) MiB ext4, $data_label -> $data_mountpoint, sectors $data_start-$data_end"
+		done < "$STORAGE_DATA_LAYOUT_LIST"
+		body="$body
+SSD reserve: $STORAGE_RESERVED_MIB MiB unallocated; discard=$STORAGE_DISCARD_STATUS"
+		if [ "$STORAGE_PROFILE" = "compatible" ]; then
+			body="$body
+Upgrade: standard sysupgrade only after exact p1/p2 preflight"
+		else
+			body="$body
+WARNING: use Hellforge Safe Upgrade or an exact system-only image; ordinary sysupgrade can replace the partition table"
+		fi
 		if [ -n "${STORAGE_EXISTING_ROOT_SECTORS:-}" ] &&
 			storage_is_nonnegative_integer "$STORAGE_EXISTING_ROOT_SECTORS"; then
 			body="$body
@@ -1240,17 +1261,19 @@ Existing root: $(((STORAGE_EXISTING_ROOT_SECTORS + 2047) / 2048)) MiB on $STORAG
 RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
 		fi
 		case "${INSTALL_MODE:-clean}" in
-		import|rescue)
+		import|rescue|safe-upgrade)
 			body="$body
 Config: $CONFIG_IMPORT_SOURCE_LABEL
 Import: $CONFIG_IMPORT_POLICY, $CONFIG_IMPORT_MEMBER_COUNT members, $(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE")
 Import SHA-256: $CONFIG_IMPORT_SHA256"
-			if [ "$INSTALL_MODE" = "rescue" ]; then
+			if [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; then
 				body="$body
 Rescue: OpenWrt $STORAGE_RESCUE_SOURCE_VERSION from $STORAGE_RESCUE_SOURCE_PART; skipped=$STORAGE_RESCUE_SKIPPED
 Packages: $STORAGE_RESCUE_PACKAGE_COUNT names recorded; not installed"
 				body="$body
 RAM warning: rescued configuration exists only in volatile memory until installation completes"
+				[ "$INSTALL_MODE" != "safe-upgrade" ] || body="$body
+Write scope: partition table and data partitions preserved; system partitions 1 and 2 replaced"
 			fi
 			;;
 		esac
@@ -1284,6 +1307,10 @@ NAT: enabled"
 			body="$body
 
 HARDWARE TEST / DRY RUN: $TARGET WILL NOT BE WRITTEN."
+		elif [ "${INSTALL_MODE:-clean}" = "safe-upgrade" ]; then
+			body="$body
+
+SYSTEM PARTITIONS 1 AND 2 ON $TARGET WILL BE REPLACED; VALIDATED DATA PARTITIONS WILL BE PRESERVED."
 		else
 			body="$body
 
@@ -1303,8 +1330,18 @@ ALL DATA ON $TARGET WILL BE ERASED."
 	ui_line "Image: $PAYLOAD_FILENAME"
 	ui_line "SHA-256: $PAYLOAD_SHA256"
 	ui_line "Storage: $(storage_layout_label)"
+	ui_line "Profile: $STORAGE_PROFILE"
 	ui_line "Image root: $STORAGE_ROOT_IMAGE_MIB MiB"
 	ui_line "Geometry: partition 2 sectors $STORAGE_ROOT_START_SECTOR-$STORAGE_ROOT_TARGET_END_SECTOR"
+	while IFS='|' read -r data_number data_start data_end data_label data_mountpoint; do
+		ui_line "Data p$data_number: $(((data_end - data_start + 1) / 2048)) MiB ext4, $data_label -> $data_mountpoint"
+	done < "$STORAGE_DATA_LAYOUT_LIST"
+	ui_line "SSD reserve: $STORAGE_RESERVED_MIB MiB unallocated; discard=$STORAGE_DISCARD_STATUS"
+	if [ "$STORAGE_PROFILE" = "compatible" ]; then
+		ui_line_warning "UPGRADE: standard sysupgrade requires exact p1/p2 preflight."
+	else
+		ui_line_warning "UPGRADE: use Hellforge Safe Upgrade or an exact system-only image."
+	fi
 	if [ -n "${STORAGE_EXISTING_ROOT_SECTORS:-}" ] &&
 		storage_is_nonnegative_integer "$STORAGE_EXISTING_ROOT_SECTORS"; then
 		ui_line "Existing root: $(((STORAGE_EXISTING_ROOT_SECTORS + 2047) / 2048)) MiB on $STORAGE_EXISTING_ROOT_PART"
@@ -1313,16 +1350,18 @@ ALL DATA ON $TARGET WILL BE ERASED."
 		ui_line "RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
 	fi
 	case "${INSTALL_MODE:-clean}" in
-	import|rescue)
+	import|rescue|safe-upgrade)
 		ui_line "Config: $CONFIG_IMPORT_SOURCE_LABEL"
 		ui_line "Import: $CONFIG_IMPORT_POLICY, $CONFIG_IMPORT_MEMBER_COUNT members, $(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE")"
 		ui_line "Import SHA-256: $CONFIG_IMPORT_SHA256"
-		[ "$INSTALL_MODE" = "rescue" ] &&
+		{ [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; } &&
 			ui_line "Rescue: OpenWrt $STORAGE_RESCUE_SOURCE_VERSION from $STORAGE_RESCUE_SOURCE_PART; skipped=$STORAGE_RESCUE_SKIPPED"
-		[ "$INSTALL_MODE" = "rescue" ] &&
+		{ [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; } &&
 			ui_line "Packages: $STORAGE_RESCUE_PACKAGE_COUNT names recorded; not installed"
-		[ "$INSTALL_MODE" = "rescue" ] &&
+		{ [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; } &&
 			ui_line_warning "RAM ONLY: rescued configuration is volatile until installation completes."
+		[ "$INSTALL_MODE" != "safe-upgrade" ] ||
+			ui_line_warning "WRITE SCOPE: p1/p2 replaced; partition table and validated data partitions preserved."
 		;;
 	esac
 	if [ "${NETWORK_SOURCE:-wizard}" = "imported" ]; then
@@ -1345,6 +1384,8 @@ ALL DATA ON $TARGET WILL BE ERASED."
 	ui_blank
 	if [ "${DRY_RUN:-0}" = "1" ]; then
 		ui_line_warning "HARDWARE TEST / DRY RUN: $TARGET WILL NOT BE WRITTEN."
+	elif [ "${INSTALL_MODE:-clean}" = "safe-upgrade" ]; then
+		ui_line_warning "SYSTEM PARTITIONS 1 AND 2 WILL BE REPLACED; VALIDATED DATA PARTITIONS WILL BE PRESERVED."
 	else
 		ui_line_warning "ALL DATA ON $TARGET WILL BE ERASED."
 	fi
@@ -1355,16 +1396,24 @@ ALL DATA ON $TARGET WILL BE ERASED."
 
 ui_confirm_erase_screen() {
 	expected="$1"
-	ui_ready_marker "Final erase confirmation"
+	if [ "${INSTALL_MODE:-clean}" = "safe-upgrade" ]; then
+		confirmation_title="Final system upgrade confirmation"
+	else
+		confirmation_title="Final erase confirmation"
+	fi
+	ui_ready_marker "$confirmation_title"
 	if [ "${DRY_RUN:-0}" = "1" ]; then
 		heading="SAFE DRY RUN"
 		detail="Type the exact string to test the keyboard-only gate. No disk write follows."
+	elif [ "${INSTALL_MODE:-clean}" = "safe-upgrade" ]; then
+		heading="SYSTEM UPGRADE"
+		detail="The validated partition table and data partitions are preserved. Type this exact confirmation string in the next prompt:"
 	else
 		heading="DESTRUCTIVE ACTION"
 		detail="Type this exact confirmation string in the next prompt:"
 	fi
 	if ui_dialog_active; then
-		ui_dialog_run --backtitle "$UI_BACKTITLE" --title "Final erase confirmation" --msgbox "$heading
+		ui_dialog_run --backtitle "$UI_BACKTITLE" --title "$confirmation_title" --msgbox "$heading
 
 $detail
 
@@ -1373,7 +1422,7 @@ $expected" 0 0 ||
 		return 0
 	fi
 	if ui_ansi_active; then
-		ui_screen_begin "Final erase confirmation"
+		ui_screen_begin "$confirmation_title"
 		ui_line_warning "$heading"
 		ui_line "$detail"
 		ui_blank

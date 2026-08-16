@@ -20,4 +20,5 @@ fdisk
 lsblk
 blkid
 block-mount
+fstrim
 ca-bundle

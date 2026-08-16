@@ -254,6 +254,73 @@ run_probe_rescue_smoke() {
 	assert_contains "$out_file" "full_rescue=ok policy=full"
 }
 
+run_managed_layout_smoke() {
+	work_dir="$1/managed"
+	root="$work_dir/existing"
+	partitions="$work_dir/partitions.list"
+	out_file="$work_dir/run.out"
+	mkdir -p "$work_dir"
+	write_existing_openwrt "$root"
+	cat > "$root/etc/owrt-installer/storage-layout" <<'EOF'
+schema=1
+profile=custom
+table_type=gpt
+boot_start_sector=512
+boot_sectors=32768
+root_start_sector=33280
+root_end_sector=1081855
+data_partition_count=2
+reserve_sectors=34568159
+data=3|1083392|3180543|data-a|/mnt/data-a|11111111-1111-1111-1111-111111111111
+data=4|3180544|7374847|data-b|/srv/data-b|22222222-2222-2222-2222-222222222222
+EOF
+	printf '%s\n' \
+		'/dev/testdisk1|vfat|kernel||512|32768' \
+		"/dev/testdisk2|ext4|rootfs|$root|33280|1048576" \
+		'/dev/testdisk3|ext4|data-a||1083392|2097152' \
+		'/dev/testdisk4|ext4|data-b||3180544|4194304' > "$partitions"
+
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 OWRT_STORAGE_TEST_MODE=1 \
+	OWRT_STORAGE_TEST_PARTITIONS_FILE="$partitions" TMPDIR="$work_dir" UI_LIB="$UI_LIB" \
+	CONFIG_IMPORT_LIB="$IMPORT_LIB" STORAGE_LIB="$STORAGE_LIB" sh -eu -c '
+		. "$1"
+		INSTALL_LOG="$2/install.log"
+		TARGET=/dev/testdisk
+		STORAGE_TABLE_TYPE=gpt
+		STORAGE_BOOT_START_SECTOR=512
+		STORAGE_BOOT_SECTORS=32768
+		STORAGE_ROOT_START_SECTOR=33280
+		STORAGE_ROOT_IMAGE_END_SECTOR=557567
+		STORAGE_ROOT_IMAGE_SECTORS=524288
+		STORAGE_ROOT_IMAGE_MIB=256
+		STORAGE_DISK_USABLE_END_SECTOR=41943006
+		storage_probe_existing_openwrt
+		printf "managed=%s profile=%s data=%s reason=%s\n" \
+			"$STORAGE_EXISTING_MANAGED" "$STORAGE_EXISTING_PROFILE" \
+			"$STORAGE_EXISTING_DATA_PARTITION_COUNT" "$STORAGE_EXISTING_MANAGED_REASON"
+		storage_adopt_existing_layout
+		printf "adopted=%s root_end=%s data=%s reserve=%s safe=%s\n" \
+			"$STORAGE_PROFILE" "$STORAGE_ROOT_TARGET_END_SECTOR" \
+			"$STORAGE_DATA_PARTITION_COUNT" "$STORAGE_RESERVED_SECTORS" "$STORAGE_SAFE_UPGRADE"
+		printf "%s\n" \
+			"/dev/testdisk1|vfat|kernel||512|32768" \
+			"/dev/testdisk2|ext4|rootfs|$3|33280|1048576" \
+			"/dev/testdisk3|ext4|data-a||1083392|2097152" \
+			"/dev/testdisk4|ext4|data-b||3180544|4194303" > "$4"
+		storage_enumerate_target_partitions
+		if storage_validate_existing_managed_layout; then exit 61; fi
+		printf "mutation=rejected reason=%s\n" "$STORAGE_EXISTING_MANAGED_REASON"
+		cleanup
+	' sh "$INSTALLER" "$work_dir" "$root" "$partitions" > "$out_file" 2>&1 || {
+		sed -n '1,260p' "$out_file" >&2 || true
+		fail "Managed storage layout smoke failed"
+	}
+
+	assert_contains "$out_file" "managed=1 profile=custom data=2 reason=ready"
+	assert_contains "$out_file" "adopted=custom root_end=1081855 data=2 reserve=34568159 safe=1"
+	assert_contains "$out_file" "mutation=rejected reason=Managed data partition 4 does not match the disk."
+}
+
 run_probe_rejection_smoke() {
 	work_dir="$1/rejections"
 	valid_root="$work_dir/valid"
@@ -354,6 +421,7 @@ prepare_gpt_layout_fixture "$work_dir"
 run_layout_smoke "$work_dir"
 run_mbr_layout_smoke "$work_dir"
 run_probe_rescue_smoke "$work_dir"
+run_managed_layout_smoke "$work_dir"
 run_probe_rejection_smoke "$work_dir"
 run_read_only_probe_mount_smoke "$work_dir"
 

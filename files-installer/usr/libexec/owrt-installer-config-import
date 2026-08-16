@@ -672,7 +672,7 @@ config_import_prepare_target_tree() {
 config_import_apply_to_target() {
 	config_import_target_root="$1"
 	case "$INSTALL_MODE" in
-		import|rescue) ;;
+		import|rescue|safe-upgrade) ;;
 		*) return 0 ;;
 	esac
 	[ -d "$CONFIG_IMPORT_APPLY_DIR/etc" ] || die "Validated import staging tree is missing"

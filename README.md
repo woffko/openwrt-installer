@@ -175,63 +175,95 @@ owrt-install --target /dev/nvme0n1 \
 Use `--config-import-policy full` only for a trusted complete backup. Use
 `--import-network wizard` to configure LAN/WAN after importing it.
 
-### Partition size and existing-install rescue
+### Storage profiles, rescue, and upgrades
 
-After selecting a target, the wizard can use the entire disk, keep the root
-partition at the original image size, select a fitting `4`, `8`, `16`, or
-`32 GiB` preset, or accept a custom whole-number MiB/GiB size. Fixed-size
-layouts leave the remaining tail unallocated. They do not preserve partitions
-or data that were already in that tail: the selected whole disk remains a
-destructive target.
+After target selection, the storage wizard offers four explicit profiles:
 
-The geometry path supports the official x86/64 ext4 combined layouts: MBR for
-BIOS and GPT for UEFI. It calculates in 512-byte sectors, verifies the actual
-partition boundary after resizing, runs ext4 checks and resize, and verifies
-the resulting filesystem before writing configuration. Disks exposing 4 KiB
-logical sectors are rejected in this release instead of being guessed at.
-The payload partition table and ext4 superblock geometry are checked before
-the destructive confirmation, so an image-size mismatch cannot first surface
-after the disk has been written. Only the expected boot and root partitions
-are accepted, plus the small standard OpenWrt GPT auxiliary partition 128 when
-present. In image-size mode the backup GPT is explicitly relocated to the end
-of the selected disk and checked again by the QEMU storage test.
+- **OpenWrt-compatible (recommended)** keeps payload partitions 1 and 2
+  sector-for-sector unchanged, creates ext4 partition 3 on 80% of the
+  remaining usable space, mounts it by UUID at `/mnt/data`, and leaves the
+  final 20% unallocated as an SSD reserve.
+- **Expanded OpenWrt** provides image, `4`, `8`, `16`, `32 GiB`, and custom
+  root sizes. The remaining space stays unallocated unless data partitions
+  are requested through the custom profile.
+- **OpenWrt on entire disk** grows partition 2 to the usable end of the disk.
+- **Custom partitioning** accepts a root size and multiple ext4 data
+  partitions, each with a validated label and mount point.
 
-When the selected disk contains a readable x86 ext4 OpenWrt installation, the
-wizard offers **Rescue and upgrade**. It mounts the old root read-only with
-`ro,noload,nosuid,nodev,noexec`, parses release metadata without executing it,
-copies either `/etc/config` or a bounded `/etc` snapshot into private RAM,
-unmounts the source, and validates the snapshot through the same strict import
-path used for USB backups. Package inventory is retained as metadata and is
-not installed automatically. The review shows source and target versions,
-snapshot hash, network policy, and storage geometry before the exact erase
-phrase.
+Clean, import, and reinstall/rescue modes remain whole-disk destructive. They
+do not preserve pre-existing partitions. Expanded, fill, and custom profiles
+show a warning because a normal x86 combined-image `sysupgrade` may replace
+their partition table. Use Hellforge Safe Upgrade or build a system-only image
+whose partitions 1 and 2 exactly match the installed geometry.
 
-With the default archive limits, rescue requires at least `576 MiB` of free
-RAM before it reads the old configuration. This conservative budget covers
-the source tree/archive, the independent import copy and extraction, the
-filtered apply tree, and runtime reserve at their configured maxima.
+The geometry path supports official x86/64 ext4 combined layouts: MBR for BIOS
+and GPT for UEFI. Calculations use exact 512-byte sectors with 2048-sector
+alignment. The installer validates the payload table and ext4 geometry before
+`ERASE`, verifies every resulting partition and filesystem, relocates the GPT
+backup header to the physical end of the target, and writes UUID-based fstab
+and storage metadata. Disks exposing 4 KiB logical sectors are rejected rather
+than guessed at.
 
-The RAM snapshot has no persistence across cancel, reboot, or power loss.
-**Boot existing OpenWrt for standard upgrade** performs no disk write and
-hands control back to the existing system; the live ISO does not run
-`sysupgrade` in a chroot. A later standard combined-image upgrade may reset a
-custom root layout, so verify its root-size options before using it.
+The compatible profile calls the unallocated tail an **SSD reserve**, not
+guaranteed hardware overprovisioning. After destructive confirmation the
+installer attempts full-device discard only when the unmounted target reports
+discard support; the recorded status is `completed`, `unsupported`, or
+`failed`. The target includes `fstrim`; periodic `fstrim -av` is preferable for
+mounted data filesystems.
+
+When a readable x86 ext4 OpenWrt installation is found, the wizard can offer:
+
+- **Hellforge Safe Upgrade**, when validated installer storage metadata is
+  present. It snapshots configuration into RAM, preserves the partition table
+  and data partitions, replaces only system partitions 1 and 2, restores the
+  selected configuration, and revalidates boot, root, and data geometry. Before
+  the first target write, the complete decompressed payload is staged in a
+  private RAM file and checked against the verified manifest size; partition
+  ranges are never sliced directly from a gzip pipe.
+- **Rescue and reinstall**, which snapshots configuration into RAM, erases the
+  selected disk, installs the chosen profile, and restores the snapshot.
+- **Boot existing OpenWrt for standard upgrade**, a zero-write handoff to the
+  installed system.
+
+Rescue mounts the source with `ro,noload,nosuid,nodev,noexec`, parses release
+metadata without executing it, and validates a bounded `/etc/config` or `/etc`
+snapshot through the same strict path used for USB backups. Package inventory
+is informational and packages are not reinstalled automatically. The default
+RAM safety budget requires at least `576 MiB` free before collection.
+Safe Upgrade then performs a second gate using current `MemAvailable`: the
+complete uncompressed payload plus a `128 MiB` operating reserve must fit in
+RAM. A decompression error, size mismatch, or insufficient memory aborts before
+either system partition is changed.
+
+Compatible installations include a persistent `sysupgrade` wrapper. It
+rejects `-p`, `-n`, remote image URLs, missing or changed managed data
+partitions, and candidates whose partitions 1 and 2 do not exactly match the
+installed geometry. A valid local combined image is handed to the original
+OpenWrt `sysupgrade`, which writes only partitions 1 and 2; the wrapper and
+mount metadata are restored on the next boot.
 
 CLI parity is available for controlled automation:
 
 ```sh
-owrt-install --target /dev/nvme0n1 --root-size 8GiB \
+owrt-install --target /dev/nvme0n1 --storage-profile compatible \
   --lan-mac xx:xx:xx:xx:xx:xx \
   --wan-mac yy:yy:yy:yy:yy:yy \
   --yes-i-know-this-will-erase-data
 
+owrt-install --target /dev/nvme0n1 --storage-profile custom \
+  --root-size 8GiB \
+  --data-partition 32GiB:data:/mnt/data \
+  --data-partition 8GiB:logs:/srv/logs \
+  --yes-i-know-this-will-erase-data
+
 owrt-install --target /dev/nvme0n1 \
-  --rescue-existing --rescue-scope config-only --root-size 8GiB \
+  --safe-upgrade-existing --rescue-scope config-only \
   --import-network keep \
   --yes-i-know-this-will-erase-data
 ```
 
-Non-interactive rescue never silently falls back to a clean installation.
+Non-interactive rescue and Safe Upgrade fail closed and never fall back to a
+clean installation.
 
 Useful diagnostics:
 
@@ -378,8 +410,6 @@ The installed system also contains `/etc/openwrt-installer-release`.
 - Export a validated RAM rescue snapshot to a selected USB device before the
   destructive confirmation.
 - Investigate read-only rescue for squashfs plus overlay installations.
-- Validate how `owut --rootfs-size` interacts with installer-created bounded
-  layouts.
 
 RAID is intentionally out of scope: this project does not modify the OpenWrt
 kernel, initramfs, or sysupgrade platform path required to support it safely.
@@ -428,6 +458,7 @@ Run deterministic storage geometry and RAM-rescue validation without QEMU:
 
 ```sh
 make storage-rescue-smoke
+make storage-profile-smoke
 ```
 
 After `make iso`, run only the USB backup install and installed-system boot
@@ -437,12 +468,23 @@ acceptance:
 make config-import-qemu-smoke
 ```
 
-Run focused UEFI bounded/image storage and existing-install rescue/reboot
-acceptance after `make iso`:
+Run focused UEFI storage, guarded standard upgrade, Safe Upgrade, and
+existing-install rescue/reboot acceptance after `make iso`:
 
 ```sh
 make storage-qemu-smoke
+make standard-upgrade-qemu-smoke
+make safe-upgrade-qemu-smoke
 make rescue-qemu-smoke
+```
+
+Run the compatible-profile device matrix. It installs and boots through QEMU
+AHCI `/dev/sda` and NVMe `/dev/nvme0n1`, validates p3, UUID fstab, the 80/20
+reserve calculation and upgrade guard, checks an unrelated disk is unchanged,
+and repeats the pre-ERASE rescue immutability check:
+
+```sh
+make storage-device-qemu-smoke
 ```
 
 Run the experimental local-console mouse QEMU matrix after `make iso`:
@@ -458,9 +500,10 @@ and target-disk immutability.
 
 Run the full automated hybrid ISO gate after `make iso`. It covers BIOS, UEFI,
 local-disk conditional default and its missing-disk path, the hidden
-hardware-test kernel flag, the VGA curses framebuffer, clean fill and bounded
-installation, exact partition geometry, existing-install rescue, zero-write
-standard-upgrade handoff, USB backup import, and installed-system boot:
+hardware-test kernel flag, the VGA curses framebuffer, compatible,
+expanded/fill/custom installation geometry, two guarded standard
+`sysupgrade` cycles, Safe Upgrade, existing-install rescue, zero-write handoff,
+USB backup import, and installed-system boot:
 
 ```sh
 make iso-smoke
@@ -506,6 +549,7 @@ make iso
 make smoke
 make mouse-qemu-smoke
 make iso-smoke
+make storage-device-qemu-smoke
 make online-install-qemu-smoke
 make freeze-candidate VERSION=v1.0-alpha.N
 ```
@@ -545,6 +589,7 @@ See `tests/qemu/README.md` for the guest workflow.
 ## MVP limits
 
 The MVP intentionally does not implement a web installer, package selection,
-RAID, preservation of extra target-disk partitions, VLANs, multiple LAN ports,
+RAID, preservation of arbitrary unmanaged target-disk partitions, VLANs,
+multiple LAN ports,
 Wi-Fi setup, encrypted installation, Secure Boot, 4 KiB logical-sector target
 disks, or non-ext4 target filesystems.

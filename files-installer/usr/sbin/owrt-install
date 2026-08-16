@@ -2,12 +2,13 @@
 
 set -eu
 
-INSTALLER_VERSION="v1.0-alpha.11"
+INSTALLER_VERSION="v1.0-alpha.12"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 EMBEDDED_PAYLOAD="$PAYLOAD"
 EMBEDDED_MANIFEST="$MANIFEST"
 NETWORK_APPLIER="/usr/share/owrt-installer/98-installer-network"
+STORAGE_GUARD_ASSET_DIR="/usr/share/owrt-installer/storage-guard"
 OPENWRT_RELEASE_KEY="/usr/share/owrt-installer/keys/openwrt-release.usign.pub"
 TARGET_MOUNT="/mnt/target"
 
@@ -27,6 +28,9 @@ CONFIG_IMPORT_PARTITION_LIST="$(tmp_file import-partitions)"
 CONFIG_IMPORT_ARCHIVE_LIST="$(tmp_file import-archives)"
 CONFIG_IMPORT_SCAN_LIST="$(tmp_file import-scan)"
 STORAGE_PARTITION_LIST="$(tmp_file storage-partitions)"
+STORAGE_DATA_LAYOUT_LIST="$(tmp_file storage-data-layout)"
+STORAGE_DATA_REQUEST_LIST="$(tmp_file storage-data-requests)"
+STORAGE_EXISTING_DATA_LAYOUT_LIST="$(tmp_file storage-existing-data-layout)"
 TARGET_MOUNT_LIST="$(tmp_file target-mounts)"
 INSTALL_LOG="${TMPDIR:-/tmp}/owrt-installer.log"
 
@@ -103,6 +107,9 @@ PAYLOAD_URL="offline"
 PAYLOAD_COMPRESSED_SIZE=""
 PAYLOAD_RAM_AVAILABLE=""
 PAYLOAD_RAM_REQUIRED=""
+SAFE_UPGRADE_RAW_PAYLOAD=""
+SAFE_UPGRADE_STAGING_ERROR=""
+SAFE_UPGRADE_RAM_RESERVE_BYTES="${OWRT_SAFE_UPGRADE_RAM_RESERVE_BYTES:-134217728}"
 NETINSTALL_WORKDIR=""
 NETINSTALL_NETWORK_BACKED_UP=0
 NETINSTALL_ERROR=""
@@ -116,7 +123,9 @@ NETINSTALL_DNS=""
 NETINSTALL_PPP_USERNAME=""
 NETINSTALL_PPP_PASSWORD=""
 NETINSTALL_AUTO_DHCP_ATTEMPTED=0
-STORAGE_LAYOUT="fill"
+STORAGE_PROFILE="compatible"
+STORAGE_PROFILE_REQUEST=""
+STORAGE_LAYOUT="image"
 STORAGE_LAYOUT_REQUEST=""
 ROOTFS_TARGET_MIB=""
 STORAGE_ERROR=""
@@ -139,6 +148,15 @@ STORAGE_ROOT_TARGET_SECTORS=""
 STORAGE_ROOT_TARGET_MIB=""
 STORAGE_UNALLOCATED_SECTORS=""
 STORAGE_UNALLOCATED_MIB=""
+STORAGE_DATA_PARTITION_COUNT=0
+STORAGE_DATA_TOTAL_SECTORS=0
+STORAGE_DATA_TOTAL_MIB=0
+STORAGE_RESERVED_SECTORS=0
+STORAGE_RESERVED_MIB=0
+STORAGE_DISCARD_SUPPORTED=0
+STORAGE_DISCARD_STATUS="not-requested"
+STORAGE_DATA_CHECK_MOUNT=""
+STORAGE_BOOT_CHECK_MOUNT=""
 STORAGE_LAYOUT_IMAGE=""
 STORAGE_LAYOUT_REPORT=""
 STORAGE_PROBE_MOUNTDIR=""
@@ -155,6 +173,15 @@ STORAGE_EXISTING_ROOT_SECTORS=""
 STORAGE_EXISTING_TEST_ROOT=""
 STORAGE_EXISTING_RESCUE_AVAILABLE=0
 STORAGE_EXISTING_PROBE_REASON=""
+STORAGE_EXISTING_MANAGED=0
+STORAGE_EXISTING_MANAGED_REASON=""
+STORAGE_EXISTING_PROFILE=""
+STORAGE_EXISTING_TABLE_TYPE=""
+STORAGE_EXISTING_BOOT_START_SECTOR=""
+STORAGE_EXISTING_BOOT_SECTORS=""
+STORAGE_EXISTING_ROOT_END_SECTOR=""
+STORAGE_EXISTING_DATA_PARTITION_COUNT=0
+STORAGE_SAFE_UPGRADE=0
 STORAGE_RESCUE_SCOPE=""
 STORAGE_RESCUE_SOURCE_VERSION=""
 STORAGE_RESCUE_SOURCE_PART=""
@@ -164,6 +191,7 @@ STORAGE_RESCUE_SKIPPED=0
 STORAGE_RESCUE_PACKAGE_COUNT=0
 STORAGE_RESCUE_PACKAGE_LIST=""
 RESCUE_EXISTING=0
+SAFE_UPGRADE_EXISTING=0
 RESCUE_SCOPE_REQUEST=""
 
 C_RESET=""
@@ -269,6 +297,9 @@ cleanup() {
 	if command -v storage_cleanup >/dev/null 2>&1; then
 		storage_cleanup
 	fi
+	if command -v clear_safe_upgrade_raw_payload >/dev/null 2>&1; then
+		clear_safe_upgrade_raw_payload
+	fi
 	for write_pid in "$WRITE_GZIP_PID" "$WRITE_PV_PID" "$WRITE_DD_PID"; do
 		case "$write_pid" in
 			''|*[!0-9]*) ;;
@@ -290,6 +321,18 @@ cleanup() {
 	if [ "$TARGET_MOUNTED" = "1" ]; then
 		umount "$TARGET_MOUNT" >/dev/null 2>&1 || true
 	fi
+	if [ -n "$STORAGE_DATA_CHECK_MOUNT" ]; then
+		umount "$STORAGE_DATA_CHECK_MOUNT" >/dev/null 2>&1 ||
+			umount -l "$STORAGE_DATA_CHECK_MOUNT" >/dev/null 2>&1 || true
+		rmdir "$STORAGE_DATA_CHECK_MOUNT" >/dev/null 2>&1 || true
+		STORAGE_DATA_CHECK_MOUNT=""
+	fi
+	if [ -n "$STORAGE_BOOT_CHECK_MOUNT" ]; then
+		umount "$STORAGE_BOOT_CHECK_MOUNT" >/dev/null 2>&1 ||
+			umount -l "$STORAGE_BOOT_CHECK_MOUNT" >/dev/null 2>&1 || true
+		rmdir "$STORAGE_BOOT_CHECK_MOUNT" >/dev/null 2>&1 || true
+		STORAGE_BOOT_CHECK_MOUNT=""
+	fi
 	if [ "$CONFIG_IMPORT_MOUNTED" = "1" ]; then
 		umount "$CONFIG_IMPORT_MOUNTDIR" >/dev/null 2>&1 ||
 			umount -l "$CONFIG_IMPORT_MOUNTDIR" >/dev/null 2>&1 || true
@@ -304,6 +347,8 @@ cleanup() {
 	rm -f "$DISK_LIST" "$NIC_LIST" "$NIC_CHOICE_LIST" "$MENU_LIST" \
 		"$CONFIG_IMPORT_PARTITION_LIST" "$CONFIG_IMPORT_ARCHIVE_LIST" \
 		"$CONFIG_IMPORT_SCAN_LIST" "$STORAGE_PARTITION_LIST" "$TARGET_MOUNT_LIST"
+	rm -f "$STORAGE_DATA_LAYOUT_LIST" "$STORAGE_DATA_REQUEST_LIST" \
+		"$STORAGE_EXISTING_DATA_LAYOUT_LIST"
 	for write_fifo in "$WRITE_SOURCE_FIFO" "$WRITE_OUTPUT_FIFO" "$WRITE_PROGRESS_FIFO"; do
 		[ -n "$write_fifo" ] && rm -f "$write_fifo"
 	done
@@ -365,24 +410,35 @@ Usage:
   owrt-install --target /dev/nvme0n1 --root-size fill
   owrt-install --target /dev/nvme0n1 --root-size image
   owrt-install --target /dev/nvme0n1 --root-size 8GiB
+  owrt-install --target /dev/nvme0n1 --storage-profile compatible
+  owrt-install --target /dev/nvme0n1 --storage-profile custom --root-size 8GiB \
+    --data-partition 32GiB:data:/mnt/data
   owrt-install --target /dev/nvme0n1 --rescue-existing --rescue-scope config-only
+  owrt-install --target /dev/nvme0n1 --safe-upgrade-existing --rescue-scope config-only
   owrt-install --target /dev/nvme0n1 --yes-i-know-this-will-erase-data
   owrt-install --download-latest
   owrt-install --check-latest
   owrt-install --dry-run
 
-The selected target disk will be erased completely.
+Clean, import, and reinstall/rescue modes erase the selected disk completely.
+Safe Upgrade preserves the validated partition table and data partitions, but
+rewrites OpenWrt system partitions 1 and 2.
 Removable disks and the detected live boot disk are blocked by default.
 --download-latest verifies an official signed OpenWrt x86 image in RAM before
-the existing target selection, review, and exact ERASE confirmation flow.
+the existing target selection, review, and exact destructive confirmation flow.
 --check-latest offers that download only when the official stable release is
 newer than the embedded image; network failure falls back to the embedded image.
 --config-backup accepts a standard OpenWrt sysupgrade .tar.gz, validates and
 stages it in RAM, and applies it only after the target image has been written.
---root-size accepts fill, image, or an integer size in MiB/GiB. Unused disk
-space remains unallocated. --rescue-existing requires an existing ext4 x86/64
+--storage-profile accepts compatible, expanded, fill, or custom. Compatible is
+the default and creates an ext4 /mnt/data partition from 80% of the space after
+the unchanged image root, leaving 20% unallocated. --data-partition accepts
+SIZE:LABEL:MOUNT and may be repeated with the custom profile. --root-size
+accepts fill, image, or an integer size in MiB/GiB. --rescue-existing requires an existing ext4 x86/64
 OpenWrt installation on the selected disk and stages its configuration in RAM
-before the disk is erased.
+before the disk is erased. --safe-upgrade-existing additionally requires
+validated Hellforge storage metadata, preserves the managed layout and data
+partitions, and accepts no storage-profile or partition-sizing options.
 EOF
 }
 
@@ -1475,11 +1531,10 @@ select_custom_storage_size() {
 	done
 }
 
-select_storage_layout() {
+select_root_partition_size() {
 	while :; do
 		menu_reset
-		menu_note "Only the OpenWrt root partition is resized. Remaining space stays unallocated."
-		menu_add "fill" "Use entire disk (default)"
+		menu_note "Choose the OpenWrt root partition size. Data partitions are configured on the next screen."
 		for storage_preset_mib in 4096 8192 16384 32768; do
 			storage_preset_fits "$storage_preset_mib" || continue
 			menu_add "mib:$storage_preset_mib" "$((storage_preset_mib / 1024)) GiB OpenWrt partition"
@@ -1490,7 +1545,6 @@ select_storage_layout() {
 		menu_warning "Selected disk: $TARGET, $STORAGE_DISK_MIB MiB."
 		select_from_menu "Select OpenWrt partition size" "partition size"
 		case "$SELECTED_VALUE" in
-			fill) storage_calculate_layout fill; return 0 ;;
 			image) storage_calculate_layout image; return 0 ;;
 			mib:*) storage_calculate_layout bounded "${SELECTED_VALUE#mib:}"; return 0 ;;
 			custom)
@@ -1504,20 +1558,206 @@ select_storage_layout() {
 	done
 }
 
+confirm_sysupgrade_risk() {
+	storage_risk_profile="$1"
+	menu_reset
+	menu_warning "STANDARD SYSUPGRADE RISK: this $storage_risk_profile layout does not match the original combined image. A normal x86 sysupgrade can replace the disk partition table and make later data partitions inaccessible."
+	menu_note "Use Hellforge Safe Upgrade after that feature is shown as available, or prepare a system-only image whose partitions 1 and 2 exactly match this installation. The image must not contain a data partition."
+	menu_add "continue" "I understand; use this storage profile"
+	menu_add "__back" "Back to storage profiles"
+	select_from_menu "Sysupgrade compatibility warning" "storage warning action"
+	[ "$SELECTED_VALUE" = "continue" ]
+}
+
+select_custom_data_partition() {
+	storage_custom_number=$((STORAGE_DATA_PARTITION_COUNT + 3))
+	storage_custom_size_default="1024 MiB"
+	storage_custom_error=""
+	while :; do
+		prompt_default "Data partition size" "$storage_custom_size_default" \
+			"Data partition $storage_custom_number size" \
+			"Examples: 1024 MiB, 8 GiB. The unused tail remains reserved." \
+			"$storage_custom_error" \
+			"Whole MiB/GiB values only. The result is aligned to 1 MiB."
+		[ "$UI_INPUT_ACTION" = "back" ] && return 2
+		if ! storage_parse_size_mib "$SELECTED_INPUT"; then
+			storage_custom_error="Enter an integer size with MiB or GiB units."
+			continue
+		fi
+		storage_custom_mib="$STORAGE_PARSED_SIZE_MIB"
+		break
+	done
+
+	if [ "$storage_custom_number" -eq 3 ]; then
+		storage_custom_label_default="owrt-data"
+		storage_custom_mount_default="/mnt/data"
+	else
+		storage_custom_label_default="owrt-data$storage_custom_number"
+		storage_custom_mount_default="/mnt/data$storage_custom_number"
+	fi
+	storage_custom_error=""
+	while :; do
+		prompt_default "Filesystem label" "$storage_custom_label_default" \
+			"Data partition $storage_custom_number label" \
+			"The ext4 label must be unique and at most 16 characters." \
+			"$storage_custom_error" "Letters, numbers, dot, underscore, and dash are accepted."
+		[ "$UI_INPUT_ACTION" = "back" ] && return 2
+		if storage_validate_data_label "$SELECTED_INPUT" &&
+			storage_data_value_is_unique 4 "$SELECTED_INPUT"; then
+			storage_custom_label="$SELECTED_INPUT"
+			break
+		fi
+		storage_custom_error="Enter a unique label using at most 16 safe characters."
+	done
+
+	storage_custom_error=""
+	while :; do
+		prompt_default "Mount point" "$storage_custom_mount_default" \
+			"Data partition $storage_custom_number mount point" \
+			"Use an absolute path below /mnt or /srv." \
+			"$storage_custom_error" "Examples: /mnt/data, /srv/storage."
+		[ "$UI_INPUT_ACTION" = "back" ] && return 2
+		if storage_validate_mountpoint "$SELECTED_INPUT" &&
+			storage_data_value_is_unique 5 "$SELECTED_INPUT"; then
+			storage_custom_mount="$SELECTED_INPUT"
+			break
+		fi
+		storage_custom_error="Enter a unique absolute path below /mnt or /srv."
+	done
+
+	storage_add_data_partition_mib "$storage_custom_mib" \
+		"$storage_custom_label" "$storage_custom_mount"
+}
+
+select_custom_data_layout() {
+	while :; do
+		menu_reset
+		menu_note "Configured data partitions: $STORAGE_DATA_PARTITION_COUNT. Unallocated reserve: $STORAGE_RESERVED_MIB MiB."
+		if [ -s "$STORAGE_DATA_LAYOUT_LIST" ]; then
+			while IFS='|' read -r storage_data_number storage_data_start storage_data_end storage_data_label storage_data_mount; do
+				storage_data_mib=$(((storage_data_end - storage_data_start + 1) / 2048))
+				menu_note "p$storage_data_number: $storage_data_mib MiB ext4, $storage_data_label -> $storage_data_mount"
+			done < "$STORAGE_DATA_LAYOUT_LIST"
+		fi
+		storage_data_max="$(storage_data_max_partition_number)" || return 1
+		if [ "$STORAGE_DATA_PARTITION_COUNT" -lt "$((storage_data_max - 2))" ]; then
+			menu_add "add" "Add ext4 data partition"
+		fi
+		[ "$STORAGE_DATA_PARTITION_COUNT" -gt 0 ] && menu_add "finish" "Finish custom partition layout"
+		menu_add "restart" "Reset data partitions"
+		menu_add "__back" "Back to storage profiles"
+		menu_warning "Custom layouts require Hellforge Safe Upgrade or an exact matching system-only image."
+		select_from_menu "Configure data partitions" "data partition action"
+		case "$SELECTED_VALUE" in
+			add)
+				storage_add_status=0
+				select_custom_data_partition || storage_add_status=$?
+				if [ "$storage_add_status" -eq 1 ]; then
+					ui_notice "Partition rejected" "$STORAGE_ERROR"
+				fi
+				;;
+			finish) return 0 ;;
+			restart)
+				storage_calculate_layout "$STORAGE_LAYOUT" "$STORAGE_ROOT_TARGET_MIB" || return 1
+				;;
+			__back) return 2 ;;
+		esac
+	done
+}
+
+select_storage_layout() {
+	while :; do
+		menu_reset
+		menu_note "A storage profile controls OpenWrt root geometry, data partitions, and the supported upgrade path."
+		menu_add "compatible" "OpenWrt-compatible (recommended): image root + data + SSD reserve"
+		menu_add "expanded" "Expanded OpenWrt root: 4/8/16/32 GiB or custom"
+		menu_add "fill" "OpenWrt root uses the entire disk"
+		menu_add "custom" "Custom root plus multiple ext4 data partitions"
+		menu_add "__back" "Back"
+		menu_warning "Compatible keeps partitions 1/2 identical to the payload, uses 80% of the remainder for /mnt/data, and leaves 20% unallocated."
+		select_from_menu "Select storage profile" "storage profile"
+		case "$SELECTED_VALUE" in
+			compatible)
+				if storage_configure_compatible_profile; then
+					return 0
+				fi
+				ui_notice "Profile unavailable" "$STORAGE_ERROR"
+				;;
+			expanded)
+				storage_root_status=0
+				select_root_partition_size || storage_root_status=$?
+				[ "$storage_root_status" -eq 0 ] || continue
+				STORAGE_PROFILE="expanded"
+				confirm_sysupgrade_risk "expanded-root" && return 0
+				;;
+			fill)
+				storage_calculate_layout fill || die "$STORAGE_ERROR"
+				STORAGE_PROFILE="fill"
+				confirm_sysupgrade_risk "whole-disk root" && return 0
+				;;
+			custom)
+				storage_root_status=0
+				select_root_partition_size || storage_root_status=$?
+				[ "$storage_root_status" -eq 0 ] || continue
+				STORAGE_PROFILE="custom"
+				storage_data_status=0
+				select_custom_data_layout || storage_data_status=$?
+				[ "$storage_data_status" -eq 0 ] || continue
+				confirm_sysupgrade_risk "custom partition" && return 0
+				;;
+			__back) return 2 ;;
+		esac
+	done
+}
+
 prepare_requested_storage_layout() {
-	case "${STORAGE_LAYOUT_REQUEST:-fill}" in
-		fill) storage_calculate_layout fill || die "$STORAGE_ERROR" ;;
-		image) storage_calculate_layout image || die "$STORAGE_ERROR" ;;
-		*)
-			storage_parse_size_mib "$STORAGE_LAYOUT_REQUEST" ||
-				die "Invalid --root-size value: $STORAGE_LAYOUT_REQUEST"
-			storage_calculate_layout bounded "$STORAGE_PARSED_SIZE_MIB" || die "$STORAGE_ERROR"
+	storage_requested_profile="$STORAGE_PROFILE_REQUEST"
+	if [ -z "$storage_requested_profile" ]; then
+		case "$STORAGE_LAYOUT_REQUEST" in
+			"") storage_requested_profile="compatible" ;;
+			fill) storage_requested_profile="fill" ;;
+			*) storage_requested_profile="expanded" ;;
+		esac
+	fi
+	case "$storage_requested_profile" in
+		compatible)
+			storage_configure_compatible_profile || die "$STORAGE_ERROR"
 			;;
+		fill)
+			STORAGE_PROFILE="fill"
+			storage_calculate_layout fill || die "$STORAGE_ERROR"
+			;;
+		expanded|custom)
+			[ -n "$STORAGE_LAYOUT_REQUEST" ] ||
+				die "--storage-profile $storage_requested_profile requires --root-size"
+			case "$STORAGE_LAYOUT_REQUEST" in
+				fill) die "Use --storage-profile fill instead of an expanded/custom fill layout" ;;
+				image) storage_calculate_layout image || die "$STORAGE_ERROR" ;;
+				*)
+					storage_parse_size_mib "$STORAGE_LAYOUT_REQUEST" ||
+						die "Invalid --root-size value: $STORAGE_LAYOUT_REQUEST"
+					storage_calculate_layout bounded "$STORAGE_PARSED_SIZE_MIB" || die "$STORAGE_ERROR"
+					;;
+			esac
+			STORAGE_PROFILE="$storage_requested_profile"
+			if [ "$storage_requested_profile" = "custom" ]; then
+				[ -s "$STORAGE_DATA_REQUEST_LIST" ] ||
+					die "--storage-profile custom requires at least one --data-partition"
+				while IFS='|' read -r storage_request_size storage_request_label storage_request_mount; do
+					storage_parse_size_mib "$storage_request_size" ||
+						die "Invalid data partition size: $storage_request_size"
+					storage_add_data_partition_mib "$STORAGE_PARSED_SIZE_MIB" \
+						"$storage_request_label" "$storage_request_mount" || die "$STORAGE_ERROR"
+				done < "$STORAGE_DATA_REQUEST_LIST"
+			fi
+			;;
+		*) die "Unsupported storage profile: $storage_requested_profile" ;;
 	esac
 }
 
 record_storage_selection() {
-	log "Storage layout: $STORAGE_LAYOUT, root sectors $STORAGE_ROOT_START_SECTOR-$STORAGE_ROOT_TARGET_END_SECTOR, unallocated ${STORAGE_UNALLOCATED_MIB} MiB"
+	log "Storage profile: $STORAGE_PROFILE; layout: $STORAGE_LAYOUT, root sectors $STORAGE_ROOT_START_SECTOR-$STORAGE_ROOT_TARGET_END_SECTOR, data partitions $STORAGE_DATA_PARTITION_COUNT, reserve ${STORAGE_RESERVED_MIB} MiB"
+	autostart_serial_marker "OWRT_INSTALLER_STORAGE_PROFILE=$STORAGE_PROFILE"
 	autostart_serial_marker "OWRT_INSTALLER_STORAGE_LAYOUT=$STORAGE_LAYOUT"
 	autostart_serial_marker "OWRT_INSTALLER_ROOTFS_END_SECTOR=$STORAGE_ROOT_TARGET_END_SECTOR"
 }
@@ -1525,8 +1765,11 @@ record_storage_selection() {
 select_existing_installation_action() {
 	menu_reset
 	menu_note "Detected OpenWrt $STORAGE_EXISTING_VERSION ${STORAGE_EXISTING_REVISION:-} ($STORAGE_EXISTING_TARGET) on $STORAGE_EXISTING_ROOT_PART. The probe is unmounted and no disk writes have occurred."
+	if [ "$STORAGE_EXISTING_MANAGED" = "1" ] && [ "$STORAGE_EXISTING_RESCUE_AVAILABLE" = "1" ]; then
+		menu_add "safe-upgrade" "Hellforge Safe Upgrade: preserve table and data partitions (recommended)"
+	fi
 	if [ "$STORAGE_EXISTING_RESCUE_AVAILABLE" = "1" ]; then
-		menu_add "rescue" "Rescue configuration in RAM, reinstall, and restore (recommended)"
+		menu_add "rescue" "Reinstall and restore configuration (erases managed data partitions)"
 	fi
 	if [ -n "$STORAGE_EXISTING_BOOT_PART" ]; then
 		menu_add "boot" "Boot existing OpenWrt for its standard sysupgrade/owut flow"
@@ -1535,12 +1778,32 @@ select_existing_installation_action() {
 	menu_add "import" "Import a different OpenWrt backup from USB"
 	menu_add "__back" "Back to target disk selection"
 	if [ "$STORAGE_EXISTING_RESCUE_AVAILABLE" = "1" ]; then
-		menu_warning "Rescue copies configuration only. Installed packages are recorded but not copied into the new image."
+		if [ "$STORAGE_EXISTING_MANAGED" = "1" ]; then
+			menu_warning "Safe Upgrade preserves validated managed data partitions. Reinstall writes the whole disk and erases them. Installed packages are recorded but not copied."
+		else
+			menu_warning "Rescue copies configuration only. Installed packages are recorded but not copied into the new image. Managed Safe Upgrade unavailable: $STORAGE_EXISTING_MANAGED_REASON"
+		fi
 	else
 		menu_warning "Automatic rescue unavailable: $STORAGE_EXISTING_PROBE_REASON"
 	fi
 	select_from_menu "Select installation action" "installation action"
 	SELECTED_INSTALL_MODE="$SELECTED_VALUE"
+}
+
+prepare_interactive_safe_upgrade() {
+	[ "$STORAGE_EXISTING_MANAGED" = "1" ] || return 2
+	safe_upgrade_status=0
+	prepare_interactive_rescue || safe_upgrade_status=$?
+	[ "$safe_upgrade_status" -eq 0 ] || return "$safe_upgrade_status"
+	if ! storage_adopt_existing_layout; then
+		ui_notice "Safe Upgrade unavailable" "$STORAGE_ERROR"
+		config_import_clear_workspace
+		return 2
+	fi
+	INSTALL_MODE="safe-upgrade"
+	STORAGE_DISCARD_STATUS="preserved-layout"
+	autostart_serial_marker "OWRT_INSTALLER_SAFE_UPGRADE_READY=$STORAGE_EXISTING_PROFILE:$STORAGE_DATA_PARTITION_COUNT"
+	return 0
 }
 
 reset_rescue_metadata() {
@@ -1635,9 +1898,7 @@ prepare_interactive_rescue() {
 	done
 }
 
-prepare_requested_rescue() {
-	storage_probe_existing_openwrt ||
-		die "--rescue-existing did not find a supported ext4 OpenWrt x86/64 installation on $TARGET"
+prepare_requested_rescue_from_probe() {
 	[ "$STORAGE_EXISTING_RESCUE_AVAILABLE" = "1" ] || die "$STORAGE_EXISTING_PROBE_REASON"
 	rescue_version_relation="$(release_version_relation \
 		"$STORAGE_EXISTING_VERSION" "$PAYLOAD_VERSION")"
@@ -1681,6 +1942,23 @@ prepare_requested_rescue() {
 	esac
 }
 
+prepare_requested_rescue() {
+	storage_probe_existing_openwrt ||
+		die "--rescue-existing did not find a supported ext4 OpenWrt x86/64 installation on $TARGET"
+	prepare_requested_rescue_from_probe
+}
+
+prepare_requested_safe_upgrade() {
+	storage_probe_existing_openwrt ||
+		die "--safe-upgrade-existing did not find a supported ext4 OpenWrt x86/64 installation on $TARGET"
+	[ "$STORAGE_EXISTING_MANAGED" = "1" ] || die "$STORAGE_EXISTING_MANAGED_REASON"
+	prepare_requested_rescue_from_probe
+	storage_adopt_existing_layout || die "$STORAGE_ERROR"
+	INSTALL_MODE="safe-upgrade"
+	STORAGE_DISCARD_STATUS="preserved-layout"
+	autostart_serial_marker "OWRT_INSTALLER_SAFE_UPGRADE_READY=$STORAGE_EXISTING_PROFILE:$STORAGE_DATA_PARTITION_COUNT"
+}
+
 existing_upgrade_handoff() {
 	while :; do
 		menu_reset
@@ -1706,6 +1984,13 @@ existing_upgrade_handoff() {
 
 edit_staged_configuration() {
 	case "$INSTALL_MODE" in
+		safe-upgrade)
+			edit_safe_upgrade_status=0
+			prepare_interactive_safe_upgrade || edit_safe_upgrade_status=$?
+			if [ "$edit_safe_upgrade_status" -ne 0 ] && [ ! -d "$CONFIG_IMPORT_APPLY_DIR/etc" ]; then
+				die "The previous Safe Upgrade snapshot is no longer staged after a failed edit"
+			fi
+			;;
 		rescue)
 			edit_rescue_status=0
 			prepare_interactive_rescue || edit_rescue_status=$?
@@ -2333,6 +2618,188 @@ write_payload() {
 	log "Partition table reread requested for $target"
 }
 
+safe_upgrade_mem_available_bytes() {
+	if [ "${OWRT_SAFE_UPGRADE_TEST_MODE:-0}" = "1" ] &&
+		is_positive_integer "${OWRT_SAFE_UPGRADE_TEST_MEM_AVAILABLE:-}"; then
+		printf '%s\n' "$OWRT_SAFE_UPGRADE_TEST_MEM_AVAILABLE"
+		return 0
+	fi
+	safe_upgrade_mem_kib="$(awk '$1 == "MemAvailable:" { print $2; exit }' /proc/meminfo 2>/dev/null || true)"
+	is_positive_integer "$safe_upgrade_mem_kib" || return 1
+	printf '%s\n' "$((safe_upgrade_mem_kib * 1024))"
+}
+
+clear_safe_upgrade_raw_payload() {
+	if [ -n "${SAFE_UPGRADE_RAW_PAYLOAD:-}" ]; then
+		rm -f "$SAFE_UPGRADE_RAW_PAYLOAD"
+		SAFE_UPGRADE_RAW_PAYLOAD=""
+	fi
+}
+
+prepare_safe_upgrade_raw_payload() {
+	SAFE_UPGRADE_STAGING_ERROR=""
+	[ "$STORAGE_SAFE_UPGRADE" = "1" ] || {
+		SAFE_UPGRADE_STAGING_ERROR="Safe Upgrade layout was not validated."
+		return 1
+	}
+	is_positive_integer "${PAYLOAD_UNCOMPRESSED_SIZE:-}" || {
+		SAFE_UPGRADE_STAGING_ERROR="Safe Upgrade payload size is missing or invalid."
+		return 1
+	}
+	is_positive_integer "$SAFE_UPGRADE_RAM_RESERVE_BYTES" || {
+		SAFE_UPGRADE_STAGING_ERROR="Safe Upgrade RAM reserve is invalid."
+		return 1
+	}
+	safe_upgrade_available="$(safe_upgrade_mem_available_bytes || true)"
+	is_positive_integer "$safe_upgrade_available" || {
+		SAFE_UPGRADE_STAGING_ERROR="Could not determine available RAM before Safe Upgrade."
+		return 1
+	}
+	safe_upgrade_required=$((PAYLOAD_UNCOMPRESSED_SIZE + SAFE_UPGRADE_RAM_RESERVE_BYTES))
+	if [ "$safe_upgrade_required" -le "$PAYLOAD_UNCOMPRESSED_SIZE" ] 2>/dev/null; then
+		SAFE_UPGRADE_STAGING_ERROR="Safe Upgrade RAM requirement overflowed."
+		return 1
+	fi
+	if [ "$safe_upgrade_available" -lt "$safe_upgrade_required" ]; then
+		SAFE_UPGRADE_STAGING_ERROR="Insufficient RAM to stage the complete payload before writing: $(bytes_as_mib "$safe_upgrade_available") available, $(bytes_as_mib "$safe_upgrade_required") required including reserve."
+		return 1
+	fi
+
+	clear_safe_upgrade_raw_payload
+	SAFE_UPGRADE_RAW_PAYLOAD="$(tmp_file safe-upgrade-payload)" || {
+		SAFE_UPGRADE_STAGING_ERROR="Could not allocate a private Safe Upgrade payload file in RAM."
+		return 1
+	}
+	chmod 0600 "$SAFE_UPGRADE_RAW_PAYLOAD" || {
+		clear_safe_upgrade_raw_payload
+		SAFE_UPGRADE_STAGING_ERROR="Could not secure the private Safe Upgrade payload file."
+		return 1
+	}
+	ui_install_stage "Stage Safe Upgrade" \
+		"Fully decompressing and validating the payload in RAM before the first target write." "$INSTALL_LOG"
+	if ! gzip -dc "$PAYLOAD" > "$SAFE_UPGRADE_RAW_PAYLOAD" 2>> "$INSTALL_LOG"; then
+		clear_safe_upgrade_raw_payload
+		SAFE_UPGRADE_STAGING_ERROR="Could not decompress the complete payload in RAM; no target writes were started."
+		return 1
+	fi
+	safe_upgrade_actual_size="$(wc -c < "$SAFE_UPGRADE_RAW_PAYLOAD" | tr -d ' ')"
+	if [ "$safe_upgrade_actual_size" != "$PAYLOAD_UNCOMPRESSED_SIZE" ]; then
+		clear_safe_upgrade_raw_payload
+		SAFE_UPGRADE_STAGING_ERROR="Staged payload size differs from the verified manifest; no target writes were started."
+		return 1
+	fi
+	log "Safe Upgrade staged and verified $safe_upgrade_actual_size payload bytes before target writes"
+	autostart_serial_marker "OWRT_INSTALLER_SAFE_UPGRADE_PAYLOAD_STAGED=$safe_upgrade_actual_size"
+}
+
+write_payload_partition() {
+	partition="$1"
+	start_sector="$2"
+	sector_count="$3"
+	label="$4"
+	[ -b "$partition" ] || die "$label partition is unavailable: $partition"
+	[ -f "$SAFE_UPGRADE_RAW_PAYLOAD" ] || die "Safe Upgrade payload was not staged before target writes"
+	ui_install_stage "Write $label" "Writing verified payload sectors into $partition without changing the disk partition table." "$INSTALL_LOG"
+	log "Safe Upgrade writes $sector_count payload sectors from $start_sector into $partition"
+	dd if="$SAFE_UPGRADE_RAW_PAYLOAD" of="$partition" \
+		ibs=512 obs=1M skip="$start_sector" count="$sector_count" iflag=fullblock \
+		conv=fsync >> "$INSTALL_LOG" 2>&1 ||
+		die "Could not write the payload $label partition to $partition"
+	payload_range_sha256="$(dd if="$SAFE_UPGRADE_RAW_PAYLOAD" \
+		ibs=512 obs=1M skip="$start_sector" count="$sector_count" \
+		iflag=fullblock 2>> "$INSTALL_LOG" |
+		sha256sum | awk '{ print $1 }')"
+	target_range_sha256="$(dd if="$partition" ibs=512 obs=1M count="$sector_count" \
+		iflag=fullblock 2>> "$INSTALL_LOG" |
+		sha256sum | awk '{ print $1 }')"
+	if ! { [ -n "$payload_range_sha256" ] &&
+		[ "$payload_range_sha256" = "$target_range_sha256" ]; }; then
+		die "Safe Upgrade verification failed after writing $label to $partition"
+	fi
+	log "Safe Upgrade verified $label SHA-256 $target_range_sha256"
+}
+
+write_safe_upgrade_system_partitions() {
+	target="$1"
+	bootpart="$(get_partition_path "$target" 1)"
+	rootpart="$(get_partition_path "$target" 2)"
+	[ "$STORAGE_SAFE_UPGRADE" = "1" ] || die "Safe Upgrade layout was not validated"
+	write_payload_partition "$bootpart" "$STORAGE_BOOT_START_SECTOR" \
+		"$STORAGE_BOOT_SECTORS" "boot partition"
+	write_payload_partition "$rootpart" "$STORAGE_ROOT_START_SECTOR" \
+		"$STORAGE_ROOT_IMAGE_SECTORS" "OpenWrt root partition"
+	run_or_die "sync failed after Safe Upgrade system writes" sync
+	clear_safe_upgrade_raw_payload
+	autostart_serial_marker "OWRT_INSTALLER_SAFE_UPGRADE_TABLE_PRESERVED=1"
+}
+
+resize_preserved_rootfs() {
+	target="$1"
+	rootpart="$2"
+	storage_partition_geometry "$target" 2 || die "Could not verify preserved root geometry"
+	if ! { [ "$STORAGE_ACTUAL_START_SECTOR" -eq "$STORAGE_ROOT_START_SECTOR" ] &&
+		[ "$STORAGE_ACTUAL_END_SECTOR" -eq "$STORAGE_ROOT_TARGET_END_SECTOR" ]; }; then
+		die "Safe Upgrade changed or lost the preserved root partition geometry"
+	fi
+	fstype="$(blkid -o value -s TYPE "$rootpart" 2>/dev/null || true)"
+	[ "$fstype" = "ext4" ] || die "Safe Upgrade payload root is not ext4"
+	ui_install_stage "Check ext4" "Checking the newly written OpenWrt root inside the preserved partition." "$INSTALL_LOG"
+	check_ext4 "$rootpart"
+	if [ "$STORAGE_ROOT_TARGET_END_SECTOR" -gt "$STORAGE_ROOT_IMAGE_END_SECTOR" ]; then
+		ui_install_stage "Resize ext4" "Growing the new root filesystem to the preserved partition boundary." "$INSTALL_LOG"
+		run_or_die "resize2fs failed for preserved $rootpart" resize2fs "$rootpart"
+	fi
+	check_ext4 "$rootpart"
+	verify_ext4_geometry "$rootpart"
+}
+
+patch_preserved_boot_partuuid() {
+	target="$1"
+	bootpart="$(get_partition_path "$target" 1)"
+	rootpart="$(get_partition_path "$target" 2)"
+	root_partuuid="$(blkid -o value -s PARTUUID "$rootpart" 2>/dev/null || true)"
+	[ -n "$root_partuuid" ] || die "Could not read preserved root PARTUUID"
+	boot_fstype="$(blkid -o value -s TYPE "$bootpart" 2>/dev/null || true)"
+	case "$boot_fstype" in vfat|ext4) ;; *) die "Unsupported Safe Upgrade boot filesystem: ${boot_fstype:-unknown}" ;; esac
+	STORAGE_BOOT_CHECK_MOUNT="${TMPDIR:-/tmp}/owrt-boot-check.$$"
+	mkdir -p "$STORAGE_BOOT_CHECK_MOUNT" || die "Could not create boot verification mount"
+	run_or_die "Could not mount Safe Upgrade boot partition" \
+		mount -t "$boot_fstype" -o rw,noatime "$bootpart" "$STORAGE_BOOT_CHECK_MOUNT"
+	grub_cfg="$STORAGE_BOOT_CHECK_MOUNT/boot/grub/grub.cfg"
+	[ -f "$grub_cfg" ] || die "Safe Upgrade boot partition has no GRUB configuration"
+	run_or_die "Could not update preserved root PARTUUID in GRUB" \
+		sed -i "s/PARTUUID=[A-Fa-f0-9-][A-Fa-f0-9-]*/PARTUUID=$root_partuuid/g" "$grub_cfg"
+	grep -F "PARTUUID=$root_partuuid" "$grub_cfg" >/dev/null 2>&1 ||
+		die "GRUB does not reference the preserved root PARTUUID"
+	run_or_die "Could not unmount Safe Upgrade boot partition" umount "$STORAGE_BOOT_CHECK_MOUNT"
+	rmdir "$STORAGE_BOOT_CHECK_MOUNT" 2>/dev/null || true
+	STORAGE_BOOT_CHECK_MOUNT=""
+}
+
+verify_preserved_data_partitions() {
+	target="$1"
+	while IFS='|' read -r data_number data_start data_end data_label data_mountpoint data_uuid; do
+		data_part="$(get_partition_path "$target" "$data_number")"
+		[ -b "$data_part" ] || die "Safe Upgrade lost data partition $data_number"
+		storage_partition_geometry "$target" "$data_number" ||
+			die "Could not verify preserved data partition $data_number"
+		if ! { [ "$STORAGE_ACTUAL_START_SECTOR" -eq "$data_start" ] &&
+			[ "$STORAGE_ACTUAL_END_SECTOR" -eq "$data_end" ]; }; then
+			die "Safe Upgrade changed data partition $data_number geometry"
+		fi
+		data_actual_fstype="$(blkid -o value -s TYPE "$data_part" 2>/dev/null || true)"
+		data_actual_label="$(blkid -o value -s LABEL "$data_part" 2>/dev/null || true)"
+		data_actual_uuid="$(blkid -o value -s UUID "$data_part" 2>/dev/null || true)"
+		if ! { [ "$data_actual_fstype" = "ext4" ] &&
+			[ "$data_actual_label" = "$data_label" ] &&
+			[ "$data_actual_uuid" = "$data_uuid" ]; }; then
+			die "Safe Upgrade changed data partition $data_number identity"
+		fi
+	done < "$STORAGE_EXISTING_DATA_LAYOUT_LIST"
+	log "Safe Upgrade verified $STORAGE_EXISTING_DATA_PARTITION_COUNT preserved data partition(s)"
+	autostart_serial_marker "OWRT_INSTALLER_SAFE_UPGRADE_DATA_VERIFIED=$STORAGE_EXISTING_DATA_PARTITION_COUNT"
+}
+
 check_ext4() {
 	rootpart="$1"
 	status=0
@@ -2418,6 +2885,230 @@ resize_rootfs() {
 	run_or_die "sync failed after filesystem resize" sync
 }
 
+attempt_target_discard() {
+	target="$1"
+	STORAGE_DISCARD_STATUS="not-requested"
+	[ "$STORAGE_RESERVED_SECTORS" -gt 0 ] || return 0
+	storage_detect_discard_support "$target"
+	if [ "$STORAGE_DISCARD_SUPPORTED" != "1" ]; then
+		STORAGE_DISCARD_STATUS="unsupported"
+		warn "SSD reserve will remain unallocated, but full-device discard is unavailable for $target"
+		return 0
+	fi
+	ui_install_stage "Discard target" "Informing the storage device that the confirmed target contents are unused." "$INSTALL_LOG"
+	log "Attempting full-device discard on confirmed, unmounted target $target"
+	if blkdiscard -f "$target" >> "$INSTALL_LOG" 2>&1; then
+		STORAGE_DISCARD_STATUS="completed"
+		log "Full-device discard completed on $target"
+	else
+		STORAGE_DISCARD_STATUS="failed"
+		warn "Full-device discard failed on $target; continuing with an unallocated but unverified reserve"
+	fi
+}
+
+create_data_partitions() {
+	target="$1"
+	[ "$STORAGE_DATA_PARTITION_COUNT" -gt 0 ] || return 0
+	command -v parted >/dev/null 2>&1 || die "parted is required for data partitions"
+	command -v mkfs.ext4 >/dev/null 2>&1 || die "mkfs.ext4 is required for data partitions"
+	command -v blkid >/dev/null 2>&1 || die "blkid is required for data partitions"
+	ui_install_stage "Create data partitions" "Creating $STORAGE_DATA_PARTITION_COUNT reviewed ext4 data partition(s)." "$INSTALL_LOG"
+	while IFS='|' read -r data_number data_start data_end data_label data_mountpoint; do
+		log "Creating partition $data_number sectors $data_start-$data_end label=$data_label mount=$data_mountpoint"
+		case "$STORAGE_TABLE_TYPE" in
+			gpt)
+			run_or_die "Could not create GPT data partition $data_number" \
+				parted -s "$target" mkpart "$data_label" ext4 "${data_start}s" "${data_end}s"
+			;;
+			dos)
+			run_or_die "Could not create MBR data partition $data_number" \
+				parted -s "$target" mkpart primary ext4 "${data_start}s" "${data_end}s"
+			;;
+			*) die "Unsupported partition table for data partition creation" ;;
+		esac
+	done < "$STORAGE_DATA_LAYOUT_LIST"
+	reread_partition_table "$target"
+
+	while IFS='|' read -r data_number data_start data_end data_label data_mountpoint; do
+		data_part="$(get_partition_path "$target" "$data_number")"
+		[ -b "$data_part" ] || die "Data partition did not appear: $data_part"
+		storage_partition_geometry "$target" "$data_number" ||
+			die "Could not verify data partition $data_number geometry"
+		if ! { [ "$STORAGE_ACTUAL_START_SECTOR" -eq "$data_start" ] &&
+			[ "$STORAGE_ACTUAL_END_SECTOR" -eq "$data_end" ]; }; then
+			die "Data partition $data_number geometry does not match the reviewed layout"
+		fi
+		run_or_die "Could not format $data_part as ext4" \
+			mkfs.ext4 -F -L "$data_label" "$data_part"
+		data_fstype="$(blkid -o value -s TYPE "$data_part" 2>/dev/null || true)"
+		data_actual_label="$(blkid -o value -s LABEL "$data_part" 2>/dev/null || true)"
+		data_uuid="$(blkid -o value -s UUID "$data_part" 2>/dev/null || true)"
+		[ "$data_fstype" = "ext4" ] || die "Expected ext4 on $data_part"
+		[ "$data_actual_label" = "$data_label" ] || die "Filesystem label mismatch on $data_part"
+		[ -n "$data_uuid" ] || die "Could not read filesystem UUID from $data_part"
+		STORAGE_DATA_CHECK_MOUNT="${TMPDIR:-/tmp}/owrt-data-check-$data_number.$$"
+		mkdir -p "$STORAGE_DATA_CHECK_MOUNT" || die "Could not create data verification mount"
+		run_or_die "Could not mount new data partition $data_part" \
+			mount -t ext4 -o rw,noatime "$data_part" "$STORAGE_DATA_CHECK_MOUNT"
+		if ! cat > "$STORAGE_DATA_CHECK_MOUNT/.owrt-installer-volume" <<EOF
+installed_by=openwrt-x86-installer
+partition=$data_number
+label=$data_label
+mountpoint=$data_mountpoint
+uuid=$data_uuid
+EOF
+		then
+			umount "$STORAGE_DATA_CHECK_MOUNT" >/dev/null 2>&1 || true
+			die "Could not write verification metadata to $data_part"
+		fi
+		run_or_die "sync failed for $data_part" sync
+		run_or_die "Could not unmount new data partition $data_part" umount "$STORAGE_DATA_CHECK_MOUNT"
+		rmdir "$STORAGE_DATA_CHECK_MOUNT" 2>/dev/null || true
+		STORAGE_DATA_CHECK_MOUNT=""
+		log "Verified data partition $data_part uuid=$data_uuid"
+	done < "$STORAGE_DATA_LAYOUT_LIST"
+}
+
+write_storage_target_config() {
+	target_root="$1"
+	target="$2"
+	target_config_dir="$target_root/etc/config"
+	mkdir -p "$target_config_dir" "$target_root/etc/owrt-installer" ||
+		die "Could not create target storage configuration directories"
+	: > "$target_config_dir/owrt-installer" || die "Could not create storage metadata"
+	{
+		printf "config storage 'layout'\n"
+		printf "\toption profile %s\n" "$(shell_quote "$STORAGE_PROFILE")"
+		printf "\toption table_type %s\n" "$(shell_quote "$STORAGE_TABLE_TYPE")"
+		printf "\toption boot_start_sector '%s'\n" "$STORAGE_BOOT_START_SECTOR"
+		printf "\toption boot_end_sector '%s'\n" "$STORAGE_BOOT_END_SECTOR"
+		printf "\toption boot_sectors '%s'\n" "$STORAGE_BOOT_SECTORS"
+		printf "\toption root_partition '2'\n"
+		printf "\toption root_start_sector '%s'\n" "$STORAGE_ROOT_START_SECTOR"
+		printf "\toption root_end_sector '%s'\n" "$STORAGE_ROOT_TARGET_END_SECTOR"
+		printf "\toption data_partition_count '%s'\n" "$STORAGE_DATA_PARTITION_COUNT"
+		printf "\toption reserve_sectors '%s'\n" "$STORAGE_RESERVED_SECTORS"
+		printf "\toption reserve_mib '%s'\n" "$STORAGE_RESERVED_MIB"
+		printf "\toption discard_status %s\n" "$(shell_quote "$STORAGE_DISCARD_STATUS")"
+	} >> "$target_config_dir/owrt-installer" || die "Could not write storage metadata"
+	if [ "$STORAGE_DATA_PARTITION_COUNT" -gt 0 ]; then
+		target_fstab_config="$target_config_dir/fstab"
+		if [ -L "$target_fstab_config" ] ||
+			{ [ -e "$target_fstab_config" ] && [ ! -f "$target_fstab_config" ]; }; then
+			die "Installed fstab configuration is not a regular file"
+		fi
+		[ -e "$target_fstab_config" ] || : > "$target_fstab_config" ||
+			die "Could not create installed fstab configuration"
+	fi
+
+	while IFS='|' read -r data_number data_start data_end data_label data_mountpoint; do
+		data_part="$(get_partition_path "$target" "$data_number")"
+		data_uuid="$(blkid -o value -s UUID "$data_part" 2>/dev/null || true)"
+		[ -n "$data_uuid" ] || die "Could not read UUID for target fstab: $data_part"
+		mkdir -p "$target_root$data_mountpoint" ||
+			die "Could not create target data mount point: $data_mountpoint"
+		data_section="owrt_data_$data_number"
+		uci -c "$target_config_dir" -q delete "fstab.$data_section" >/dev/null 2>&1 || true
+		run_or_die "Could not define fstab section for $data_part" \
+			uci -c "$target_config_dir" set "fstab.$data_section=mount"
+		run_or_die "Could not set fstab UUID for $data_part" \
+			uci -c "$target_config_dir" set "fstab.$data_section.uuid=$data_uuid"
+		run_or_die "Could not set fstab target for $data_part" \
+			uci -c "$target_config_dir" set "fstab.$data_section.target=$data_mountpoint"
+		run_or_die "Could not set fstab type for $data_part" \
+			uci -c "$target_config_dir" set "fstab.$data_section.fstype=ext4"
+		run_or_die "Could not set fstab options for $data_part" \
+			uci -c "$target_config_dir" set "fstab.$data_section.options=rw,noatime"
+		run_or_die "Could not enable fstab mount for $data_part" \
+			uci -c "$target_config_dir" set "fstab.$data_section.enabled=1"
+		run_or_die "Could not enable fsck for $data_part" \
+			uci -c "$target_config_dir" set "fstab.$data_section.enabled_fsck=1"
+		{
+			printf "\nconfig data 'partition%s'\n" "$data_number"
+			printf "\toption number '%s'\n" "$data_number"
+			printf "\toption start_sector '%s'\n" "$data_start"
+			printf "\toption end_sector '%s'\n" "$data_end"
+			printf "\toption label %s\n" "$(shell_quote "$data_label")"
+			printf "\toption mountpoint %s\n" "$(shell_quote "$data_mountpoint")"
+			printf "\toption uuid %s\n" "$(shell_quote "$data_uuid")"
+		} >> "$target_config_dir/owrt-installer" || die "Could not append data metadata"
+	done < "$STORAGE_DATA_LAYOUT_LIST"
+	if [ "$STORAGE_DATA_PARTITION_COUNT" -gt 0 ]; then
+		run_or_die "Could not commit installed fstab" uci -c "$target_config_dir" commit fstab
+	fi
+	target_layout_file="$target_root/etc/owrt-installer/storage-layout"
+	if ! {
+		printf 'schema=1\n'
+		printf 'profile=%s\n' "$STORAGE_PROFILE"
+		printf 'table_type=%s\n' "$STORAGE_TABLE_TYPE"
+		printf 'boot_start_sector=%s\n' "$STORAGE_BOOT_START_SECTOR"
+		printf 'boot_sectors=%s\n' "$STORAGE_BOOT_SECTORS"
+		printf 'root_start_sector=%s\n' "$STORAGE_ROOT_START_SECTOR"
+		printf 'root_end_sector=%s\n' "$STORAGE_ROOT_TARGET_END_SECTOR"
+		printf 'data_partition_count=%s\n' "$STORAGE_DATA_PARTITION_COUNT"
+		printf 'reserve_sectors=%s\n' "$STORAGE_RESERVED_SECTORS"
+		while IFS='|' read -r data_number data_start data_end data_label data_mountpoint; do
+			data_part="$(get_partition_path "$target" "$data_number")"
+			data_uuid="$(blkid -o value -s UUID "$data_part" 2>/dev/null || true)"
+			printf 'data=%s|%s|%s|%s|%s|%s\n' "$data_number" "$data_start" \
+				"$data_end" "$data_label" "$data_mountpoint" "$data_uuid"
+		done < "$STORAGE_DATA_LAYOUT_LIST"
+	} > "$target_layout_file"; then
+		die "Could not write target storage-layout snapshot"
+	fi
+	chmod 0600 "$target_layout_file" || die "Could not secure target storage-layout snapshot"
+}
+
+append_line_once() {
+	line="$1"
+	file="$2"
+	[ -f "$file" ] || : > "$file"
+	grep -F -x "$line" "$file" >/dev/null 2>&1 || printf '%s\n' "$line" >> "$file"
+}
+
+install_target_upgrade_guard() {
+	target_root="$1"
+	[ "$STORAGE_DATA_PARTITION_COUNT" -gt 0 ] || return 0
+	target_guard_dir="$target_root/etc/owrt-installer"
+	target_init_dir="$target_root/etc/init.d"
+	mkdir -p "$target_guard_dir" "$target_init_dir" "$target_root/etc/rc.d" ||
+		die "Could not create target upgrade-guard directories"
+	for guard_asset in upgrade-guard sysupgrade-wrapper install-upgrade-guard; do
+		guard_source="$STORAGE_GUARD_ASSET_DIR/$guard_asset"
+		[ -s "$guard_source" ] || die "Installer upgrade-guard asset is missing: $guard_asset"
+		cp "$guard_source" "$target_guard_dir/$guard_asset" ||
+			die "Could not install target upgrade-guard asset: $guard_asset"
+		chmod 0755 "$target_guard_dir/$guard_asset" ||
+			die "Could not secure target upgrade-guard asset: $guard_asset"
+	done
+	guard_service_source="$STORAGE_GUARD_ASSET_DIR/owrt-installer-guard.init"
+	[ -s "$guard_service_source" ] || die "Installer upgrade-guard service asset is missing"
+	cp "$guard_service_source" "$target_init_dir/owrt-installer-guard" ||
+		die "Could not install target upgrade-guard service"
+	chmod 0755 "$target_init_dir/owrt-installer-guard" ||
+		die "Could not mark target upgrade-guard service executable"
+	ln -sf ../init.d/owrt-installer-guard \
+		"$target_root/etc/rc.d/S05owrt-installer-guard" ||
+		die "Could not enable target upgrade-guard service"
+
+	target_sysupgrade_conf="$target_root/etc/sysupgrade.conf"
+	append_line_once /etc/config/owrt-installer "$target_sysupgrade_conf"
+	append_line_once /etc/openwrt-installer-release "$target_sysupgrade_conf"
+	append_line_once /etc/owrt-installer/upgrade-guard "$target_sysupgrade_conf"
+	append_line_once /etc/owrt-installer/sysupgrade-wrapper "$target_sysupgrade_conf"
+	append_line_once /etc/owrt-installer/install-upgrade-guard "$target_sysupgrade_conf"
+	append_line_once /etc/owrt-installer/storage-layout "$target_sysupgrade_conf"
+	append_line_once /etc/init.d/owrt-installer-guard "$target_sysupgrade_conf"
+	append_line_once /etc/rc.d/S05owrt-installer-guard "$target_sysupgrade_conf"
+
+	run_or_die "Could not activate target sysupgrade guard" \
+		sh "$target_guard_dir/install-upgrade-guard" "$target_root"
+	grep -F 'OWRT_INSTALLER_SYSUPGRADE_WRAPPER=1' "$target_root/sbin/sysupgrade" >/dev/null 2>&1 ||
+		die "Target sysupgrade wrapper verification failed"
+	[ -x "$target_root/sbin/sysupgrade.openwrt" ] ||
+		die "Original target sysupgrade was not preserved"
+}
+
 write_installed_config() {
 	rootpart="$1"
 	target="$2"
@@ -2435,12 +3126,12 @@ write_installed_config() {
 	release_rescue_disk="none"
 	release_rescue_revision="none"
 	case "$INSTALL_MODE" in
-	import|rescue)
+	import|rescue|safe-upgrade)
 		release_import_source="$CONFIG_IMPORT_SOURCE_LABEL"
 		release_import_sha256="$CONFIG_IMPORT_SHA256"
 		release_import_policy="$CONFIG_IMPORT_POLICY"
 		release_import_members="$CONFIG_IMPORT_MEMBER_COUNT"
-		if [ "$INSTALL_MODE" = "rescue" ]; then
+		if [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; then
 			release_rescue_disk="$target"
 			release_rescue_revision="${STORAGE_EXISTING_REVISION:-unknown}"
 		fi
@@ -2460,10 +3151,13 @@ write_installed_config() {
 	run_or_die "Could not mount $rootpart at $TARGET_MOUNT" mount "$rootpart" "$TARGET_MOUNT"
 	TARGET_MOUNTED=1
 	config_import_apply_to_target "$TARGET_MOUNT"
+	write_storage_target_config "$TARGET_MOUNT" "$target"
+	install_target_upgrade_guard "$TARGET_MOUNT"
 
 	mkdir -p "$TARGET_MOUNT/etc/owrt-installer" ||
 		die "Could not create installer metadata directory"
-	if [ "$INSTALL_MODE" = "rescue" ] && [ -f "$STORAGE_RESCUE_PACKAGE_LIST" ]; then
+	if { [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; } &&
+		[ -f "$STORAGE_RESCUE_PACKAGE_LIST" ]; then
 		cp "$STORAGE_RESCUE_PACKAGE_LIST" \
 			"$TARGET_MOUNT/etc/owrt-installer/rescued-packages.txt" ||
 			die "Could not save the rescued package inventory"
@@ -2471,7 +3165,9 @@ write_installed_config() {
 			die "Could not secure the rescued package inventory"
 	fi
 	if [ -s "$NETWORK_APPLIER" ] &&
-		{ [ "$INSTALL_MODE" != "import" ] && [ "$INSTALL_MODE" != "rescue" ] || [ "$NETWORK_SOURCE" != "imported" ]; }; then
+		{ [ "$NETWORK_SOURCE" != "imported" ] ||
+			{ [ "$INSTALL_MODE" != "import" ] && [ "$INSTALL_MODE" != "rescue" ] &&
+				[ "$INSTALL_MODE" != "safe-upgrade" ]; }; }; then
 		if [ -L "$TARGET_MOUNT/etc/uci-defaults" ] ||
 			{ [ -e "$TARGET_MOUNT/etc/uci-defaults" ] && [ ! -d "$TARGET_MOUNT/etc/uci-defaults" ]; }; then
 			rm -rf "$TARGET_MOUNT/etc/uci-defaults" ||
@@ -2520,10 +3216,15 @@ payload_url=$PAYLOAD_URL
 install_mode=$INSTALL_MODE
 network_source=$NETWORK_SOURCE
 storage_layout=$STORAGE_LAYOUT
+storage_profile=$STORAGE_PROFILE
 rootfs_target_mib=$STORAGE_ROOT_TARGET_MIB
 rootfs_start_sector=$STORAGE_ROOT_START_SECTOR
 rootfs_end_sector=$STORAGE_ROOT_TARGET_END_SECTOR
 unallocated_mib=$STORAGE_UNALLOCATED_MIB
+data_partition_count=$STORAGE_DATA_PARTITION_COUNT
+data_total_mib=$STORAGE_DATA_TOTAL_MIB
+ssd_reserve_mib=$STORAGE_RESERVED_MIB
+discard_status=$STORAGE_DISCARD_STATUS
 config_import_source=$release_import_source
 config_import_sha256=$release_import_sha256
 config_import_policy=$release_import_policy
@@ -2566,9 +3267,22 @@ show_summary() {
 	printf '  Boot mode:    %s\n' "$PAYLOAD_BOOT_MODE"
 	printf '  SHA-256:      %s\n' "$PAYLOAD_SHA256"
 	printf '  Storage:      %s\n' "$(storage_layout_label)"
+	printf '  Profile:      %s\n' "$STORAGE_PROFILE"
 	printf '  Image root:   %s MiB\n' "$STORAGE_ROOT_IMAGE_MIB"
 	printf '  Geometry:     partition 2 sectors %s-%s\n' \
 		"$STORAGE_ROOT_START_SECTOR" "$STORAGE_ROOT_TARGET_END_SECTOR"
+	while IFS='|' read -r data_number data_start data_end data_label data_mountpoint; do
+		printf '  Data p%s:     %s MiB ext4, %s -> %s, sectors %s-%s\n' \
+			"$data_number" "$(((data_end - data_start + 1) / 2048))" \
+			"$data_label" "$data_mountpoint" "$data_start" "$data_end"
+	done < "$STORAGE_DATA_LAYOUT_LIST"
+	printf '  SSD reserve:  %s MiB unallocated; discard=%s\n' \
+		"$STORAGE_RESERVED_MIB" "$STORAGE_DISCARD_STATUS"
+	if [ "$STORAGE_PROFILE" = "compatible" ]; then
+		printf '  Upgrade:      standard sysupgrade only after exact p1/p2 preflight\n'
+	else
+		printf '  Upgrade:      Hellforge Safe Upgrade or exact system-only image required\n'
+	fi
 	if [ -n "$STORAGE_EXISTING_ROOT_SECTORS" ] &&
 		storage_is_nonnegative_integer "$STORAGE_EXISTING_ROOT_SECTORS"; then
 		printf '  Existing root: %s MiB on %s\n' \
@@ -2580,16 +3294,21 @@ show_summary() {
 			"$(bytes_as_mib "$PAYLOAD_RAM_REQUIRED")"
 	fi
 	case "$INSTALL_MODE" in
-	import|rescue)
+	import|rescue|safe-upgrade)
 		printf '  Config:      %s\n' "$CONFIG_IMPORT_SOURCE_LABEL"
 		printf '  Import:      %s, %s members, %s\n' "$CONFIG_IMPORT_POLICY" \
 			"$CONFIG_IMPORT_MEMBER_COUNT" "$(bytes_as_mib "$CONFIG_IMPORT_COMPRESSED_SIZE")"
 		printf '  Import SHA:  %s\n' "$CONFIG_IMPORT_SHA256"
-		[ "$INSTALL_MODE" = "rescue" ] && printf '  Rescue:      OpenWrt %s from %s; skipped=%s\n' \
+		{ [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; } &&
+			printf '  Rescue:      OpenWrt %s from %s; skipped=%s\n' \
 			"$STORAGE_RESCUE_SOURCE_VERSION" "$STORAGE_RESCUE_SOURCE_PART" "$STORAGE_RESCUE_SKIPPED"
-		[ "$INSTALL_MODE" = "rescue" ] && printf '  Packages:    %s names recorded for reference (not installed)\n' \
+		{ [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; } &&
+			printf '  Packages:    %s names recorded for reference (not installed)\n' \
 			"$STORAGE_RESCUE_PACKAGE_COUNT"
-		[ "$INSTALL_MODE" = "rescue" ] && printf '  RAM warning: rescued configuration exists only in volatile memory until install completes\n'
+		{ [ "$INSTALL_MODE" = "rescue" ] || [ "$INSTALL_MODE" = "safe-upgrade" ]; } &&
+			printf '  RAM warning: rescued configuration exists only in volatile memory until install completes\n'
+		[ "$INSTALL_MODE" = "safe-upgrade" ] &&
+			printf '  Write scope: partition table and data partitions preserved; system partitions 1 and 2 replaced\n'
 		;;
 	esac
 	if [ "$NETWORK_SOURCE" = "imported" ]; then
@@ -2611,6 +3330,8 @@ show_summary() {
 	fi
 	if [ "$DRY_RUN" = "1" ]; then
 		printf '\nHARDWARE TEST / DRY RUN: %s WILL NOT BE WRITTEN.\n\n' "$TARGET"
+	elif [ "$INSTALL_MODE" = "safe-upgrade" ]; then
+		printf '\nSYSTEM PARTITIONS 1 AND 2 ON %s WILL BE REPLACED; VALIDATED DATA PARTITIONS WILL BE PRESERVED.\n\n' "$TARGET"
 	else
 		printf '\nALL DATA ON %s WILL BE ERASED.\n\n' "$TARGET"
 	fi
@@ -2618,12 +3339,19 @@ show_summary() {
 
 confirm_erase() {
 	[ "$ASSUME_YES" = "1" ] && return 0
-	expected="ERASE $TARGET"
+	if [ "$INSTALL_MODE" = "safe-upgrade" ]; then
+		expected="UPGRADE $TARGET"
+	else
+		expected="ERASE $TARGET"
+	fi
 	ui_confirm_erase_screen "$expected"
 	# The exact destructive phrase must remain keyboard-only. Previous Newt
 	# widgets have exited before the daemon and its socket are removed here.
 	local_mouse_stop
-	autostart_serial_marker "OWRT_INSTALLER_UI_READY=exact-erase"
+	case "$INSTALL_MODE" in
+		safe-upgrade) autostart_serial_marker "OWRT_INSTALLER_UI_READY=exact-upgrade" ;;
+		*) autostart_serial_marker "OWRT_INSTALLER_UI_READY=exact-erase" ;;
+	esac
 	printf 'Type exactly "%s" to continue: ' "$expected"
 	IFS= read -r answer
 	[ "$answer" = "$expected" ] || die "Confirmation did not match; installation cancelled"
@@ -2637,19 +3365,24 @@ review_and_confirm() {
 
 		menu_reset
 		if [ "$DRY_RUN" = "1" ]; then
-			menu_note "Hardware test: continue exercises the exact ERASE gate, but no disk write is permitted."
+			menu_note "Hardware test: continue exercises the exact confirmation gate, but no disk write is permitted."
+		elif [ "$INSTALL_MODE" = "safe-upgrade" ]; then
+			menu_note "No disk write starts from this screen. Continue opens the final UPGRADE confirmation for system partitions 1 and 2."
 		else
 			menu_note "No disk write starts from this screen. Continue only opens the final exact ERASE confirmation."
 		fi
-		menu_add "continue" "Continue to final ERASE confirmation"
-		menu_add "edit-storage" "Edit OpenWrt partition size"
+		menu_add "continue" "Continue to final destructive confirmation"
+		[ "$INSTALL_MODE" = "safe-upgrade" ] ||
+			menu_add "edit-storage" "Edit storage profile and partitions"
 		case "$INSTALL_MODE" in
 			import) menu_add "edit-config" "Edit imported backup scope and network policy" ;;
 			rescue) menu_add "edit-config" "Edit rescue scope and network policy" ;;
+			safe-upgrade) menu_add "edit-config" "Edit Safe Upgrade rescue scope and network policy" ;;
 		esac
 		if [ "$SKIP_NETWORK" != "1" ] ||
 			{ [ "$CONFIG_IMPORT_HAS_NETWORK" = "1" ] &&
-				{ [ "$INSTALL_MODE" = "import" ] || [ "$INSTALL_MODE" = "rescue" ]; }; }; then
+				{ [ "$INSTALL_MODE" = "import" ] || [ "$INSTALL_MODE" = "rescue" ] ||
+					[ "$INSTALL_MODE" = "safe-upgrade" ]; }; }; then
 			menu_add "edit-network" "Edit LAN/WAN interfaces and network settings"
 		fi
 		menu_add "cancel" "Cancel and return to shell"
@@ -2774,6 +3507,11 @@ run_install() {
 						prepare_interactive_rescue || rescue_status=$?
 						[ "$rescue_status" -eq 0 ] || continue
 						;;
+					safe-upgrade)
+						safe_upgrade_status=0
+						prepare_interactive_safe_upgrade || safe_upgrade_status=$?
+						[ "$safe_upgrade_status" -eq 0 ] || continue
+						;;
 					boot)
 						handoff_status=0
 						existing_upgrade_handoff || handoff_status=$?
@@ -2787,9 +3525,11 @@ run_install() {
 						;;
 				esac
 				[ -n "$TARGET" ] || break
-				storage_select_status=0
-				select_storage_layout || storage_select_status=$?
-				[ "$storage_select_status" -eq 0 ] || continue
+				if [ "$INSTALL_MODE" != "safe-upgrade" ]; then
+					storage_select_status=0
+					select_storage_layout || storage_select_status=$?
+					[ "$storage_select_status" -eq 0 ] || continue
+				fi
 				record_storage_selection
 				install_target_ready=1
 				break
@@ -2799,7 +3539,9 @@ run_install() {
 		validate_target_disk "$TARGET"
 		TARGET_DISK_DESCRIPTION="$(disk_label "$TARGET")"
 		storage_prepare_target_geometry "$TARGET" || die "$STORAGE_ERROR"
-		if [ "$RESCUE_EXISTING" = "1" ]; then
+		if [ "$SAFE_UPGRADE_EXISTING" = "1" ]; then
+			prepare_requested_safe_upgrade
+		elif [ "$RESCUE_EXISTING" = "1" ]; then
 			prepare_requested_rescue
 		elif [ -n "$CONFIG_IMPORT_SOURCE_REQUEST" ]; then
 			reset_rescue_metadata
@@ -2813,7 +3555,7 @@ run_install() {
 				NETWORK_SOURCE="wizard"
 			fi
 		fi
-		prepare_requested_storage_layout
+		[ "$INSTALL_MODE" = "safe-upgrade" ] || prepare_requested_storage_layout
 		record_storage_selection
 	fi
 
@@ -2839,17 +3581,32 @@ run_install() {
 	fi
 
 	ui_install_stage "Prepare target" "Stopping swap and unmounting target partitions." "$INSTALL_LOG"
-	[ "$STORAGE_PROBE_MOUNTED" = "0" ] || die "Existing OpenWrt source is still mounted before target erase"
-	[ "$CONFIG_IMPORT_MOUNTED" = "0" ] || die "Configuration source is still mounted before target erase"
+	[ "$STORAGE_PROBE_MOUNTED" = "0" ] || die "Existing OpenWrt source is still mounted before target write"
+	[ "$CONFIG_IMPORT_MOUNTED" = "0" ] || die "Configuration source is still mounted before target write"
 	swapoff -a >> "$INSTALL_LOG" 2>&1 || true
 	unmount_target_partitions "$TARGET"
-	ui_install_stage "Write image" "Writing the verified OpenWrt image to $TARGET." "$INSTALL_LOG"
-	write_payload "$TARGET"
-
 	rootpart="$(get_partition_path "$TARGET" 2)"
-	resize_rootfs "$TARGET" "$rootpart"
+	if [ "$INSTALL_MODE" = "safe-upgrade" ]; then
+		storage_enumerate_target_partitions
+		storage_validate_existing_managed_layout || die "$STORAGE_EXISTING_MANAGED_REASON"
+		storage_adopt_existing_layout || die "$STORAGE_ERROR"
+		verify_preserved_data_partitions "$TARGET"
+		prepare_safe_upgrade_raw_payload || die "$SAFE_UPGRADE_STAGING_ERROR"
+		write_safe_upgrade_system_partitions "$TARGET"
+		resize_preserved_rootfs "$TARGET" "$rootpart"
+		patch_preserved_boot_partuuid "$TARGET"
+		verify_preserved_data_partitions "$TARGET"
+	else
+		attempt_target_discard "$TARGET"
+		ui_install_stage "Write image" "Writing the verified OpenWrt image to $TARGET." "$INSTALL_LOG"
+		write_payload "$TARGET"
+		rootpart="$(get_partition_path "$TARGET" 2)"
+		resize_rootfs "$TARGET" "$rootpart"
+		create_data_partitions "$TARGET"
+	fi
 	ui_install_stage "Write installed config" "Saving installer metadata and network mapping." "$INSTALL_LOG"
 	write_installed_config "$rootpart" "$TARGET"
+	[ "$INSTALL_MODE" != "safe-upgrade" ] || verify_preserved_data_partitions "$TARGET"
 	log "Installation completed successfully"
 	ui_success_screen "Installation completed successfully."
 
@@ -2957,8 +3714,40 @@ parse_args() {
 				STORAGE_LAYOUT_REQUEST="$2"
 				shift 2
 				;;
+			--storage-profile)
+				[ "$#" -ge 2 ] || die "--storage-profile requires compatible, expanded, fill, or custom"
+				case "$2" in
+					compatible|expanded|fill|custom) STORAGE_PROFILE_REQUEST="$2" ;;
+					*) die "Invalid --storage-profile value: $2" ;;
+				esac
+				shift 2
+				;;
+			--data-partition)
+				[ "$#" -ge 2 ] || die "--data-partition requires SIZE:LABEL:MOUNT"
+				storage_data_spec="$2"
+				storage_data_size="${storage_data_spec%%:*}"
+				storage_data_rest="${storage_data_spec#*:}"
+				[ "$storage_data_rest" != "$storage_data_spec" ] ||
+					die "Invalid --data-partition value: $storage_data_spec"
+				storage_data_label="${storage_data_rest%%:*}"
+				storage_data_mount="${storage_data_rest#*:}"
+				if ! { [ "$storage_data_mount" != "$storage_data_rest" ] &&
+					[ -n "$storage_data_size" ] && [ -n "$storage_data_label" ] &&
+					[ -n "$storage_data_mount" ]; }; then
+					die "Invalid --data-partition value: $storage_data_spec"
+				fi
+				case "$storage_data_mount" in *:*) die "Invalid --data-partition mount point: $storage_data_mount" ;; esac
+				printf '%s|%s|%s\n' "$storage_data_size" "$storage_data_label" \
+					"$storage_data_mount" >> "$STORAGE_DATA_REQUEST_LIST" ||
+					die "Could not record requested data partition"
+				shift 2
+				;;
 			--rescue-existing)
 				RESCUE_EXISTING=1
+				shift
+				;;
+			--safe-upgrade-existing)
+				SAFE_UPGRADE_EXISTING=1
 				shift
 				;;
 			--rescue-scope)
@@ -3018,16 +3807,23 @@ parse_args() {
 		[ -z "$CONFIG_IMPORT_POLICY_REQUEST" ] ||
 			die "--config-import-policy requires --config-backup"
 	fi
-	if [ "$RESCUE_EXISTING" = "1" ]; then
-		[ -n "$TARGET" ] || die "--rescue-existing requires --target"
-		[ -n "$RESCUE_SCOPE_REQUEST" ] || die "--rescue-existing requires --rescue-scope"
-		[ -z "$CONFIG_IMPORT_SOURCE_REQUEST" ] || die "--rescue-existing cannot be combined with --config-backup"
+	[ "$RESCUE_EXISTING" != "1" ] || [ "$SAFE_UPGRADE_EXISTING" != "1" ] ||
+		die "--rescue-existing cannot be combined with --safe-upgrade-existing"
+	if [ "$RESCUE_EXISTING" = "1" ] || [ "$SAFE_UPGRADE_EXISTING" = "1" ]; then
+		requested_existing_option="--rescue-existing"
+		[ "$SAFE_UPGRADE_EXISTING" = "1" ] && requested_existing_option="--safe-upgrade-existing"
+		[ -n "$TARGET" ] || die "$requested_existing_option requires --target"
+		[ -n "$RESCUE_SCOPE_REQUEST" ] || die "$requested_existing_option requires --rescue-scope"
+		[ -z "$CONFIG_IMPORT_SOURCE_REQUEST" ] ||
+			die "$requested_existing_option cannot be combined with --config-backup"
 	else
-		[ -z "$RESCUE_SCOPE_REQUEST" ] || die "--rescue-scope requires --rescue-existing"
+		[ -z "$RESCUE_SCOPE_REQUEST" ] ||
+			die "--rescue-scope requires --rescue-existing or --safe-upgrade-existing"
 	fi
-	if [ -z "$CONFIG_IMPORT_SOURCE_REQUEST" ] && [ "$RESCUE_EXISTING" != "1" ]; then
+	if [ -z "$CONFIG_IMPORT_SOURCE_REQUEST" ] && [ "$RESCUE_EXISTING" != "1" ] &&
+		[ "$SAFE_UPGRADE_EXISTING" != "1" ]; then
 		[ -z "$CONFIG_IMPORT_NETWORK_REQUEST" ] ||
-			die "--import-network requires --config-backup or --rescue-existing"
+			die "--import-network requires --config-backup, --rescue-existing, or --safe-upgrade-existing"
 	fi
 	if [ -n "$STORAGE_LAYOUT_REQUEST" ]; then
 		[ -n "$TARGET" ] || die "--root-size requires --target"
@@ -3038,6 +3834,32 @@ parse_args() {
 					die "Invalid --root-size value: $STORAGE_LAYOUT_REQUEST"
 				;;
 		esac
+	fi
+	if [ -n "$STORAGE_PROFILE_REQUEST" ]; then
+		[ -n "$TARGET" ] || die "--storage-profile requires --target"
+	fi
+	if [ -s "$STORAGE_DATA_REQUEST_LIST" ]; then
+		[ -n "$TARGET" ] || die "--data-partition requires --target"
+		[ "$STORAGE_PROFILE_REQUEST" = "custom" ] ||
+			die "--data-partition requires --storage-profile custom"
+	fi
+	case "$STORAGE_PROFILE_REQUEST" in
+		compatible)
+			[ -z "$STORAGE_LAYOUT_REQUEST" ] ||
+				die "--storage-profile compatible cannot be combined with --root-size"
+			;;
+		fill)
+			[ -z "$STORAGE_LAYOUT_REQUEST" ] ||
+				die "--storage-profile fill cannot be combined with --root-size"
+			;;
+	esac
+	if [ "$SAFE_UPGRADE_EXISTING" = "1" ]; then
+		[ -z "$STORAGE_PROFILE_REQUEST" ] ||
+			die "--safe-upgrade-existing cannot be combined with --storage-profile"
+		[ -z "$STORAGE_LAYOUT_REQUEST" ] ||
+			die "--safe-upgrade-existing cannot be combined with --root-size"
+		[ ! -s "$STORAGE_DATA_REQUEST_LIST" ] ||
+			die "--safe-upgrade-existing cannot be combined with --data-partition"
 	fi
 }
 

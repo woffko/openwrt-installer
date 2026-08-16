@@ -20,6 +20,7 @@ target_version_file="$OUTPUT_DIR/openwrt-x86-64-target.version"
 payload="$PROJECT_DIR/files-installer/usr/share/owrt-installer/target.img.gz"
 manifest="$PROJECT_DIR/files-installer/usr/share/owrt-installer/manifest.json"
 network_applier="$PROJECT_DIR/files-installer/usr/share/owrt-installer/98-installer-network"
+guard_asset_dir="$PROJECT_DIR/files-installer/usr/share/owrt-installer/storage-guard"
 
 [ -s "$target_image" ] || die "Target image is missing. Run: make target"
 [ -s "$target_version_file" ] || die "Target version marker is missing. Run: make target"
@@ -31,6 +32,16 @@ log "Embedding target payload"
 cp "$target_image" "$payload"
 cp "$PROJECT_DIR/files-target/etc/uci-defaults/98-installer-network" "$network_applier"
 chmod 0755 "$network_applier"
+mkdir -p "$guard_asset_dir"
+cp "$PROJECT_DIR/files-target/etc/owrt-installer/upgrade-guard" \
+	"$guard_asset_dir/upgrade-guard"
+cp "$PROJECT_DIR/files-target/etc/owrt-installer/sysupgrade-wrapper" \
+	"$guard_asset_dir/sysupgrade-wrapper"
+cp "$PROJECT_DIR/files-target/etc/owrt-installer/install-upgrade-guard" \
+	"$guard_asset_dir/install-upgrade-guard"
+cp "$PROJECT_DIR/files-target/etc/init.d/owrt-installer-guard" \
+	"$guard_asset_dir/owrt-installer-guard.init"
+chmod 0755 "$guard_asset_dir"/*
 payload_sha256="$(sha256sum "$payload" | awk '{ print $1 }')"
 payload_uncompressed_size="$(gzip -dc "$payload" | wc -c | tr -d ' ')"
 build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

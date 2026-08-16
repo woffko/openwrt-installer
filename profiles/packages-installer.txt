@@ -26,6 +26,7 @@ resize2fs
 blkid
 lsblk
 block-mount
+blkdiscard
 gzip
 ca-bundle
 curl

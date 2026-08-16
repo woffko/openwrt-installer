@@ -155,8 +155,8 @@ drive_candidate_install() {
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=install-type" "$install_pid" "$wait_limit"
 	hmp_send_keys "$monitor_socket" ret
-	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-layout" "$install_pid" "$wait_limit"
-	hmp_send_keys "$monitor_socket" down ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-profile" "$install_pid" "$wait_limit"
+	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-interface" "$install_pid" "$wait_limit"
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan-interface-auto" "$install_pid" "$wait_limit"
@@ -192,10 +192,11 @@ verify_device_boot() {
 	device_kind="$1"
 	target_name="$2"
 	root_name="$3"
-	target_disk="$4"
-	guard_disk="$5"
-	vars_copy="$6"
-	prefix="$7"
+	data_name="$4"
+	target_disk="$5"
+	guard_disk="$6"
+	vars_copy="$7"
+	prefix="$8"
 	serial_log="$SMOKE_DIR/$prefix-installed.log"
 	qemu_log="$SMOKE_DIR/$prefix-installed-qemu.log"
 	serial_socket="$SMOKE_DIR/$prefix-installed-serial.sock"
@@ -211,19 +212,44 @@ verify_device_boot() {
 	{
 		printf '\r'
 		sleep 1
-		printf 'target_name=%s; root_name=%s\r' "$target_name" "$root_name"
+		# shellcheck disable=SC2016 # Evaluated by the guest shell.
+		printf '%s\r' 'wait_i=0; while ! grep " /mnt/data ext4 " /proc/mounts >/dev/null; do sleep 1; wait_i=$((wait_i + 1)); [ "$wait_i" -lt 120 ] || break; done'
+		sleep 1
+		printf 'target_name=%s; root_name=%s; data_name=%s\r' \
+			"$target_name" "$root_name" "$data_name"
 		sleep 1
 		# shellcheck disable=SC2016 # Evaluated by the guest shell.
-		printf '%s\r' 'start=$(cat "/sys/class/block/$root_name/start"); sectors=$(cat "/sys/class/block/$root_name/size"); meta_target=$(sed -n '\''s/^target_disk=//p'\'' /etc/openwrt-installer-release); meta_layout=$(sed -n '\''s/^storage_layout=//p'\'' /etc/openwrt-installer-release)'
+		printf '%s\r' 'root_start=$(cat "/sys/class/block/$root_name/start"); root_sectors=$(cat "/sys/class/block/$root_name/size"); data_start=$(cat "/sys/class/block/$data_name/start"); data_sectors=$(cat "/sys/class/block/$data_name/size"); disk_sectors=$(cat "/sys/class/block/$target_name/size")'
 		sleep 1
 		# shellcheck disable=SC2016
-		printf '%s\r' 'uuid=$(blkid -s PARTUUID -o value "/dev/$root_name"); partuuid_ok=0; grep -q "root=PARTUUID=$uuid" /proc/cmdline && partuuid_ok=1; mount_ok=0; grep " / ext4 " /proc/mounts >/dev/null && mount_ok=1'
+		printf '%s\r' 'meta_target=$(sed -n '\''s/^target_disk=//p'\'' /etc/openwrt-installer-release); meta_layout=$(sed -n '\''s/^storage_layout=//p'\'' /etc/openwrt-installer-release); meta_profile=$(uci -q get owrt-installer.layout.profile); meta_table=$(uci -q get owrt-installer.layout.table_type)'
 		sleep 1
 		# shellcheck disable=SC2016
-		printf '%s\r' 'printf "OWRT_DEVICE_BOOT target=%s root=%s sectors=%s layout=%s partuuid=%s mount=%s\n" "$meta_target" "$root_name" "$sectors" "$meta_layout" "$partuuid_ok" "$mount_ok"'
+		printf '%s\r' 'meta_root_start=$(uci -q get owrt-installer.layout.root_start_sector); meta_root_end=$(uci -q get owrt-installer.layout.root_end_sector); meta_data_count=$(uci -q get owrt-installer.layout.data_partition_count); meta_reserve=$(uci -q get owrt-installer.layout.reserve_sectors)'
 		sleep 1
 		# shellcheck disable=SC2016
-		printf '%s\r' 'if [ "$meta_target" = "/dev/$target_name" ] && [ "$sectors" = 8388608 ] && [ "$meta_layout" = bounded ] && [ "$partuuid_ok" = 1 ] && [ "$mount_ok" = 1 ]; then echo OWRT_DEVICE_BOOT_""OK=1; fi'
+		printf '%s\r' 'root_uuid=$(blkid -s PARTUUID -o value "/dev/$root_name"); data_uuid=$(blkid -s UUID -o value "/dev/$data_name"); meta_data_uuid=$(uci -q get owrt-installer.partition3.uuid); fstab_uuid=$(uci -q get fstab.owrt_data_3.uuid)'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'partuuid_ok=0; grep -q "root=PARTUUID=$root_uuid" /proc/cmdline && partuuid_ok=1; root_mount_ok=0; grep " / ext4 " /proc/mounts >/dev/null && root_mount_ok=1; data_mount_ok=0; grep " /mnt/data ext4 " /proc/mounts >/dev/null && data_mount_ok=1'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'usable_end=$((disk_sectors - 34)); remaining=$((usable_end - data_start + 1)); expected_data=$((((remaining * 80 / 100) / 2048) * 2048)); actual_reserve=$((usable_end - data_start - data_sectors + 1))'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'geometry_ok=1; [ "$root_start" = "$meta_root_start" ] && [ "$((root_start + root_sectors - 1))" = "$meta_root_end" ] || geometry_ok=0; [ "$data_sectors" = "$expected_data" ] && [ "$actual_reserve" = "$meta_reserve" ] || geometry_ok=0'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'metadata_ok=1; [ "$meta_profile" = compatible ] && [ "$meta_layout" = image ] && [ "$meta_table" = gpt ] || metadata_ok=0; [ "$meta_data_count" = 1 ] && [ "$meta_reserve" -gt 0 ] || metadata_ok=0; [ "$data_uuid" = "$meta_data_uuid" ] && [ "$data_uuid" = "$fstab_uuid" ] || metadata_ok=0'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'guard=0; grep -q OWRT_INSTALLER_SYSUPGRADE_WRAPPER=1 /sbin/sysupgrade && guard=1; data_type=$(blkid -s TYPE -o value "/dev/$data_name")'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'printf "OWRT_DEVICE_BOOT target=%s root=%s data=%s profile=%s layout=%s geometry=%s metadata=%s partuuid=%s root_mount=%s data_mount=%s guard=%s reserve=%s\n" "$meta_target" "$root_name" "$data_name" "$meta_profile" "$meta_layout" "$geometry_ok" "$metadata_ok" "$partuuid_ok" "$root_mount_ok" "$data_mount_ok" "$guard" "$meta_reserve"'
+		sleep 1
+		# shellcheck disable=SC2016
+		printf '%s\r' 'if [ "$meta_target" = "/dev/$target_name" ] && [ "$data_type" = ext4 ] && [ "$geometry_ok" = 1 ] && [ "$metadata_ok" = 1 ] && [ "$partuuid_ok" = 1 ] && [ "$root_mount_ok" = 1 ] && [ "$data_mount_ok" = 1 ] && [ "$guard" = 1 ]; then echo OWRT_DEVICE_BOOT_""OK=1; fi'
 	} | nc -N -U "$serial_socket" >/dev/null 2>&1 || die "Could not query installed $target_name system"
 	wait_for_log_marker "$serial_log" "OWRT_DEVICE_BOOT_OK=1" "$boot_pid" "$QEMU_INSTALL_WAIT"
 	hmp_command "$monitor_socket" quit
@@ -237,7 +263,8 @@ run_device_install() {
 	device_kind="$1"
 	target_name="$2"
 	root_name="$3"
-	prefix="$4"
+	data_name="$4"
+	prefix="$5"
 	target_disk="$SMOKE_DIR/$prefix-target.qcow2"
 	guard_disk="$SMOKE_DIR/$prefix-guard.qcow2"
 	guard_reference="$SMOKE_DIR/$prefix-guard-reference.qcow2"
@@ -259,12 +286,13 @@ run_device_install() {
 	install_pid="$ACTIVE_PID"
 	drive_candidate_install "$serial_log" "$monitor_socket" "$install_pid" \
 		"$target_name" "$QEMU_INSTALL_WAIT"
-	assert_log_contains "$serial_log" "OWRT_INSTALLER_STORAGE_LAYOUT=bounded"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_STORAGE_LAYOUT=image"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_STORAGE_PROFILE=compatible"
 	assert_log_not_contains "$serial_log" "Installation failed"
 	verify_host_gpt_tail "$target_disk" "$prefix"
 	qemu_img_compare "$guard_reference" "$guard_disk" \
 		"Installer modified unrelated guard disk during $target_name installation"
-	verify_device_boot "$device_kind" "$target_name" "$root_name" "$target_disk" \
+	verify_device_boot "$device_kind" "$target_name" "$root_name" "$data_name" "$target_disk" \
 		"$guard_disk" "$vars_copy" "$prefix"
 	qemu_img_compare "$guard_reference" "$guard_disk" \
 		"Installed-system boot modified unrelated guard disk in $target_name test"
@@ -311,8 +339,12 @@ run_pre_erase_rescue_immutability() {
 		wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=rescue-ready" "$install_pid" "$QEMU_INSTALL_WAIT"
 	fi
 	hmp_send_keys "$monitor_socket" ret
-	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-layout" "$install_pid" "$QEMU_INSTALL_WAIT"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-profile" "$install_pid" "$QEMU_INSTALL_WAIT"
 	hmp_send_keys "$monitor_socket" down ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-layout" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-warning" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
 	wait_for_either_log_marker "$serial_log" \
 		"OWRT_INSTALLER_UI_READY=review-summary" \
 		"OWRT_INSTALLER_UI_READY=lan-interface" "$install_pid" "$QEMU_INSTALL_WAIT"
@@ -347,10 +379,10 @@ run_pre_erase_rescue_immutability() {
 }
 
 case "$TEST_MODE" in
-	all|devices)
-		run_device_install sata sda sda2 sata
-		run_device_install nvme nvme0n1 nvme0n1p2 nvme
-		;;
+all|devices)
+	run_device_install sata sda sda2 sda3 sata
+	run_device_install nvme nvme0n1 nvme0n1p2 nvme0n1p3 nvme
+	;;
 esac
 case "$TEST_MODE" in
 	all|pre-erase) run_pre_erase_rescue_immutability ;;

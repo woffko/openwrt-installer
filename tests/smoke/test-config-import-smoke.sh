@@ -246,6 +246,36 @@ run_installed_apply_smoke() {
 		"$apply_work_dir/target/etc/openwrt-installer-release" || fail "Installed metadata lacks import SHA-256"
 }
 
+run_safe_upgrade_apply_smoke() {
+	apply_work_dir="$1/safe-upgrade-apply"
+	mkdir -p "$apply_work_dir/source" "$apply_work_dir/target/etc/owrt-installer" \
+		"$apply_work_dir/target/etc/uci-defaults"
+	write_valid_tree "$apply_work_dir/source"
+	make_archive "$apply_work_dir/source" "$apply_work_dir/backup.tar.gz"
+	printf '%s\n' stale > "$apply_work_dir/target/etc/owrt-installer/stale"
+	printf '%s\n' stale > "$apply_work_dir/target/etc/openwrt-installer-release"
+	printf '%s\n' '#!/bin/sh' 'exit 77' > \
+		"$apply_work_dir/target/etc/uci-defaults/98-installer-network"
+
+	OWRT_INSTALL_TEST_SOURCE_ONLY=1 OWRT_IMPORT_TEST_MODE=1 \
+	OWRT_IMPORT_TEST_MEM_AVAILABLE=1073741824 TMPDIR="$apply_work_dir" \
+	UI_LIB="$UI_LIB" CONFIG_IMPORT_LIB="$IMPORT_LIB" sh -eu -c '
+		. "$1"
+		INSTALL_LOG="$2/install.log"
+		INSTALL_MODE=safe-upgrade
+		config_import_prepare_file "$2/backup.tar.gz"
+		config_import_prepare_policy full
+		config_import_apply_to_target "$2/target"
+		cleanup
+	' sh "$INSTALLER" "$apply_work_dir" > "$apply_work_dir/run.out" 2>&1 ||
+		fail "Safe Upgrade config restore smoke failed"
+
+	assert_contains "$apply_work_dir/target/etc/config/network" "br-imported"
+	assert_not_exists "$apply_work_dir/target/etc/owrt-installer"
+	assert_not_exists "$apply_work_dir/target/etc/openwrt-installer-release"
+	assert_not_exists "$apply_work_dir/target/etc/uci-defaults/98-installer-network"
+}
+
 run_clean_metadata_smoke() {
 	clean_work_dir="$1/clean-metadata"
 	mkdir -p "$clean_work_dir/target/etc" "$clean_work_dir/bin"
@@ -484,6 +514,7 @@ run_usb_scan_smoke "$suite_work_dir"
 run_copy_before_unmount_smoke "$suite_work_dir"
 run_read_only_mount_smoke "$suite_work_dir"
 run_installed_apply_smoke "$suite_work_dir"
+run_safe_upgrade_apply_smoke "$suite_work_dir"
 run_clean_metadata_smoke "$suite_work_dir"
 run_rejection_matrix "$suite_work_dir"
 run_resource_limit_smoke "$suite_work_dir"
