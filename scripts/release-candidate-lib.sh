@@ -149,7 +149,11 @@ candidate_unexpected_ignored_runtime() {
 		case "$ignored_path" in
 			files-installer/usr/share/owrt-installer/manifest.json|\
 			files-installer/usr/share/owrt-installer/target.img.gz|\
-			files-installer/usr/share/owrt-installer/98-installer-network)
+			files-installer/usr/share/owrt-installer/98-installer-network|\
+			files-installer/usr/share/owrt-installer/storage-guard/install-upgrade-guard|\
+			files-installer/usr/share/owrt-installer/storage-guard/owrt-installer-guard.init|\
+			files-installer/usr/share/owrt-installer/storage-guard/sysupgrade-wrapper|\
+			files-installer/usr/share/owrt-installer/storage-guard/upgrade-guard)
 				;;
 			*) printf '%s\n' "$ignored_path" ;;
 		esac

@@ -54,7 +54,27 @@ printf '.PHONY: all\nall:\n\t@true\n' > "$repo/Makefile"
 cat > "$repo/.gitignore" <<'EOF'
 /build/
 /output/
+/files-installer/usr/share/owrt-installer/manifest.json
+/files-installer/usr/share/owrt-installer/target.img.gz
+/files-installer/usr/share/owrt-installer/98-installer-network
+/files-installer/usr/share/owrt-installer/storage-guard/
 EOF
+
+mkdir -p "$repo/files-installer/usr/share/owrt-installer/storage-guard"
+printf 'generated manifest\n' > \
+	"$repo/files-installer/usr/share/owrt-installer/manifest.json"
+printf 'generated payload\n' > \
+	"$repo/files-installer/usr/share/owrt-installer/target.img.gz"
+printf 'generated network applier\n' > \
+	"$repo/files-installer/usr/share/owrt-installer/98-installer-network"
+for generated_guard in \
+	install-upgrade-guard \
+	owrt-installer-guard.init \
+	sysupgrade-wrapper \
+	upgrade-guard; do
+	printf 'generated guard asset\n' > \
+		"$repo/files-installer/usr/share/owrt-installer/storage-guard/$generated_guard"
+done
 
 # The fixture xorriso exposes the manifest sidecar associated with its fake ISO.
 cat > "$repo/build/host-tools/usr/bin/xorriso" <<'EOF'
@@ -205,6 +225,12 @@ printf '*.ignored-runtime\n' >> "$repo/.git/info/exclude"
 printf 'ignored runtime\n' > "$repo/files-installer/payload.ignored-runtime"
 expect_rejected 'unexpected ignored runtime file' "$verifier" "$metadata_rel" "$report"
 rm -f "$repo/files-installer/payload.ignored-runtime"
+
+printf 'unexpected generated helper\n' > \
+	"$repo/files-installer/usr/share/owrt-installer/storage-guard/unexpected-helper"
+expect_rejected 'unexpected ignored storage guard helper' \
+	"$verifier" "$metadata_rel" "$report"
+rm -f "$repo/files-installer/usr/share/owrt-installer/storage-guard/unexpected-helper"
 
 printf '# tracked change\n' >> "$repo/files-installer/usr/sbin/owrt-install"
 expect_rejected 'tracked runtime change' "$verifier" "$metadata_rel" "$report"
