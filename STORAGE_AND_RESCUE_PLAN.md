@@ -4,11 +4,11 @@
 
 Статус: первая итерация sizing/rescue завершена. Вторая итерация storage
 profiles, data partitions, fail-closed upgrade guard и Hellforge Safe Upgrade
-реализована в development runtime `v1.0-alpha.12` и прошла доступные fast/QEMU
-gates. Physical SATA/NVMe schema 4 gate, заморозка нового candidate и
-публикация следующего prerelease еще не выполнены.
+вошла в `v1.0-beta.1` и прошла доступные fast/QEMU gates. Beta публикуется для
+VM и осторожной hardware-оценки с явным предупреждением: physical SATA/NVMe
+schema 4 gate еще не выполнен и bare-metal storage acceptance не заявляется.
 
-Базовая версия проекта: опубликованный prerelease `v1.0-alpha.10`.
+Базовая версия storage-итерации: опубликованный prerelease `v1.0-alpha.10`.
 
 ## Утвержденная Вторая Итерация
 
@@ -643,8 +643,11 @@ ERASE /dev/...
 - [x] Обновить README и CLI help.
 - [x] Обновить hardware report schema для storage/rescue result.
 - [x] Собрать clean hybrid ISO.
+- [x] Разрешить отдельную VM/QEMU evaluation beta с явным physical-gate
+  disclaimer.
 - [ ] Пройти physical SATA/NVMe rescue gate.
-- [ ] Опубликовать отдельный prerelease только после checksums и report.
+- [ ] Опубликовать hardware-validated prerelease только после checksums и
+  schema 4 report.
 
 ### Фаза 5: Storage Profiles И Safe Upgrade
 
@@ -659,7 +662,9 @@ ERASE /dev/...
   последовательных standard sysupgrade цикла.
 - [x] Пройти QEMU AHCI/NVMe compatible matrix и pre-ERASE immutability.
 - [x] Поднять physical report и release verifier до schema 4.
-- [ ] Собрать и проверить clean `v1.0-alpha.12` candidate artifact.
+- [x] Подготовить `v1.0-beta.1` runtime и VMware screenshots для evaluation
+  prerelease.
+- [ ] Собрать и проверить финальный clean `v1.0-beta.1` artifact.
 - [ ] Пройти physical SATA/NVMe compatible, standard/Safe Upgrade и rescue
   schema 4 gate.
 - [ ] Опубликовать новый immutable prerelease после physical report.
@@ -667,7 +672,7 @@ ERASE /dev/...
 ## Автоматизированное Подтверждение
 
 Frozen candidate `v1.0-alpha.11` остается неизменным историческим артефактом
-первой sizing/rescue итерации. Development runtime `v1.0-alpha.12` на
+первой sizing/rescue итерации. Runtime, выпущенный как `v1.0-beta.1`, на
 2026-08-16 прошел:
 
 - полный `make smoke`, включая ShellCheck, profile/geometry/rescue fixtures,
@@ -697,9 +702,9 @@ Frozen candidate `v1.0-alpha.11` остается неизменным исто�
   диск и `qemu-img compare` source после RAM rescue snapshot с выключением на
   exact `ERASE` prompt.
 
-Меняющиеся checksums development artifact и локальные longrun job IDs
-записываются в ignored `LOCAL_CONTEXT.md`. До physical gate и immutable
-freeze этот artifact не считается release candidate.
+Меняющиеся checksums локального artifact и longrun job IDs записываются в
+ignored `LOCAL_CONTEXT.md`. Evaluation beta не означает прохождение physical
+schema 4 gate.
 
 TCG-диагностика отдельно установила, что QEMU 8.2 с двумя vCPU может замедлять
 guest clock после warm reset независимо от `sysupgrade`; тот же простой reboot
@@ -735,10 +740,10 @@ Safe Upgrade готов автоматически, когда RAM snapshot, p1/
 root resize/PARTUUID patch, data verification и installed boot доказаны. Этот
 QEMU gate пройден; physical gate еще открыт.
 
-Release iteration готова только после clean non-dev candidate build, schema 4
-bare-metal SATA/NVMe/standard/Safe Upgrade/rescue report, immutable release
-gate и публикации нового prerelease. До этого `v1.0-alpha.12` остается
-development runtime, а Goal не считается полностью закрытым.
+Полная storage release iteration готова только после clean non-dev build,
+schema 4 bare-metal SATA/NVMe/standard/Safe Upgrade/rescue report и immutable
+release gate. `v1.0-beta.1` до этого остается evaluation beta, а physical
+storage Goal не считается полностью закрытым.
 
 ## Ссылки
 

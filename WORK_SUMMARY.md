@@ -2,14 +2,14 @@
 
 Дата фиксации: 2026-08-16.
 
-## Alpha.12 Storage Profiles And Upgrade Safety
+## Beta.1 Storage Profiles And Upgrade Safety
 
-- Опубликованный prerelease: `v1.0-alpha.10`,
-  `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.10`.
+- Текущий prerelease: `v1.0-beta.1`,
+  `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-beta.1`.
 - Frozen `v1.0-alpha.11` сохранен без изменений как непубликовавшийся
   кандидат первой storage/rescue итерации.
-- Текущий development runtime: `v1.0-alpha.12`. Новый candidate еще не
-  заморожен; checksum фиксируется только после финальной clean rebuild.
+- Текущий release runtime: `v1.0-beta.1`. Он публикуется как VM/QEMU-validated
+  beta без утверждения о прохождении physical schema 4 storage gate.
 - Recommended `compatible` сохраняет payload p1/p2, создает ext4 p3 на 80%
   остатка и оставляет 20% unallocated SSD reserve. `expanded`, `fill` и
   `custom` сохраняют выбор root size; custom поддерживает несколько ext4 data
@@ -40,9 +40,9 @@
 - Пройдены full fast smoke, UEFI compatible/expanded/fill/custom, rescue,
   config import и QEMU AHCI `/dev/sda` + NVMe `/dev/nvme0n1` compatible matrix
   с exact 80/20 geometry, guard, unchanged second disk и pre-ERASE zero-write.
-- Hardware report и verifier обновлены до schema 4. Публикация следующего
-  alpha заблокирована до реального SATA+NVMe, standard/Safe Upgrade, rescue и
-  power-cycle отчета по
+- Hardware report и verifier обновлены до schema 4. Для признания beta
+  bare-metal storage validated по-прежнему нужен реальный SATA+NVMe,
+  standard/Safe Upgrade, rescue и power-cycle отчет по
   `PHYSICAL_X86_STORAGE_RESCUE_TEST.md`.
 
 ## Актуальное состояние
@@ -52,9 +52,9 @@
 - Git remote: `origin https://github.com/woffko/openwrt-installer.git`.
 - Основная ветка: `main`.
 - Текущий commit: см. `git log -1 --oneline`.
-- Последний опубликованный release: `v1.0-alpha.10`.
-- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-alpha.10`.
-- Текущий development runtime: `v1.0-alpha.12`; clean candidate еще не заморожен.
+- Последний опубликованный release: `v1.0-beta.1`.
+- Release URL: `https://github.com/woffko/openwrt-installer/releases/tag/v1.0-beta.1`.
+- Текущий release runtime: `v1.0-beta.1`; physical schema 4 gate пока не закрыт.
 - Актуальные локальные checksums всегда читаются из `output/sha256sums.txt`;
   они не закрепляются в tracked документации до immutable candidate freeze.
 - `v1.0-alpha.9` candidate и его metadata сохранены как исторические и не

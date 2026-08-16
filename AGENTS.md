@@ -11,10 +11,10 @@
 
 ## Current Artifacts
 
-- Current published alpha release: `v1.0-alpha.10`.
-- Current development runtime: `v1.0-alpha.12`; it is not frozen or published before the physical SATA/NVMe compatible-layout, two-cycle standard sysupgrade, Safe Upgrade, rescue, and pre-ERASE power-cycle schema 4 gate.
+- Current published prerelease: `v1.0-beta.1`.
+- Current release runtime: `v1.0-beta.1`. It is VM/QEMU validated, but the physical SATA/NVMe compatible-layout, two-cycle standard sysupgrade, Safe Upgrade, rescue, and pre-ERASE power-cycle schema 4 gate remains pending and must not be represented as passed.
 - Current hybrid ISO: `output/openwrt-x86-64-installer-hybrid.iso`.
-- Read the current development ISO checksum from `output/sha256sums.txt`; do not treat it as a release candidate until the freeze workflow succeeds.
+- Read the current ISO checksum from `output/sha256sums.txt`; verify the published GitHub asset digest separately after upload.
 - Historical `v1.0-alpha.9` candidate metadata remains under `release/`; do not move it.
 - Older alpha release tags are preserved; do not move them.
 

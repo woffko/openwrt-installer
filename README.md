@@ -14,6 +14,12 @@ existing ext4 OpenWrt installation before reinstalling it.
 
 Repository: <https://github.com/woffko/openwrt-installer>
 
+Current prerelease: [v1.0-beta.1](https://github.com/woffko/openwrt-installer/releases/tag/v1.0-beta.1).
+This beta has passed the automated QEMU matrix and an interactive VMware boot
+and navigation check. It has not yet passed the project schema 4 physical
+SATA/NVMe storage and recovery gate, so it is not a bare-metal storage
+certification.
+
 This is an MVP. It supports one LAN interface, one WAN interface, DHCP on LAN,
 DHCP/DHCPv6 clients on WAN, firewall forwarding from LAN to WAN, NAT, SSH, and
 LuCI. Interface selection is saved by MAC address so installed-system device
@@ -21,8 +27,11 @@ names do not need to match names used by the live installer.
 
 ## Warning
 
-Installation completely erases the selected disk, including any partitions in
-the space that will become unallocated. Review the target carefully.
+Clean install, USB import, and rescue/reinstall completely erase the selected
+disk, including any partitions in the space that will become unallocated.
+Hellforge Safe Upgrade is the separate guarded path that preserves a validated
+partition table and managed data partitions. Review the target and selected
+action carefully.
 Do not select the USB device that booted the installer. Removable disks are
 blocked unless `--allow-removable` is passed explicitly.
 
@@ -274,6 +283,18 @@ owrt-install --list-nics
 
 ## Installer UI
 
+The following screens were captured from the VMware test machine running the
+`v1.0-beta.1` ISO. No disk write or destructive confirmation was performed
+while taking them.
+
+| Boot menu with detected local OpenWrt | Existing-install actions |
+| --- | --- |
+| ![GRUB boot menu](docs/screenshots/v1.0-beta.1/boot-menu.png) | ![Existing OpenWrt installation actions](docs/screenshots/v1.0-beta.1/install-action.png) |
+
+| Target disk selection | Storage profiles |
+| --- | --- |
+| ![Target disk selection](docs/screenshots/v1.0-beta.1/target-disk.png) | ![Storage profile selection](docs/screenshots/v1.0-beta.1/storage-profiles.png) |
+
 Interactive local-console installs use the packaged Hellforge `whiptail` TUI.
 It keeps the installer keyboard-first with arrow-key menus, Cancel/`Esc` Back,
 framed review screens, destructive warnings, and install-stage status screens.
@@ -315,8 +336,9 @@ failed its VMware cursor test and has been replaced by the kernel multiplexer.
 The replacement path passed the automated QEMU USB, PS/2, absolute-tablet,
 crash, cleanup, and fallback matrix, its VMware cursor test on 2026-08-14, and
 a real-machine mouse check for `v1.0-alpha.10`. The mode remains experimental.
-The storage/rescue release remains blocked until its separate physical SATA
-and NVMe acceptance is completed.
+`v1.0-beta.1` is published for broader VM and hardware evaluation, while its
+separate schema 4 physical SATA/NVMe storage and recovery acceptance remains
+pending.
 
 For bare-metal validation, highlight **OpenWrt x86 Installer**, press `e`, and
 append `owrt.hardware-test=1` to its `linux` line before booting with Ctrl+X or
