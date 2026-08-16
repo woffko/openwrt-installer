@@ -84,4 +84,5 @@ metadata_tmp=""
 printf '[owrt-installer] Candidate metadata frozen: %s\n' "$metadata_rel"
 printf '[owrt-installer] Runtime commit: %s\n' "$runtime_commit"
 printf '[owrt-installer] ISO SHA-256: %s\n' "$iso_sha256"
-printf '[owrt-installer] Commit the metadata file before accepting a physical report.\n'
+printf '[owrt-installer] Commit the metadata file before running the final release gate.\n'
+printf '[owrt-installer] Do not rebuild; the physical report identity must match this manifest.\n'

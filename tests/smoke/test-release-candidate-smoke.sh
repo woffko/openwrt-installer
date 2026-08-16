@@ -88,6 +88,7 @@ git -C "$repo" config user.email 'smoke@example.invalid'
 git -C "$repo" add .
 git -C "$repo" commit -qm 'runtime fixture'
 runtime_commit="$(git -C "$repo" rev-parse 'HEAD^{commit}')"
+payload_sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
 
 write_manifest() {
 	version="$1"
@@ -98,7 +99,8 @@ write_manifest() {
   "build_date": "2026-08-15T00:00:00Z",
   "build_commit": "$runtime_commit",
   "build_dirty": $dirty,
-  "openwrt_version": "25.12.5"
+  "openwrt_version": "25.12.5",
+  "payload_sha256": "$payload_sha256"
 }
 EOF
 	cp "$repo/output/manifest.json" \
@@ -146,9 +148,16 @@ git -C "$repo" commit -qm 'freeze candidate metadata'
 expect_rejected 'candidate metadata overwrite' "$freeze" v1.0-alpha.9
 
 report="$work_dir/wired-report.txt"
-cat > "$report" <<'EOF'
+manifest_sha256="$(sha256sum "$repo/output/manifest.json" | awk '{ print $1 }')"
+cat > "$report" <<EOF
 report_schema=4
 installer_version=v1.0-alpha.9
+artifact_manifest_sha256=$manifest_sha256
+artifact_manifest_version=v1.0-alpha.9
+artifact_build_commit=$runtime_commit
+artifact_build_dirty=false
+artifact_payload_sha256=$payload_sha256
+artifact_identity_valid=yes
 kernel_mouse_flag=yes
 kernel_hardware_test_flag=yes
 mouse_started=yes

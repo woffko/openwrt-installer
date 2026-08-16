@@ -27,6 +27,18 @@ assert_contains() {
 
 work_dir="$(mktemp -d "$TMPDIR/owrt-hardware-report-smoke.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT INT TERM
+manifest="$work_dir/manifest.json"
+build_commit=0123456789abcdef0123456789abcdef01234567
+payload_sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+cat > "$manifest" <<EOF
+{
+  "installer_version": "$INSTALLER_VERSION",
+  "build_commit": "$build_commit",
+  "build_dirty": false,
+  "payload_sha256": "$payload_sha256"
+}
+EOF
+manifest_sha256="$(sha256sum "$manifest" | awk '{ print $1 }')"
 
 mkdir -p \
 	"$work_dir/input/event0/device/capabilities" \
@@ -61,6 +73,7 @@ OWRT_HW_INPUT_CLASS="$work_dir/input" \
 OWRT_HW_APK_DB="$work_dir/installed" \
 OWRT_HW_INSTALL_LOG="$work_dir/install.log" \
 OWRT_HW_INSTALLER_BIN="$work_dir/owrt-install" \
+OWRT_HW_MANIFEST="$manifest" \
 OWRT_HW_PROC_ROOT="$work_dir/proc" \
 OWRT_HW_GPM_PID_FILE="$work_dir/missing-gpm.pid" \
 OWRT_HW_GPM_SOCKET="$work_dir/missing-gpmctl" \
@@ -82,6 +95,12 @@ OWRT_HW_MOUSE_STATE="$work_dir/missing-state" \
 
 assert_contains "$report" "report_schema=4"
 assert_contains "$report" "installer_version=$INSTALLER_VERSION"
+assert_contains "$report" "artifact_manifest_sha256=$manifest_sha256"
+assert_contains "$report" "artifact_manifest_version=$INSTALLER_VERSION"
+assert_contains "$report" "artifact_build_commit=$build_commit"
+assert_contains "$report" "artifact_build_dirty=false"
+assert_contains "$report" "artifact_payload_sha256=$payload_sha256"
+assert_contains "$report" "artifact_identity_valid=yes"
 assert_contains "$report" "kernel_mouse_flag=yes"
 assert_contains "$report" "kernel_hardware_test_flag=yes"
 assert_contains "$report" "gpm_daemon_version=1.20.7-r5"
@@ -107,18 +126,31 @@ assert_contains "$report" "relative_pointer_count=1"
 assert_contains "$report" "physical_flow_result=pass"
 [ "$(stat -c '%a' "$report")" = "600" ] || fail "Hardware report mode must be 600"
 
-"$VERIFIER" "$report" >/dev/null || fail "Physical report verifier rejected a valid wired USB report"
+"$VERIFIER" "$report" "$manifest" >/dev/null ||
+	fail "Physical report verifier rejected a valid wired USB report"
 
 sed \
 	-e 's/^manual_wheel=pass$/manual_wheel=skipped/' \
 	-e 's/^manual_wheel_skip_reason=not-applicable$/manual_wheel_skip_reason=no-scrollable-list/' \
 	"$report" > "$work_dir/no-wheel-report.txt"
-"$VERIFIER" "$work_dir/no-wheel-report.txt" >/dev/null ||
+"$VERIFIER" "$work_dir/no-wheel-report.txt" "$manifest" >/dev/null ||
 	fail "Physical report verifier rejected the documented no-scrollable-list exception"
 
 sed 's/^pointer_connection=usb-wired$/pointer_connection=usb-receiver/' "$report" > "$work_dir/receiver-report.txt"
-if "$VERIFIER" "$work_dir/receiver-report.txt" >/dev/null 2>&1; then
+if "$VERIFIER" "$work_dir/receiver-report.txt" "$manifest" >/dev/null 2>&1; then
 	fail "Physical alpha gate verifier accepted a USB receiver report"
+fi
+
+sed 's/^artifact_manifest_sha256=.*/artifact_manifest_sha256=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/' \
+	"$report" > "$work_dir/wrong-artifact-report.txt"
+if "$VERIFIER" "$work_dir/wrong-artifact-report.txt" "$manifest" >/dev/null 2>&1; then
+	fail "Physical alpha gate verifier accepted a report from another artifact"
+fi
+
+cp "$report" "$work_dir/duplicate-identity-report.txt"
+printf 'artifact_build_commit=%s\n' "$build_commit" >> "$work_dir/duplicate-identity-report.txt"
+if "$VERIFIER" "$work_dir/duplicate-identity-report.txt" "$manifest" >/dev/null 2>&1; then
+	fail "Physical alpha gate verifier accepted a duplicate identity field"
 fi
 
 incomplete_report="$work_dir/incomplete-report.txt"
@@ -129,6 +161,7 @@ OWRT_HW_INPUT_CLASS="$work_dir/input" \
 OWRT_HW_APK_DB="$work_dir/installed" \
 OWRT_HW_INSTALL_LOG="$work_dir/install.log" \
 OWRT_HW_INSTALLER_BIN="$work_dir/owrt-install" \
+OWRT_HW_MANIFEST="$manifest" \
 OWRT_HW_PROC_ROOT="$work_dir/proc" \
 OWRT_HW_GPM_PID_FILE="$work_dir/missing-gpm.pid" \
 OWRT_HW_GPM_SOCKET="$work_dir/missing-gpmctl" \

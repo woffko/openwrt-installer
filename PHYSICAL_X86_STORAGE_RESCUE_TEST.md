@@ -11,15 +11,22 @@ Use a disposable x86_64 machine, one non-essential SATA SSD, and one
 non-essential NVMe disk. Every clean/import/reinstall step destroys the
 selected disk. Disconnect disks containing the only copy of important data.
 
-Freeze the exact clean candidate before testing:
+Commit the intended runtime, build the exact clean pre-candidate, and complete
+the automated gates before testing. Do not freeze candidate metadata yet:
 
 ```sh
-make freeze-candidate VERSION=v1.0-alpha.N
+make iso
+make smoke
+make iso-smoke
+make storage-device-qemu-smoke
+cd output && sha256sum -c sha256sums.txt
 ```
 
-Verify `output/sha256sums.txt` and record the committed candidate metadata.
-Do not rebuild the ISO or change runtime files during the test. A changed ISO,
-runtime commit, or installer version requires a new candidate and report.
+Record `output/sha256sums.txt`, `output/manifest.json`, and the full runtime
+commit. Do not rebuild the ISO or change runtime files during the test. The
+hardware report records the embedded manifest SHA-256, runtime commit, clean
+build flag, and payload SHA-256. A changed ISO, manifest, runtime commit, or
+installer version requires a new physical report.
 
 ## Required Hardware
 
@@ -121,8 +128,8 @@ Use the compatible installation on the other physical device.
 
 ## 8. Generate And Verify The Report
 
-Run the no-write hardware-test flow once more on the unchanged frozen
-candidate, then run:
+Run the no-write hardware-test flow once more on the unchanged clean
+pre-candidate, then run:
 
 ```sh
 owrt-hardware-report
@@ -130,14 +137,22 @@ owrt-hardware-report
 
 Answer `pass` only for checks actually completed above. Preserve
 `/tmp/owrt-hardware-report.txt` before rebooting the RAM-root installer. On the
-build host run:
+build host first verify that the report names the exact current manifest. Then
+freeze that unchanged artifact, commit only the generated metadata, and run
+the release gate:
 
 ```sh
-./scripts/verify-physical-report.sh /path/to/owrt-hardware-report.txt
+./scripts/verify-physical-report.sh \
+  /path/to/owrt-hardware-report.txt output/manifest.json
+make freeze-candidate VERSION=v1.0-alpha.N
+git add release/v1.0-alpha.N-candidate.env
+git commit -m "Freeze v1.0-alpha.N candidate"
 make release-gate \
   CANDIDATE=release/v1.0-alpha.N-candidate.env \
   REPORT=/path/to/owrt-hardware-report.txt
 ```
+
+No rebuild is allowed between report generation, freeze, and release gate.
 
 Schema 4 requires all of these storage/upgrade results:
 
@@ -150,6 +165,18 @@ manual_safe_upgrade_preserves_data=pass
 manual_rescue_restore=pass
 manual_pre_erase_power_cycle_no_change=pass
 physical_flow_result=pass
+```
+
+It also requires these automatically generated artifact identity fields to
+match `output/manifest.json` exactly:
+
+```text
+artifact_manifest_sha256=<64 lowercase hex>
+artifact_manifest_version=v1.0-alpha.N
+artifact_build_commit=<40 lowercase hex>
+artifact_build_dirty=false
+artifact_payload_sha256=<64 lowercase hex>
+artifact_identity_valid=yes
 ```
 
 The wired USB mouse, keyboard, exact-prompt cleanup, dry-run, and runtime

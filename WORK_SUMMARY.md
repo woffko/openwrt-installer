@@ -80,11 +80,20 @@
 - Netinstall RAM-workspace больше не меняет process-wide `umask`, а config-import копирует только проверенное содержимое `etc/` и нормализует режим каталога. QEMU post-import boot подтверждает доступные `0755` режимы `/` и `/etc`, импортированные UCI и отсутствие stale installer state.
 - `scripts/common.sh` фиксирует `umask 022`, чтобы ImageBuilder не создавал rootfs с `0700/0600` при запуске из hardened runner; добавлен `make build-env-smoke`.
 - Для physical gate сохранен скрытый kernel flag `owrt.hardware-test=1`: его временно добавляют через GRUB edit к unified entry, он принудительно включает `--dry-run`, а `owrt-hardware-report` создает ограниченный отчет без сетевых и аппаратных серийных идентификаторов.
-- Physical report schema v3 объединяет wired USB HID с обязательными
-  storage/rescue checks для SATA, NVMe, restored boot и pre-ERASE power-cycle;
-  schema v2 остается только историческим форматом.
-- `make freeze-candidate VERSION=...` создает metadata только из clean non-dev commit и проверенных свежих artifacts; commit не выполняется автоматически. Manifest содержит `build_commit`/`build_dirty` и находится также в корне ISO.
-- `make release-gate CANDIDATE=... REPORT=...` использует data-only parser, требует committed metadata, сверяет physical report, commit, ISO/sidecar/embedded manifest и отвергает tracked/staged/untracked/unexpected-ignored runtime. Изолированный Git smoke покрывает injection, dirty, checksum, hash и embedded-manifest rejection.
+- Physical report schema v4 объединяет wired USB HID с обязательными
+  storage/rescue checks для SATA, NVMe, standard/Safe Upgrade, restored boot и
+  pre-ERASE power-cycle; старые schemas остаются только историческими.
+- Physical report до freeze записывает SHA-256 embedded manifest, runtime
+  commit, `build_dirty=false` и payload SHA-256; verifier связывает его с
+  точным clean pre-candidate.
+- `make freeze-candidate VERSION=...` после physical report создает metadata
+  только из того же clean non-dev commit и неизмененного artifact; commit не
+  выполняется автоматически.
+- `make release-gate CANDIDATE=... REPORT=...` использует data-only parser,
+  требует committed metadata, сверяет artifact identity physical report,
+  commit, ISO/sidecar/embedded manifest и отвергает
+  tracked/staged/untracked/unexpected-ignored runtime. Изолированный Git smoke
+  покрывает injection, dirty, checksum, hash и embedded-manifest rejection.
 - GitHub Actions smoke gate опубликован в `main`: push/PR workflow запускает `make smoke` без разрешения на запись в repository. Первый run `31657834111` для commit `9e63814` успешно завершен за 43 секунды.
 - Реальный GRUB-путь hardware-test проверен в QEMU; полный wizard до exact `ERASE` завершился в dry-run, GPM был остановлен перед подтверждением, а SHA-256 всего target disk до и после совпал.
 - На замороженном `v1.0-alpha.9` candidate прошли `make smoke`, `make mouse-qemu-smoke`, BIOS/UEFI/VGA, local-disk BIOS/UEFI, missing-disk, hardware-test, install-to-disk/installed-system boot и config-import/install/boot через `make iso-smoke`.

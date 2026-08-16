@@ -8,6 +8,7 @@ INPUT_CLASS="${OWRT_HW_INPUT_CLASS:-/sys/class/input}"
 APK_DB="${OWRT_HW_APK_DB:-/lib/apk/db/installed}"
 INSTALL_LOG="${OWRT_HW_INSTALL_LOG:-/tmp/owrt-installer.log}"
 INSTALLER_BIN="${OWRT_HW_INSTALLER_BIN:-/usr/sbin/owrt-install}"
+MANIFEST="${OWRT_HW_MANIFEST:-/usr/share/owrt-installer/manifest.json}"
 PROC_ROOT="${OWRT_HW_PROC_ROOT:-/proc}"
 GPM_PID_FILE="${OWRT_HW_GPM_PID_FILE:-/var/run/gpm.pid}"
 GPM_SOCKET="${OWRT_HW_GPM_SOCKET:-/dev/gpmctl}"
@@ -40,6 +41,57 @@ installer_version() {
 		return
 	}
 	sed -n 's/^INSTALLER_VERSION="\([^"]*\)"/\1/p' "$INSTALLER_BIN" | head -n 1
+}
+
+manifest_string() {
+	key="$1"
+	[ -r "$MANIFEST" ] || return 1
+	LC_ALL=C awk -v wanted="$key" '
+		{
+			line = $0
+			trimmed = line
+			sub(/^[[:space:]]*/, "", trimmed)
+			prefix = "\"" wanted "\""
+			if (index(trimmed, prefix) == 1 &&
+			    substr(trimmed, length(prefix) + 1) ~ /^[[:space:]]*:/) {
+				sub(/^[^:]*:[[:space:]]*"/, "", line)
+				sub(/"[[:space:]]*,?[[:space:]]*$/, "", line)
+				print line
+				count++
+			}
+		}
+		END { if (count != 1) exit 1 }
+	' "$MANIFEST"
+}
+
+manifest_boolean() {
+	key="$1"
+	[ -r "$MANIFEST" ] || return 1
+	LC_ALL=C awk -v wanted="$key" '
+		{
+			line = $0
+			trimmed = line
+			sub(/^[[:space:]]*/, "", trimmed)
+			prefix = "\"" wanted "\""
+			if (index(trimmed, prefix) == 1 &&
+			    substr(trimmed, length(prefix) + 1) ~ /^[[:space:]]*:/) {
+				sub(/^[^:]*:[[:space:]]*/, "", line)
+				sub(/,[[:space:]]*$/, "", line)
+				gsub(/[[:space:]]/, "", line)
+				if (line != "true" && line != "false") exit 1
+				print line
+				count++
+			}
+		}
+		END { if (count != 1) exit 1 }
+	' "$MANIFEST"
+}
+
+is_lower_hex_length() {
+	value="$1"
+	expected_length="$2"
+	[ "${#value}" -eq "$expected_length" ] || return 1
+	case "$value" in *[!0-9a-f]*) return 1 ;; esac
 }
 
 log_has() {
@@ -157,6 +209,25 @@ gpm_is_running && runtime_clean=no
 [ ! -e "$GPM_SOCKET" ] || runtime_clean=no
 [ ! -e "$MOUSE_STATE" ] || runtime_clean=no
 
+runtime_installer_version="$(value_or_unknown "$(installer_version || true)")"
+artifact_manifest_sha256=unknown
+artifact_manifest_version="$(value_or_unknown "$(manifest_string installer_version || true)")"
+artifact_build_commit="$(value_or_unknown "$(manifest_string build_commit || true)")"
+artifact_build_dirty="$(value_or_unknown "$(manifest_boolean build_dirty || true)")"
+artifact_payload_sha256="$(value_or_unknown "$(manifest_string payload_sha256 || true)")"
+if [ -r "$MANIFEST" ] && command -v sha256sum >/dev/null 2>&1; then
+	artifact_manifest_sha256="$(sha256sum "$MANIFEST" 2>/dev/null | awk '{ print $1 }')"
+	artifact_manifest_sha256="$(value_or_unknown "$artifact_manifest_sha256")"
+fi
+artifact_identity_valid=no
+if is_lower_hex_length "$artifact_manifest_sha256" 64 &&
+	is_lower_hex_length "$artifact_build_commit" 40 &&
+	is_lower_hex_length "$artifact_payload_sha256" 64 &&
+	[ "$artifact_build_dirty" = "false" ] &&
+	[ "$artifact_manifest_version" = "$runtime_installer_version" ]; then
+	artifact_identity_valid=yes
+fi
+
 pointer_connection="$(ask_pointer_connection)"
 manual_move="$(ask_result "Pointer movement was stable in the installer" "${OWRT_HW_MANUAL_MOVE:-}")"
 manual_click="$(ask_result "Click selected and submitted the intended UI control" "${OWRT_HW_MANUAL_CLICK:-}")"
@@ -177,7 +248,13 @@ manual_power_cycle="$(ask_result "Cancelling or powering off after the RAM snaps
 
 {
 	printf 'report_schema=4\n'
-	printf 'installer_version=%s\n' "$(value_or_unknown "$(installer_version)")"
+	printf 'installer_version=%s\n' "$runtime_installer_version"
+	printf 'artifact_manifest_sha256=%s\n' "$artifact_manifest_sha256"
+	printf 'artifact_manifest_version=%s\n' "$artifact_manifest_version"
+	printf 'artifact_build_commit=%s\n' "$artifact_build_commit"
+	printf 'artifact_build_dirty=%s\n' "$artifact_build_dirty"
+	printf 'artifact_payload_sha256=%s\n' "$artifact_payload_sha256"
+	printf 'artifact_identity_valid=%s\n' "$artifact_identity_valid"
 	printf 'architecture=%s\n' "$(uname -m 2>/dev/null || printf unknown)"
 	printf 'kernel=%s\n' "$(uname -r 2>/dev/null || printf unknown)"
 	printf 'boot_mode=%s\n' "$boot_mode"
@@ -235,7 +312,7 @@ printf 'relative_pointer_count=%s\n' "$pointer_count" >> "$tmp_output"
 physical_result=pass
 for automatic_gate in \
 	"$mouse_flag" "$hardware_test_flag" "$mouse_started" "$mouse_stopped" \
-	"$dry_run_complete" "$runtime_clean"
+	"$dry_run_complete" "$runtime_clean" "$artifact_identity_valid"
 do
 	[ "$automatic_gate" = "yes" ] || physical_result=fail
 done

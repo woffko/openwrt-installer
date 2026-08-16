@@ -541,8 +541,8 @@ make online-install-qemu-smoke
 ```
 
 Before a physical test, commit the intended release runtime and make sure the
-repository is clean. Build and test that exact non-`-dev` version, then create
-immutable candidate metadata:
+repository is clean. Build and test that exact non-`-dev` version, but do not
+freeze candidate metadata yet:
 
 ```sh
 make iso
@@ -551,23 +551,31 @@ make mouse-qemu-smoke
 make iso-smoke
 make storage-device-qemu-smoke
 make online-install-qemu-smoke
-make freeze-candidate VERSION=v1.0-alpha.N
 ```
 
 `freeze-candidate` never commits automatically. It refuses dirty repositories,
 development versions, stale artifacts, checksum failures, and manifests built
-from another or dirty commit. Review and commit the newly created
-`release/v1.0-alpha.N-candidate.env` before collecting a physical report. Do
-not rebuild or change runtime files afterward.
+from another or dirty commit. The physical report records the embedded
+manifest SHA-256, runtime commit, clean-build flag, and payload SHA-256, so it
+can be tied to the clean pre-candidate before formal freeze.
 
-After completing the documented wired USB, SATA, NVMe, and rescue test, run the
-immutable gate before creating the alpha release:
+After completing the documented wired USB, SATA, NVMe, and rescue test, verify
+the report against the unchanged manifest, freeze that exact artifact, commit
+the metadata, and run the immutable gate:
 
 ```sh
+./scripts/verify-physical-report.sh \
+  /path/to/owrt-hardware-report.txt output/manifest.json
+make freeze-candidate VERSION=v1.0-alpha.N
+git add release/v1.0-alpha.N-candidate.env
+git commit -m "Freeze v1.0-alpha.N candidate"
 make release-gate \
   CANDIDATE=release/v1.0-alpha.N-candidate.env \
   REPORT=/path/to/owrt-hardware-report.txt
 ```
+
+Do not rebuild or change runtime files between physical report generation,
+freeze, and the release gate.
 
 The gate uses a strict data-only metadata parser and verifies the committed
 candidate file, physical report, full runtime commit, tracked/staged/untracked

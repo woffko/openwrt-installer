@@ -74,7 +74,8 @@ git merge-base --is-ancestor "$CANDIDATE_RUNTIME_COMMIT" HEAD ||
 	candidate_die "Candidate runtime commit is not an ancestor of HEAD"
 candidate_assert_runtime_unchanged_since "$CANDIDATE_RUNTIME_COMMIT"
 
-"$PROJECT_DIR/scripts/verify-physical-report.sh" "$REPORT"
+"$PROJECT_DIR/scripts/verify-physical-report.sh" "$REPORT" \
+	"$PROJECT_DIR/output/manifest.json"
 
 printf '[owrt-installer] Release gate passed for %s (%s)\n' \
 	"$CANDIDATE_VERSION" "$CANDIDATE_ISO_SHA256"

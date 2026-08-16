@@ -26,7 +26,7 @@ release.
 
 ## Historical Alpha.9 Candidate
 
-The frozen candidate for the next physical report is:
+The historical alpha.9 candidate was:
 
 ```text
 installer_version=v1.0-alpha.9
@@ -40,8 +40,9 @@ On 2026-08-15 this exact runtime passed `make smoke`, three repeated USB
 relative-mouse runs, the full USB/PS2/tablet mouse matrix, focused
 configuration-import install/boot, and the complete BIOS/UEFI ISO matrix.
 Those virtual-machine results do not close the separate bare-metal gate. Any
-later runtime or ISO change invalidates this candidate and requires a new
-freeze and physical report.
+later runtime or ISO change invalidates this candidate. Current workflow builds
+and identifies a clean pre-candidate in the physical report, then freezes that
+same unchanged artifact only after the report passes.
 
 ## Safety
 
