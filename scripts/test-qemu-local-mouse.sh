@@ -16,7 +16,7 @@ QEMU_MEMORY="${QEMU_MEMORY:-1024}"
 QEMU_SMP="${QEMU_SMP:-2}"
 QEMU_MOUSE_CASE="${QEMU_MOUSE_CASE:-all}"
 QEMU_TABLET_TARGET_X="${QEMU_TABLET_TARGET_X:-13856}"
-QEMU_TABLET_TARGET_Y="${QEMU_TABLET_TARGET_Y:-18000}"
+QEMU_TABLET_TARGET_Y="${QEMU_TABLET_TARGET_Y:-18800}"
 LOCAL_QEMU_ROOT="$BUILD_DIR/qemu-local/root"
 QEMU_PID=""
 VM_DISK=""
@@ -210,12 +210,15 @@ click_target_ok() {
 	# GPM starts at cell 80x25 on the QEMU 160x50 console. Its default
 	# scaling maps ten small X deltas and twenty Y deltas to one cell. Small,
 	# separately paced X reports avoid acceleration when QEMU batches input;
-	# one Y report aims at the middle button row instead of its shadow.
+	# Four paced Y reports account for the multiline logo rows reserved above
+	# the dialog and still stay below GPM's acceleration threshold.
 	for _ in $(seq 1 30); do
 		relative_mouse_step -5 0
 	done
 	sleep 0.3
-	relative_mouse_step 0 20
+	for _ in 1 2 3 4; do
+		relative_mouse_step 0 20
+	done
 	sleep 0.3
 	capture_screen "$SMOKE_DIR/usb-relative-target-position.ppm"
 	hmp "mouse_button 1"
