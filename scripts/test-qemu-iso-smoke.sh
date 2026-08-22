@@ -597,9 +597,14 @@ drive_clean_install_flow() {
 	install_pid="$3"
 	storage_choice="$4"
 	wait_limit="$5"
+	target_choice="${6:-first}"
 
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" "$install_pid" "$wait_limit"
-	hmp_send_keys "$monitor_socket" ret
+	case "$target_choice" in
+		first) hmp_send_keys "$monitor_socket" ret ;;
+		second) hmp_send_keys "$monitor_socket" down ret ;;
+		*) die "Unsupported automated target choice: $target_choice" ;;
+	esac
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=install-type" "$install_pid" "$wait_limit"
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-profile" "$install_pid" "$wait_limit"
@@ -2100,7 +2105,7 @@ run_custom_build_smoke() {
 	hmp_send_keys "$monitor_socket" ret
 	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=custom-build-ready" "$install_pid" "$QEMU_INSTALL_WAIT"
 	hmp_send_keys "$monitor_socket" ret
-	drive_clean_install_flow "$serial_log" "$monitor_socket" "$install_pid" compatible "$QEMU_INSTALL_WAIT"
+	drive_clean_install_flow "$serial_log" "$monitor_socket" "$install_pid" compatible "$QEMU_INSTALL_WAIT" second
 
 	assert_nonblank_ppm "$logo_screenshot"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_CUSTOM_BUILD_IMAGE=$CUSTOM_BUILD_QEMU_FILENAME"
@@ -2116,6 +2121,10 @@ run_custom_build_smoke() {
 		-serial chardev:serial0 \
 		-monitor "unix:$boot_monitor_socket,server=on,wait=off"
 	if [ "$custom_mode" = "uefi" ]; then
+		# The install boot leaves an explicit virtual-CD entry in OVMF NVRAM.
+		# A fresh VARS image models removing installer media and forces the normal
+		# fallback scan of the installed disk's EFI/BOOT/BOOTX64.EFI path.
+		cp "$QEMU_OVMF_VARS" "$vars_copy"
 		set -- "$@" \
 			-drive "if=pflash,format=raw,readonly=on,file=$QEMU_OVMF_CODE" \
 			-drive "if=pflash,format=raw,file=$vars_copy"

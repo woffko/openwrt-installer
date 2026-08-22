@@ -209,6 +209,7 @@ run_whiptail_progress_stream_smoke() {
 		fail "Whiptail progress stream smoke failed"
 
 	assert_contains "$work_dir/whiptail-progress.args" " _______"
+	assert_contains "$work_dir/whiptail-progress.args" "W I R E L E S S   F R E E D O M"
 	assert_contains "$work_dir/whiptail-progress.args" \
 		"OpenWrt Hellforge Installer | OpenWrt 25.12.5 --title Install --gauge"
 	assert_contains "$work_dir/whiptail-progress.input" "0"
