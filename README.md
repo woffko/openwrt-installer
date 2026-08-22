@@ -583,6 +583,22 @@ installs the custom image, boots it, and checks installed provenance:
 make custom-build-qemu-smoke
 ```
 
+Run BIOS VBE and UEFI GOP framebuffer acceptance, including the actual
+framebuffer size, single VGA owner, branded `whiptail`, and nonblank captures:
+
+```sh
+make graphics-qemu-smoke
+```
+
+Run both serial acceptance paths: first-input ownership on a headless direct
+kernel boot and the dedicated GRUB serial entry. The first path completes the
+real line wizard in hardware dry-run and compares the whole target disk before
+and after:
+
+```sh
+make serial-qemu-smoke
+```
+
 After `make iso`, run only the USB backup install and installed-system boot
 acceptance:
 
@@ -622,10 +638,11 @@ and target-disk immutability.
 
 Run the full automated hybrid ISO gate after `make iso`. It covers BIOS, UEFI,
 local-disk conditional default and its missing-disk path, the hidden
-hardware-test kernel flag, the VGA curses framebuffer, compatible,
-expanded/fill/custom installation geometry, two guarded standard
-`sysupgrade` cycles, Safe Upgrade, existing-install rescue, zero-write handoff,
-USB backup import, and installed-system boot:
+hardware-test kernel flag, BIOS/UEFI graphics, dual/forced serial ownership,
+the VGA curses framebuffer, compatible/expanded/fill/custom installation
+geometry, two guarded standard `sysupgrade` cycles, Safe Upgrade,
+existing-install rescue, zero-write handoff, USB backup import, CUSTOM_BUILD,
+and installed-system boot:
 
 ```sh
 make iso-smoke
@@ -669,6 +686,8 @@ freeze candidate metadata yet:
 ```sh
 make iso
 make smoke
+make graphics-qemu-smoke
+make serial-qemu-smoke
 make mouse-qemu-smoke
 make iso-smoke
 make storage-device-qemu-smoke

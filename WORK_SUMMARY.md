@@ -2,6 +2,23 @@
 
 Дата фиксации: 2026-08-22.
 
+## Beta.3-dev Graphics И Single-Owner Serial
+
+- Classic OpenWrt logo исправлен на block alignment: все строки используют
+  одну X-coordinate, рассчитанную по максимальной ширине ASCII-art.
+- GRUB включает ASCII PF2 font и BIOS VBE/UEFI GOP modules; normal entry
+  предпочитает `1024x768`, затем `800x600`, `auto` и console fallback. QEMU
+  BIOS и UEFI фактически выбрали `1280x800`, что выше минимального gate.
+- Добавлен четвёртый GRUB entry `OpenWrt x86 Installer (serial 115200 8N1)`.
+- `tty1`, `ttyS0` и `hvc0` используют atomic boot-lifetime owner lock. В
+  normal mode первый Enter получает installer; без input через 10 секунд
+  owner становится `tty1`. Проигравший TTY показывает read-only log mirror.
+- Serial owner всегда использует line UI без GPM. Отдельный serial entry
+  немедленно назначает `ttyS0`; второй installer после crash/respawn запрещён.
+- Fast broker fixtures, BIOS/UEFI graphics QEMU, headless serial dry-run с
+  whole-disk hash и forced serial GRUB-entry tests прошли. Release не
+  публиковался.
+
 ## Beta.2-dev CUSTOM_BUILD И Classic OpenWrt Banner
 
 - Runtime `v1.0-beta.2-dev` добавляет `/CUSTOM_BUILD` в raw installer и hybrid
@@ -187,7 +204,11 @@
 
 ## Автозапуск
 
-Live installer теперь запускает `owrt-install --autostart` автоматически через `/etc/inittab` на `tty1`, чтобы установщик открывался на видимой локальной консоли. Перед стартом wrapper приглушает информационные kernel-сообщения, ждет стабилизации block/net устройств и очищает экран. Serial-консоли `ttyS0` и `hvc0` остаются обычным login.
+Live installer запускается через единый `/etc/inittab` console broker. Он
+приглушает информационные kernel messages, ждёт стабилизации block/net devices
+и передаёт installer ровно одному owner: `tty1`, `ttyS0` или `hvc0`. Normal
+mode использует first-input arbitration и VGA timeout; отдельный GRUB entry
+форсирует `ttyS0`. Остальные TTY получают только status/log mirror.
 
 ## Hybrid ISO
 

@@ -311,7 +311,7 @@ assert_common_boot_markers() {
 	assert_log_contains "$log_file" "GNU GRUB"
 	assert_log_contains "$log_file" "Linux version"
 	assert_log_contains "$log_file" "OWRT_INSTALLER_BROKER_OWNER=tty1"
-	assert_log_contains "$log_file" "OpenWrt disk installer is managed by /etc/inittab on tty1."
+	assert_log_contains "$log_file" "OpenWrt disk installer console broker is managed by /etc/inittab."
 	assert_log_contains "$log_file" "OWRT_INSTALLER_UI_BACKEND=whiptail"
 }
 
@@ -2289,6 +2289,49 @@ run_serial_console_smoke() {
 	log "Headless serial ownership, line wizard, and disk immutability passed"
 }
 
+run_serial_grub_smoke() {
+	serial_log="$SMOKE_DIR/serial-grub.log"
+	qemu_log="$SMOKE_DIR/serial-grub-qemu.log"
+	serial_socket="$SMOKE_DIR/serial-grub.sock"
+	monitor_socket="$SMOKE_DIR/serial-grub-monitor.sock"
+	target_disk="$SMOKE_DIR/serial-grub-target.raw"
+	rm -f "$serial_log" "$qemu_log" "$serial_socket" "$monitor_socket" "$target_disk"
+	truncate -s 1G "$target_disk"
+	serial_before_hash="$(sha256sum "$target_disk" | awk '{ print $1 }')"
+	set -- \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none -vga std \
+		-chardev "socket,id=serial0,path=$serial_socket,server=on,wait=off,logfile=$serial_log" \
+		-serial chardev:serial0 \
+		-monitor "unix:$monitor_socket,server=on,wait=off" \
+		-cdrom "$ISO_IMAGE" -boot d \
+		-drive "file=$target_disk,format=raw,if=virtio" \
+		-nic user,model=e1000 -nic user,model=e1000
+	log "Starting forced serial GRUB-entry smoke test"
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$qemu_log" "$@"
+	serial_pid="$QEMU_STARTED_PID"
+	wait_for_log_marker "$serial_log" "OpenWrt x86 Installer (serial 115200 8N1)" \
+		"$serial_pid" 60
+	hmp_send_keys "$monitor_socket" down down ret
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_BROKER_OWNER=ttyS0" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_FRAMEBUFFER=" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_UI_BACKEND=line" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	hmp_command "$monitor_socket" quit
+	wait "$serial_pid" || true
+	serial_after_hash="$(sha256sum "$target_disk" | awk '{ print $1 }')"
+	[ "$serial_before_hash" = "$serial_after_hash" ] ||
+		die "Forced serial GRUB entry changed the target disk before confirmation"
+	[ "$(grep -F -c 'OWRT_INSTALLER_BROKER_OWNER=' "$serial_log")" -eq 1 ] ||
+		die "Forced serial GRUB entry emitted more than one owner"
+	assert_log_not_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+	log "Forced serial GRUB entry, framebuffer-independent line UI, and pre-confirm immutability passed"
+}
+
 run_bios_smoke() {
 	log_file="$SMOKE_DIR/bios-iso.log"
 	target_disk="$SMOKE_DIR/target-bios.qcow2"
@@ -2358,8 +2401,8 @@ run_uefi_smoke() {
 }
 
 case "$MODE" in
-	all|bios|uefi|hardware|vga|uefi-vga|graphics|serial-console|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing) ;;
-	*) die "Usage: $0 [all|bios|uefi|hardware|vga|uefi-vga|graphics|serial-console|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing]" ;;
+	all|bios|uefi|hardware|vga|uefi-vga|graphics|serial|serial-console|serial-grub|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing) ;;
+	*) die "Usage: $0 [all|bios|uefi|hardware|vga|uefi-vga|graphics|serial|serial-console|serial-grub|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing]" ;;
 esac
 
 [ -s "$ISO_IMAGE" ] || die "Hybrid ISO is missing. Run: make iso"
@@ -2367,18 +2410,18 @@ require_cmd timeout
 require_cmd grep
 require_cmd tail
 case "$MODE" in
-	all|hardware|vga|uefi-vga|graphics|serial-console|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing)
+	all|hardware|vga|uefi-vga|graphics|serial|serial-console|serial-grub|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing)
 		require_cmd nc
 		;;
 esac
 case "$MODE" in
-	all|hardware|serial-console|safe-upgrade|rescue|online|online-bios|online-uefi)
+	all|hardware|serial|serial-console|safe-upgrade|rescue|online|online-bios|online-uefi)
 		[ -s "$ISO_STAGED_KERNEL" ] || die "Staged ISO kernel is missing. Run: make iso"
 		[ -s "$ISO_STAGED_INITRAMFS" ] || die "Staged ISO initramfs is missing. Run: make iso"
 		;;
 esac
 case "$MODE" in
-	all|serial-console)
+	all|serial|serial-console|serial-grub)
 		require_cmd sha256sum
 		require_cmd truncate
 		;;
@@ -2429,6 +2472,7 @@ case "$MODE" in
 		run_vga_smoke
 		run_uefi_vga_smoke
 		run_serial_console_smoke
+		run_serial_grub_smoke
 		run_install_smoke
 		run_storage_layout_smoke bounded
 		run_storage_layout_smoke image
@@ -2461,6 +2505,13 @@ case "$MODE" in
 		;;
 	serial-console)
 		run_serial_console_smoke
+		;;
+	serial-grub)
+		run_serial_grub_smoke
+		;;
+	serial)
+		run_serial_console_smoke
+		run_serial_grub_smoke
 		;;
 	install)
 		run_install_smoke

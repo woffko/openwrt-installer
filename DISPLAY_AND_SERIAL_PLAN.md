@@ -17,7 +17,7 @@
 5. Normal entry использует first-input arbitration: Enter на VGA/serial/hvc
    получает ownership; без ввода VGA становится owner через 10 секунд.
 6. Отдельный GRUB serial entry немедленно назначает owner `ttyS0`, запускает
-   line UI без GPM и сохраняет `115200 8N1`.
+   framebuffer-independent line UI без GPM и сохраняет `115200 8N1`.
 7. Проигравшие TTY показывают owner и bounded mirror `/tmp/owrt-installer.log`.
    Они не принимают destructive input и после завершения переходят в login.
 8. Owner определяется атомарным `mkdir`; lock сохраняется до reboot даже после

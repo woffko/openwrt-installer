@@ -89,7 +89,7 @@ custom-build-qemu-smoke:
 	./scripts/test-qemu-iso-smoke.sh custom-build
 
 serial-qemu-smoke:
-	./scripts/test-qemu-iso-smoke.sh serial-console
+	./scripts/test-qemu-iso-smoke.sh serial
 
 graphics-qemu-smoke:
 	./scripts/test-qemu-iso-smoke.sh graphics

@@ -1,6 +1,7 @@
 OpenWrt x86 Installer
 
-The disk installer starts automatically on the system console.
+The console broker assigns one installer owner to VGA, ttyS0, or hvc0.
+Without console input, VGA starts automatically after 10 seconds.
 Manual command:
 
   owrt-install

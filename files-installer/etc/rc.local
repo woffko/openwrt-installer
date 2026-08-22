@@ -1,5 +1,5 @@
 #!/bin/sh
 
-echo 'OpenWrt disk installer is managed by /etc/inittab on tty1.' >/dev/console
+echo 'OpenWrt disk installer console broker is managed by /etc/inittab.' >/dev/console
 
 exit 0
