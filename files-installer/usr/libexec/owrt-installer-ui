@@ -18,7 +18,7 @@ MENU_NOTE_KIND=""
 UI_BACKTITLE_BASE="OpenWrt Hellforge Installer"
 UI_BACKTITLE="$UI_BACKTITLE_BASE"
 UI_PAYLOAD_VERSION=""
-UI_LOGO_TEXT=' _______                     ________       ______
+UI_LOGO_TEXT=' _______                     ________        __
 |       |.-----.-----.-----.|  |  |  |.----.|  |_
 |   -   ||  _  |  -__|     ||  |  |  ||   _||   _|
 |_______||   __|_____|__|__||________||__|  |____|
