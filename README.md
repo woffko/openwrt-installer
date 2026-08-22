@@ -11,6 +11,8 @@ RAM before running the same installation flow. After target selection, the
 interactive installer can also restore a validated OpenWrt configuration
 backup from a read-only USB partition, or rescue configuration from an
 existing ext4 OpenWrt installation before reinstalling it.
+When `/CUSTOM_BUILD` contains compatible user images, the same source picker
+can instead stage and validate a local custom OpenWrt build in RAM.
 
 Repository: <https://github.com/woffko/openwrt-installer>
 
@@ -149,6 +151,48 @@ boot mode, and RAM sizing. Nothing is streamed directly to the target disk;
 the fully verified image stays in RAM and uses the same exact
 `ERASE /dev/...` confirmation and write path as an embedded install.
 
+### Custom OpenWrt builds
+
+The installer media contains `/CUSTOM_BUILD/README.txt`. Place an OpenWrt
+`x86/64 generic ext4 combined` `.img.gz` directly in a `CUSTOM_BUILD` folder
+on one of these sources:
+
+- the raw ext4 installer image, populated from Linux before boot;
+- a FAT32, exFAT, NTFS3, or ext4 USB/Ventoy partition;
+- the root of a remastered hybrid ISO.
+
+The published hybrid ISO is read-only and cannot be modified after download.
+Using a writable Ventoy or separate USB partition is the simplest way to add a
+custom image without rebuilding the ISO.
+
+When compatible files are detected, an image-source screen appears before the
+normal official latest-release check. Without custom images, startup keeps the
+existing automatic online/embedded behavior and shows no additional screen.
+
+Supported filenames end in `.img.gz`; nested images, symlinks, squashfs,
+non-x86 images, and uncompressed `.img` files are rejected. BIOS installer
+boots accept an MBR `ext4-combined` image. UEFI boots accept a GPT
+`ext4-combined-efi` image. The actual partition table and ext4 root geometry,
+not the filename, determine acceptance.
+
+An optional `<image>.sha256` or `CUSTOM_BUILD/sha256sums` is checked after the
+image and sidecar have both been copied into private RAM and the source media
+has been unmounted. A local checksum detects corruption but is not an OpenWrt
+signature. With or without a sidecar, the wizard displays a separate warning
+that custom images are unauthenticated.
+
+The copy is bounded by the source size and a RAM reserve. The installer then
+checks exact copied size, SHA-256, the complete gzip stream, a bounded true
+decompressed size, boot mode, partition table, and ext4 geometry before target
+selection. Review shows the custom source, hash, checksum status, and RAM
+budget before the normal exact `ERASE /dev/...` confirmation.
+
+CLI parity is available for a mounted local file:
+
+```sh
+owrt-install --custom-build /mnt/usb/CUSTOM_BUILD/my-openwrt.img.gz
+```
+
 ### Import OpenWrt configuration from USB
 
 After selecting the target disk, choose **Import OpenWrt backup from USB** to
@@ -286,6 +330,12 @@ owrt-install --list-nics
 The following screens were captured from the VMware test machine running the
 `v1.0-beta.1` ISO. No disk write or destructive confirmation was performed
 while taking them.
+
+The local `whiptail` build supports a multiline backtitle and reserves those
+rows before positioning dialogs. It displays the classic OpenWrt ASCII banner
+above Hellforge windows on `80x24` and larger Linux consoles without changing
+GPM mouse targets. ANSI terminals show the same full banner when enough rows
+are available; narrow, serial, and line fallbacks keep a compact title.
 
 | Boot menu with detected local OpenWrt | Existing-install actions |
 | --- | --- |
@@ -481,6 +531,21 @@ Run deterministic storage geometry and RAM-rescue validation without QEMU:
 ```sh
 make storage-rescue-smoke
 make storage-profile-smoke
+```
+
+Run local custom-image discovery, checksum, bounded RAM copy, source-unmount,
+gzip-size, boot-mode, and source-flow regression tests:
+
+```sh
+make custom-build-smoke
+```
+
+After `make iso`, run complete BIOS and UEFI custom-build acceptance. It creates
+a FAT USB image with `/CUSTOM_BUILD`, verifies the source picker and warning,
+installs the custom image, boots it, and checks installed provenance:
+
+```sh
+make custom-build-qemu-smoke
 ```
 
 After `make iso`, run only the USB backup install and installed-system boot

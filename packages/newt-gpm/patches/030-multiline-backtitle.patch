@@ -1,0 +1,113 @@
+--- a/whiptail.c
++++ b/whiptail.c
+@@ -144,6 +144,49 @@
+     *q = '\0';
+ }
+ 
++static int backtitleHeight(const char *text)
++{
++    int height = 0;
++
++    if (text == NULL || *text == '\0')
++        return 0;
++
++    height = 1;
++    while (*text != '\0') {
++        if (*text == '\n')
++            height++;
++        text++;
++    }
++    return height;
++}
++
++static void drawBacktitle(const char *text)
++{
++    char *copy, *line, *next;
++    int row = 0;
++
++    if (text == NULL || *text == '\0')
++        return;
++
++    copy = strdup(text);
++    if (copy == NULL)
++        return;
++
++    line = copy;
++    while (line != NULL) {
++        int width, column;
++
++        next = strchr(line, '\n');
++        if (next != NULL)
++            *next++ = '\0';
++        width = _newt_wstrlen(line, -1);
++        column = max(0, (SLtt_Screen_Cols - width) / 2);
++        newtDrawRootText(column, row++, line);
++        line = next;
++    }
++    free(copy);
++}
++
+ /*
+  * The height of a text string is added to height, and width is increased
+  * if it is not big enough to store the text string.
+@@ -364,6 +407,8 @@
+     char * ok_button = NULL;
+     char * cancel_button = NULL;
+     int help = 0, version = 0;
++    char * backtitleText = NULL;
++    int backtitleRows = 0;
+     struct poptOption optionsTable[] = {
+ 	    { "backtitle", '\0', POPT_ARG_STRING, &backtitle, 0 },
+ 	    { "checklist", '\0', 0, 0, OPT_CHECKLIST },
+@@ -541,6 +586,16 @@
+ 
+     cleanNewlines(text);
+ 
++    if (backtitle != NULL) {
++        backtitleText = strdup(backtitle);
++        if (backtitleText == NULL) {
++            fprintf(stderr, _("Out of memory.\n"));
++            exit(DLG_ERROR);
++        }
++        cleanNewlines(backtitleText);
++        backtitleRows = backtitleHeight(backtitleText);
++    }
++
+     if (height <= 0 || width <= 0 || listHeight <= 0) {
+ 	guessSize(&height, &width, &listHeight, mode, &flags, fullButtons,
+ 		 title, text, optCon);
+@@ -551,14 +606,23 @@
+ 	    listHeight -= 1;
+ 	}
+     }
++    if (backtitleRows > 0 && height > SLtt_Screen_Rows - backtitleRows - 1) {
++        int reduction = height - (SLtt_Screen_Rows - backtitleRows - 1);
++
++        height -= reduction;
++        if (listHeight > 1)
++            listHeight = max(1, listHeight - reduction);
++        flags |= FLAG_SCROLL_TEXT;
++    }
+ 
+     width -= 2;
+     height -= 2;
+ 
+     newtOpenWindow(topLeft ? 1 : (SLtt_Screen_Cols - width) / 2,
+-		   topLeft ? 1 : (SLtt_Screen_Rows - height) / 2, width, height, title);
+-    if (backtitle)
+-	newtDrawRootText(0, 0, backtitle);
++		   topLeft ? backtitleRows :
++		   backtitleRows + (SLtt_Screen_Rows - backtitleRows - height) / 2,
++		   width, height, title);
++    drawBacktitle(backtitleText);
+ 
+     if (ok_button)
+ 	setButtonText(ok_button, BUTTON_OK);
+@@ -651,6 +715,7 @@
+     newtFinished();
+ 
+     free(text);
++    free(backtitleText);
+     poptFreeContext(optCon);
+ 
+     return ( rc == DLG_ESCAPE ) ? -1 : rc;

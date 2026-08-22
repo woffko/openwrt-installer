@@ -208,8 +208,9 @@ run_whiptail_progress_stream_smoke() {
 		script -q -e -c "$harness" "$out_file" >/dev/null 2>&1 ||
 		fail "Whiptail progress stream smoke failed"
 
+	assert_contains "$work_dir/whiptail-progress.args" " _______"
 	assert_contains "$work_dir/whiptail-progress.args" \
-		"--fb --backtitle OpenWrt Hellforge Installer | OpenWrt 25.12.5 --title Install --gauge"
+		"OpenWrt Hellforge Installer | OpenWrt 25.12.5 --title Install --gauge"
 	assert_contains "$work_dir/whiptail-progress.input" "0"
 	assert_contains "$work_dir/whiptail-progress.input" "37"
 	assert_contains "$work_dir/whiptail-progress.input" "100"

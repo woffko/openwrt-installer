@@ -79,7 +79,8 @@ run_xorrisofs() {
 }
 
 rm -rf "$work_dir"
-mkdir -p "$iso_root/boot/grub" "$iso_root/efi/boot" "$initramfs_root"
+mkdir -p "$iso_root/boot/grub" "$iso_root/efi/boot" \
+	"$iso_root/CUSTOM_BUILD" "$initramfs_root"
 
 log "Creating RAM-root initramfs"
 tar -xzf "$rootfs" -C "$initramfs_root"
@@ -87,6 +88,15 @@ tar -xzf "$rootfs" -C "$initramfs_root"
 # package stale UI scripts from an earlier ImageBuilder rootfs tarball.
 cp -a "$PROJECT_DIR/files-installer/." "$initramfs_root/"
 cp "$IMAGEBUILDER_DIR/target/linux/generic/other-files/init" "$initramfs_root/init"
+
+# Keep custom images once in the ISO root. The README remains in initramfs so
+# raw installer media still exposes /CUSTOM_BUILD without duplicating hybrid
+# ISO payloads inside the RAM root.
+if [ -d "$initramfs_root/CUSTOM_BUILD" ]; then
+	cp -a "$initramfs_root/CUSTOM_BUILD/." "$iso_root/CUSTOM_BUILD/"
+	find "$initramfs_root/CUSTOM_BUILD" -mindepth 1 -maxdepth 1 -type f \
+		! -name 'README.txt' -delete
+fi
 
 # shellcheck disable=SC2016 # Expanded by the nested shell after positional args are passed.
 fakeroot sh -eu -c '

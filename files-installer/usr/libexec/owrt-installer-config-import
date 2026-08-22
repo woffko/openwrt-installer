@@ -65,7 +65,7 @@ config_import_mem_available_bytes() {
 
 config_import_supported_fstype() {
 	case "$1" in
-		vfat|exfat|ntfs|ntfs3|ext4) return 0 ;;
+		vfat|exfat|ntfs|ntfs3|ext4|iso9660) return 0 ;;
 		*) return 1 ;;
 	esac
 }

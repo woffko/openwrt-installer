@@ -54,10 +54,10 @@ P:gpm-daemon
 V:1.20.7-r5
 
 P:libnewt
-V:0.52.24-r3
+V:0.52.24-r4
 
 P:whiptail
-V:0.52.24-r3
+V:0.52.24-r4
 EOF
 cat > "$work_dir/install.log" <<'EOF'
 [owrt-installer-mouse] active on /dev/input/mice with PID 123
@@ -104,8 +104,8 @@ assert_contains "$report" "artifact_identity_valid=yes"
 assert_contains "$report" "kernel_mouse_flag=yes"
 assert_contains "$report" "kernel_hardware_test_flag=yes"
 assert_contains "$report" "gpm_daemon_version=1.20.7-r5"
-assert_contains "$report" "libnewt_version=0.52.24-r3"
-assert_contains "$report" "whiptail_version=0.52.24-r3"
+assert_contains "$report" "libnewt_version=0.52.24-r4"
+assert_contains "$report" "whiptail_version=0.52.24-r4"
 assert_contains "$report" "mouse_started=yes"
 assert_contains "$report" "mouse_stopped=yes"
 assert_contains "$report" "dry_run_complete=yes"

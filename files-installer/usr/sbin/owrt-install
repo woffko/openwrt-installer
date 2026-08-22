@@ -2,7 +2,7 @@
 
 set -eu
 
-INSTALLER_VERSION="v1.0-beta.1"
+INSTALLER_VERSION="v1.0-beta.2-dev"
 PAYLOAD="/usr/share/owrt-installer/target.img.gz"
 MANIFEST="/usr/share/owrt-installer/manifest.json"
 EMBEDDED_PAYLOAD="$PAYLOAD"
@@ -27,6 +27,9 @@ MENU_LIST="$(tmp_file menu)"
 CONFIG_IMPORT_PARTITION_LIST="$(tmp_file import-partitions)"
 CONFIG_IMPORT_ARCHIVE_LIST="$(tmp_file import-archives)"
 CONFIG_IMPORT_SCAN_LIST="$(tmp_file import-scan)"
+CUSTOM_BUILD_LIST="$(tmp_file custom-builds)"
+CUSTOM_BUILD_PARTITION_LIST="$(tmp_file custom-partitions)"
+CUSTOM_BUILD_SCAN_LIST="$(tmp_file custom-scan)"
 STORAGE_PARTITION_LIST="$(tmp_file storage-partitions)"
 STORAGE_DATA_LAYOUT_LIST="$(tmp_file storage-data-layout)"
 STORAGE_DATA_REQUEST_LIST="$(tmp_file storage-data-requests)"
@@ -59,6 +62,7 @@ DRY_RUN=0
 SKIP_NETWORK=0
 DOWNLOAD_LATEST=0
 CHECK_LATEST=0
+CUSTOM_BUILD_SOURCE_REQUEST=""
 TARGET_MOUNTED=0
 INSTALL_MODE="clean"
 NETWORK_SOURCE="wizard"
@@ -107,6 +111,15 @@ PAYLOAD_URL="offline"
 PAYLOAD_COMPRESSED_SIZE=""
 PAYLOAD_RAM_AVAILABLE=""
 PAYLOAD_RAM_REQUIRED=""
+PAYLOAD_CUSTOM_CHECKSUM_STATUS=""
+CUSTOM_BUILD_WORKDIR=""
+CUSTOM_BUILD_WORKSPACE_MOUNTED=0
+CUSTOM_BUILD_WORKSPACE_LIMIT_BYTES=""
+CUSTOM_BUILD_ERROR=""
+CUSTOM_BUILD_GZIP_PID=""
+CUSTOM_BUILD_MAX_COMPRESSED_BYTES="${OWRT_CUSTOM_BUILD_MAX_COMPRESSED_BYTES:-1073741824}"
+CUSTOM_BUILD_MAX_UNCOMPRESSED_BYTES="${OWRT_CUSTOM_BUILD_MAX_UNCOMPRESSED_BYTES:-4294967295}"
+CUSTOM_BUILD_RAM_RESERVE_BYTES="${OWRT_CUSTOM_BUILD_RAM_RESERVE_BYTES:-268435456}"
 SAFE_UPGRADE_RAW_PAYLOAD=""
 SAFE_UPGRADE_STAGING_ERROR=""
 SAFE_UPGRADE_RAM_RESERVE_BYTES="${OWRT_SAFE_UPGRADE_RAM_RESERVE_BYTES:-134217728}"
@@ -290,6 +303,11 @@ cleanup() {
 	CLEANED_UP=1
 	WAN_PPP_PASSWORD=""
 	NETINSTALL_PPP_PASSWORD=""
+	CUSTOM_BUILD_GZIP_PID="${CUSTOM_BUILD_GZIP_PID:-}"
+	case "$CUSTOM_BUILD_GZIP_PID" in
+		''|*[!0-9]*) ;;
+		*) kill "$CUSTOM_BUILD_GZIP_PID" >/dev/null 2>&1 || true ;;
+	esac
 	local_mouse_stop
 	if command -v restore_netinstall_network >/dev/null 2>&1; then
 		restore_netinstall_network
@@ -299,6 +317,9 @@ cleanup() {
 	fi
 	if command -v clear_safe_upgrade_raw_payload >/dev/null 2>&1; then
 		clear_safe_upgrade_raw_payload
+	fi
+	if command -v custom_build_cleanup >/dev/null 2>&1; then
+		custom_build_cleanup
 	fi
 	for write_pid in "$WRITE_GZIP_PID" "$WRITE_PV_PID" "$WRITE_DD_PID"; do
 		case "$write_pid" in
@@ -346,7 +367,9 @@ cleanup() {
 	esac
 	rm -f "$DISK_LIST" "$NIC_LIST" "$NIC_CHOICE_LIST" "$MENU_LIST" \
 		"$CONFIG_IMPORT_PARTITION_LIST" "$CONFIG_IMPORT_ARCHIVE_LIST" \
-		"$CONFIG_IMPORT_SCAN_LIST" "$STORAGE_PARTITION_LIST" "$TARGET_MOUNT_LIST"
+		"$CONFIG_IMPORT_SCAN_LIST" "$CUSTOM_BUILD_LIST" \
+		"$CUSTOM_BUILD_PARTITION_LIST" "$CUSTOM_BUILD_SCAN_LIST" \
+		"$STORAGE_PARTITION_LIST" "$TARGET_MOUNT_LIST"
 	rm -f "$STORAGE_DATA_LAYOUT_LIST" "$STORAGE_DATA_REQUEST_LIST" \
 		"$STORAGE_EXISTING_DATA_LAYOUT_LIST"
 	for write_fifo in "$WRITE_SOURCE_FIFO" "$WRITE_OUTPUT_FIFO" "$WRITE_PROGRESS_FIFO"; do
@@ -391,6 +414,16 @@ else
 	. "$STORAGE_LIB_LOCAL"
 fi
 
+CUSTOM_BUILD_LIB="${CUSTOM_BUILD_LIB:-/usr/libexec/owrt-installer-custom-build}"
+if [ -r "$CUSTOM_BUILD_LIB" ]; then
+	# shellcheck source=/dev/null
+	. "$CUSTOM_BUILD_LIB"
+else
+	CUSTOM_BUILD_LIB_LOCAL="$(dirname "$UI_LIB")/owrt-installer-custom-build"
+	# shellcheck source=files-installer/usr/libexec/owrt-installer-custom-build
+	. "$CUSTOM_BUILD_LIB_LOCAL"
+fi
+
 usage() {
 	cat <<'EOF'
 Usage:
@@ -418,6 +451,7 @@ Usage:
   owrt-install --target /dev/nvme0n1 --yes-i-know-this-will-erase-data
   owrt-install --download-latest
   owrt-install --check-latest
+  owrt-install --custom-build /path/to/openwrt-x86-64-custom.img.gz
   owrt-install --dry-run
 
 Clean, import, and reinstall/rescue modes erase the selected disk completely.
@@ -428,6 +462,9 @@ Removable disks and the detected live boot disk are blocked by default.
 the existing target selection, review, and exact destructive confirmation flow.
 --check-latest offers that download only when the official stable release is
 newer than the embedded image; network failure falls back to the embedded image.
+--custom-build stages and validates a local x86/64 generic ext4 combined
+*.img.gz file in RAM. Interactive mode also discovers direct image files under
+/CUSTOM_BUILD on the installer, remastered ISO, USB, or Ventoy media.
 --config-backup accepts a standard OpenWrt sysupgrade .tar.gz, validates and
 stages it in RAM, and applies it only after the target image has been written.
 --storage-profile accepts compatible, expanded, fill, or custom. Compatible is
@@ -606,6 +643,7 @@ reset_to_embedded_payload() {
 	PAYLOAD_COMPRESSED_SIZE=""
 	PAYLOAD_RAM_AVAILABLE=""
 	PAYLOAD_RAM_REQUIRED=""
+	PAYLOAD_CUSTOM_CHECKSUM_STATUS=""
 }
 
 init_netinstall_workdir() {
@@ -1271,6 +1309,67 @@ check_for_newer_payload() {
 			reset_to_embedded_payload
 			;;
 	esac
+}
+
+prepare_initial_payload() {
+	if [ -n "$CUSTOM_BUILD_SOURCE_REQUEST" ]; then
+		ui_install_stage "Custom build" "Copying and validating the requested custom OpenWrt image in RAM." "$INSTALL_LOG"
+		custom_build_prepare_path "$CUSTOM_BUILD_SOURCE_REQUEST" "$CUSTOM_BUILD_SOURCE_REQUEST" ||
+			die "$CUSTOM_BUILD_ERROR"
+		if [ "$ASSUME_YES" = "1" ]; then
+			warn "Using unauthenticated custom image $PAYLOAD_FILENAME with SHA-256 $(json_value payload_sha256)"
+		else
+			custom_build_confirm_interactive || die "Custom image was not trusted"
+			ui_notice "Custom build ready" "$PAYLOAD_FILENAME was copied to RAM and validated for $PAYLOAD_BOOT_MODE. SHA-256: $(json_value payload_sha256)."
+		fi
+		return 0
+	fi
+	if [ "$DOWNLOAD_LATEST" = "1" ]; then
+		prepare_online_payload
+		return 0
+	fi
+
+	if [ -z "$TARGET" ] && custom_build_discover; then
+		while :; do
+			menu_reset
+			if [ "$CHECK_LATEST" = "1" ]; then
+				menu_add "automatic" "Automatic official stable check (recommended)"
+			else
+				menu_add "automatic" "Use the embedded OpenWrt image (recommended)"
+			fi
+			menu_add "custom" "Choose an image from CUSTOM_BUILD"
+			menu_add "embedded" "Use the embedded offline OpenWrt image"
+			menu_add "cancel" "Cancel and return to shell"
+			menu_note "Custom images were found. Official images retain signature verification; custom images require a separate trust warning."
+			select_from_menu "Select OpenWrt image source" "image source"
+			case "$SELECTED_VALUE" in
+				automatic)
+					if [ "$CHECK_LATEST" = "1" ]; then
+						check_for_newer_payload
+					else
+						reset_to_embedded_payload
+					fi
+					return 0
+					;;
+				custom)
+					custom_build_status=0
+					custom_build_prepare_interactive || custom_build_status=$?
+					[ "$custom_build_status" -eq 0 ] && return 0
+					;;
+				embedded)
+					reset_to_embedded_payload
+					return 0
+					;;
+				cancel) die "Installation cancelled" ;;
+			esac
+		done
+	fi
+
+	if [ "$CHECK_LATEST" = "1" ]; then
+		check_for_newer_payload
+	else
+		reset_to_embedded_payload
+	fi
 }
 
 verify_payload() {
@@ -3210,6 +3309,7 @@ payload_sha256=$PAYLOAD_SHA256
 payload_source=$PAYLOAD_SOURCE_ID
 openwrt_version=$PAYLOAD_VERSION
 payload_filename=$PAYLOAD_FILENAME
+payload_checksum_status=${PAYLOAD_CUSTOM_CHECKSUM_STATUS:-not-applicable}
 image_type=$PAYLOAD_IMAGE_TYPE
 boot_mode=$PAYLOAD_BOOT_MODE
 payload_url=$PAYLOAD_URL
@@ -3290,6 +3390,12 @@ show_summary() {
 	fi
 	if [ "$PAYLOAD_SOURCE_ID" = "downloaded-official" ]; then
 		printf '  RAM download: %s compressed; %s required with reserve\n' \
+			"$(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE")" \
+			"$(bytes_as_mib "$PAYLOAD_RAM_REQUIRED")"
+	elif [ "$PAYLOAD_SOURCE_ID" = "custom-build" ]; then
+		printf '  Custom trust: %s; source is not authenticated by OpenWrt\n' \
+			"$PAYLOAD_CUSTOM_CHECKSUM_STATUS"
+		printf '  RAM copy:     %s compressed; %s required with reserve\n' \
 			"$(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE")" \
 			"$(bytes_as_mib "$PAYLOAD_RAM_REQUIRED")"
 	fi
@@ -3454,11 +3560,7 @@ run_install() {
 	autostart_serial_marker "OWRT_INSTALLER_UI_BACKEND=${UI_MODE_ACTUAL:-line}"
 	ui_welcome_screen "$INSTALLER_VERSION" "$AUTO_STARTED"
 
-	if [ "$DOWNLOAD_LATEST" = "1" ]; then
-		prepare_online_payload
-	elif [ "$CHECK_LATEST" = "1" ]; then
-		check_for_newer_payload
-	fi
+	prepare_initial_payload
 	ui_install_stage "Verify payload" "Checking the selected local OpenWrt image integrity." "$INSTALL_LOG"
 	verify_payload
 	ui_set_payload_version "$PAYLOAD_VERSION"
@@ -3782,6 +3884,11 @@ parse_args() {
 				CHECK_LATEST=1
 				shift
 				;;
+			--custom-build)
+				[ "$#" -ge 2 ] || die "--custom-build requires an .img.gz file"
+				CUSTOM_BUILD_SOURCE_REQUEST="$2"
+				shift 2
+				;;
 			--autostart)
 				AUTO_STARTED=1
 				shift
@@ -3809,6 +3916,9 @@ parse_args() {
 	fi
 	[ "$RESCUE_EXISTING" != "1" ] || [ "$SAFE_UPGRADE_EXISTING" != "1" ] ||
 		die "--rescue-existing cannot be combined with --safe-upgrade-existing"
+	[ -z "$CUSTOM_BUILD_SOURCE_REQUEST" ] ||
+		{ [ "$DOWNLOAD_LATEST" = "0" ] && [ "$CHECK_LATEST" = "0" ]; } ||
+		die "--custom-build cannot be combined with --download-latest or --check-latest"
 	if [ "$RESCUE_EXISTING" = "1" ] || [ "$SAFE_UPGRADE_EXISTING" = "1" ]; then
 		requested_existing_option="--rescue-existing"
 		[ "$SAFE_UPGRADE_EXISTING" = "1" ] && requested_existing_option="--safe-upgrade-existing"

@@ -64,8 +64,8 @@ log "Synchronizing pinned SDK feeds"
 	make package/owrt-input-mousedev/compile NO_DEPS=1 V=sc
 )
 
-newt_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'libnewt-0.52.24-r3.apk' | head -n 1)"
-whiptail_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'whiptail-0.52.24-r3.apk' | head -n 1)"
+newt_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'libnewt-0.52.24-r4.apk' | head -n 1)"
+whiptail_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'whiptail-0.52.24-r4.apk' | head -n 1)"
 gpm_apk="$(find "$SDK_DIR/bin/packages" -type f -name 'gpm-daemon-1.20.7-r5.apk' | head -n 1)"
 mousedev_apk="$(find "$SDK_DIR/bin" -type f -name 'kmod-input-mousedev-*.apk' | head -n 1)"
 

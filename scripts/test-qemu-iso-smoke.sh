@@ -2012,6 +2012,136 @@ run_local_disk_missing_smoke() {
 	log "Missing local OpenWrt disk menu smoke passed"
 }
 
+prepare_custom_build_usb() {
+	custom_mode="$1"
+	case "$custom_mode" in
+		bios) custom_image_type="ext4-combined" ;;
+		uefi) custom_image_type="ext4-combined-efi" ;;
+		*) die "Unsupported custom-build QEMU mode: $custom_mode" ;;
+	esac
+	custom_source="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f \
+		-name "*-${PROFILE}-${custom_image_type}.img.gz" | head -n 1)"
+	[ -s "$custom_source" ] || die "Custom-build $custom_image_type source image is missing"
+	CUSTOM_BUILD_QEMU_USB="$SMOKE_DIR/custom-build-$custom_mode-usb.img"
+	CUSTOM_BUILD_QEMU_FILENAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-${custom_image_type}.img.gz"
+	CUSTOM_BUILD_QEMU_SHA="$(sha256sum "$custom_source" | awk '{ print $1 }')"
+	custom_sidecar="$SMOKE_DIR/$CUSTOM_BUILD_QEMU_FILENAME.sha256"
+	printf '%s  %s\n' "$CUSTOM_BUILD_QEMU_SHA" "$CUSTOM_BUILD_QEMU_FILENAME" > "$custom_sidecar"
+	rm -f "$CUSTOM_BUILD_QEMU_USB"
+	truncate -s 64M "$CUSTOM_BUILD_QEMU_USB"
+	"$IMAGEBUILDER_DIR/staging_dir/host/bin/mkfs.fat" -n CUSTOMBUILD \
+		"$CUSTOM_BUILD_QEMU_USB" >/dev/null
+	"$IMAGEBUILDER_DIR/staging_dir/host/bin/mmd" -i "$CUSTOM_BUILD_QEMU_USB" \
+		::/CUSTOM_BUILD
+	"$IMAGEBUILDER_DIR/staging_dir/host/bin/mcopy" -i "$CUSTOM_BUILD_QEMU_USB" \
+		"$custom_source" "::/CUSTOM_BUILD/$CUSTOM_BUILD_QEMU_FILENAME"
+	"$IMAGEBUILDER_DIR/staging_dir/host/bin/mcopy" -i "$CUSTOM_BUILD_QEMU_USB" \
+		"$custom_sidecar" "::/CUSTOM_BUILD/$CUSTOM_BUILD_QEMU_FILENAME.sha256"
+}
+
+run_custom_build_smoke() {
+	custom_mode="$1"
+	case "$custom_mode" in
+		bios)
+			custom_boot_label="BIOS"
+			custom_image_type="ext4-combined"
+			;;
+		uefi)
+			custom_boot_label="UEFI"
+			custom_image_type="ext4-combined-efi"
+			;;
+		*) die "Unsupported custom-build QEMU mode: $custom_mode" ;;
+	esac
+	prepare_custom_build_usb "$custom_mode"
+	serial_log="$SMOKE_DIR/custom-build-$custom_mode-iso.log"
+	qemu_log="$SMOKE_DIR/custom-build-$custom_mode-qemu.log"
+	monitor_socket="$SMOKE_DIR/custom-build-$custom_mode-monitor.sock"
+	logo_screenshot="$SMOKE_DIR/custom-build-$custom_mode-logo.ppm"
+	target_disk="$SMOKE_DIR/target-custom-build-$custom_mode.qcow2"
+	boot_serial_log="$SMOKE_DIR/custom-build-$custom_mode-installed-boot.log"
+	boot_qemu_log="$SMOKE_DIR/custom-build-$custom_mode-installed-boot-qemu.log"
+	boot_serial_socket="$SMOKE_DIR/custom-build-$custom_mode-installed-serial.sock"
+	boot_monitor_socket="$SMOKE_DIR/custom-build-$custom_mode-installed-monitor.sock"
+	vars_copy="$SMOKE_DIR/OVMF_VARS_4M-custom-build-$custom_mode.fd"
+
+	rm -f "$target_disk" "$serial_log" "$qemu_log" "$monitor_socket" \
+		"$logo_screenshot" "$boot_serial_log" "$boot_qemu_log" \
+		"$boot_serial_socket" "$boot_monitor_socket" "$vars_copy"
+	create_qcow2 "$target_disk" 6G
+
+	set -- \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none -vga std -serial "file:$serial_log" \
+		-monitor "unix:$monitor_socket,server=on,wait=off"
+	if [ "$custom_mode" = "uefi" ]; then
+		find_ovmf
+		cp "$QEMU_OVMF_VARS" "$vars_copy"
+		set -- "$@" \
+			-drive "if=pflash,format=raw,readonly=on,file=$QEMU_OVMF_CODE" \
+			-drive "if=pflash,format=raw,file=$vars_copy"
+	fi
+	set -- "$@" \
+		-cdrom "$ISO_IMAGE" -boot "once=d,menu=off" \
+		-drive "file=$target_disk,format=qcow2,if=virtio" \
+		-device qemu-xhci,id=custom_xhci \
+		-drive "file=$CUSTOM_BUILD_QEMU_USB,format=raw,if=none,readonly=on,id=custom_media" \
+		-device usb-storage,drive=custom_media,id=custom_usb \
+		-nic user,model=e1000 -nic user,model=e1000
+
+	log "Starting $custom_boot_label CUSTOM_BUILD USB install smoke test"
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$qemu_log" "$@"
+	install_pid="$QEMU_STARTED_PID"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=image-source" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_command "$monitor_socket" "screendump $logo_screenshot"
+	hmp_send_keys "$monitor_socket" down ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=custom-build-select" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=custom-build-warning" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=custom-build-ready" "$install_pid" "$QEMU_INSTALL_WAIT"
+	hmp_send_keys "$monitor_socket" ret
+	drive_clean_install_flow "$serial_log" "$monitor_socket" "$install_pid" compatible "$QEMU_INSTALL_WAIT"
+
+	assert_nonblank_ppm "$logo_screenshot"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_CUSTOM_BUILD_IMAGE=$CUSTOM_BUILD_QEMU_FILENAME"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_CUSTOM_BUILD_CHECKSUM=sidecar-verified-unsigned"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_CUSTOM_BUILD_VERIFIED=1"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_WRITE_PROGRESS=100"
+	assert_log_not_contains "$serial_log" "Installation failed"
+
+	set -- \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none \
+		-chardev "socket,id=serial0,path=$boot_serial_socket,server=on,wait=off,logfile=$boot_serial_log" \
+		-serial chardev:serial0 \
+		-monitor "unix:$boot_monitor_socket,server=on,wait=off"
+	if [ "$custom_mode" = "uefi" ]; then
+		set -- "$@" \
+			-drive "if=pflash,format=raw,readonly=on,file=$QEMU_OVMF_CODE" \
+			-drive "if=pflash,format=raw,file=$vars_copy"
+	fi
+	set -- "$@" \
+		-drive "file=$target_disk,format=qcow2,if=virtio" -boot c \
+		-nic user,model=e1000 -nic user,model=e1000
+	log "Booting the $custom_boot_label CUSTOM_BUILD installation"
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$boot_qemu_log" "$@"
+	boot_pid="$QEMU_STARTED_PID"
+	wait_for_log_marker "$boot_serial_log" "Please press Enter to activate this console." "$boot_pid" "$QEMU_INSTALL_WAIT"
+	{ printf '\r'; sleep 1; printf 'cat /etc/openwrt-installer-release\r'; } |
+		nc -N -U "$boot_serial_socket" >/dev/null 2>&1 ||
+		die "Could not query the custom-build installed system console"
+	wait_for_log_marker "$boot_serial_log" "payload_source=custom-build" "$boot_pid" "$QEMU_INSTALL_WAIT"
+	hmp_command "$boot_monitor_socket" quit
+	wait "$boot_pid" || true
+	assert_log_contains "$boot_serial_log" "openwrt_version=custom-$OPENWRT_VERSION"
+	assert_log_contains "$boot_serial_log" "payload_filename=$CUSTOM_BUILD_QEMU_FILENAME"
+	assert_log_contains "$boot_serial_log" "payload_checksum_status=sidecar-verified-unsigned"
+	assert_log_contains "$boot_serial_log" "image_type=$custom_image_type"
+	assert_log_contains "$boot_serial_log" "boot_mode=$custom_boot_label"
+	assert_log_contains "$boot_serial_log" "target_disk=/dev/vda"
+	log "$custom_boot_label CUSTOM_BUILD USB install/boot smoke passed"
+}
+
 run_bios_smoke() {
 	log_file="$SMOKE_DIR/bios-iso.log"
 	target_disk="$SMOKE_DIR/target-bios.qcow2"
@@ -2081,8 +2211,8 @@ run_uefi_smoke() {
 }
 
 case "$MODE" in
-	all|bios|uefi|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing) ;;
-	*) die "Usage: $0 [all|bios|uefi|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing]" ;;
+	all|bios|uefi|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing) ;;
+	*) die "Usage: $0 [all|bios|uefi|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing]" ;;
 esac
 
 [ -s "$ISO_IMAGE" ] || die "Hybrid ISO is missing. Run: make iso"
@@ -2090,7 +2220,7 @@ require_cmd timeout
 require_cmd grep
 require_cmd tail
 case "$MODE" in
-	all|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing)
+	all|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing)
 		require_cmd nc
 		;;
 esac
@@ -2101,7 +2231,7 @@ case "$MODE" in
 		;;
 esac
 case "$MODE" in
-	all|standard-upgrade|rescue|config-import|local-disk|local-disk-bios|local-disk-uefi)
+	all|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|local-disk|local-disk-bios|local-disk-uefi)
 		require_cmd gzip
 		require_cmd fdisk
 		[ -s "$TARGET_IMAGE" ] || die "Target image is missing. Run: make target"
@@ -2110,7 +2240,7 @@ case "$MODE" in
 		;;
 esac
 case "$MODE" in
-	all|vga|install|storage|storage-bounded|storage-image|storage-custom)
+	all|vga|install|storage|storage-bounded|storage-image|storage-custom|custom-build|custom-build-bios|custom-build-uefi)
 		require_cmd od
 		;;
 esac
@@ -2152,6 +2282,8 @@ case "$MODE" in
 		run_standard_sysupgrade_smoke
 		run_rescue_smoke
 		run_config_import_smoke
+		run_custom_build_smoke bios
+		run_custom_build_smoke uefi
 		;;
 	bios)
 		run_bios_smoke
@@ -2193,6 +2325,16 @@ case "$MODE" in
 		;;
 	config-import)
 		run_config_import_smoke
+		;;
+	custom-build)
+		run_custom_build_smoke bios
+		run_custom_build_smoke uefi
+		;;
+	custom-build-bios)
+		run_custom_build_smoke bios
+		;;
+	custom-build-uefi)
+		run_custom_build_smoke uefi
 		;;
 	online)
 		run_online_install_smoke bios

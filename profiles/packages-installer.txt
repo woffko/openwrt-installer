@@ -16,6 +16,7 @@ kmod-scsi-core
 kmod-fs-vfat
 kmod-fs-exfat
 kmod-fs-ntfs3
+kmod-fs-isofs
 kmod-nls-cp437
 kmod-nls-iso8859-1
 parted

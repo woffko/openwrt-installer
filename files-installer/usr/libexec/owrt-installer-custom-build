@@ -1,0 +1,536 @@
+# shellcheck shell=sh
+# shellcheck disable=SC2034,SC2154
+
+custom_build_clear_workspace() {
+	if [ "$CUSTOM_BUILD_WORKSPACE_MOUNTED" = "1" ]; then
+		umount "$CUSTOM_BUILD_WORKDIR" >> "$INSTALL_LOG" 2>&1 ||
+			umount -l "$CUSTOM_BUILD_WORKDIR" >> "$INSTALL_LOG" 2>&1 || true
+		CUSTOM_BUILD_WORKSPACE_MOUNTED=0
+	fi
+	case "$CUSTOM_BUILD_WORKDIR" in
+		"${TMPDIR:-/tmp}"/owrt-custom-build.*) rm -rf "$CUSTOM_BUILD_WORKDIR" ;;
+	esac
+	CUSTOM_BUILD_WORKDIR=""
+	CUSTOM_BUILD_GZIP_PID=""
+	CUSTOM_BUILD_WORKSPACE_LIMIT_BYTES=""
+}
+
+custom_build_cleanup() {
+	case "$CUSTOM_BUILD_GZIP_PID" in
+		''|*[!0-9]*) ;;
+		*)
+			kill "$CUSTOM_BUILD_GZIP_PID" >/dev/null 2>&1 || true
+			wait "$CUSTOM_BUILD_GZIP_PID" >/dev/null 2>&1 || true
+			;;
+	esac
+	CUSTOM_BUILD_GZIP_PID=""
+	config_import_unmount_source
+	custom_build_clear_workspace
+}
+
+custom_build_mem_available_bytes() {
+	if [ "${OWRT_CUSTOM_BUILD_TEST_MODE:-0}" = "1" ] &&
+		is_positive_integer "${OWRT_CUSTOM_BUILD_TEST_MEM_AVAILABLE:-}"; then
+		printf '%s\n' "$OWRT_CUSTOM_BUILD_TEST_MEM_AVAILABLE"
+		return 0
+	fi
+	custom_build_mem_kib="$(awk '$1 == "MemAvailable:" { print $2; exit }' /proc/meminfo 2>/dev/null || true)"
+	is_positive_integer "$custom_build_mem_kib" || return 1
+	printf '%s\n' "$((custom_build_mem_kib * 1024))"
+}
+
+custom_build_safe_relative_path() {
+	custom_build_relative="$1"
+	case "$custom_build_relative" in
+		CUSTOM_BUILD/*.img.gz) ;;
+		*) return 1 ;;
+	esac
+	case "$custom_build_relative" in
+		*/*/*|*'|'*|*\\*) return 1 ;;
+	esac
+	printf '%s\n' "$custom_build_relative" |
+		LC_ALL=C grep -Eq '^CUSTOM_BUILD/[A-Za-z0-9_.@+,:=% -]+\.img\.gz$'
+}
+
+custom_build_add_directory() {
+	custom_build_root="$1"
+	custom_build_device="$2"
+	custom_build_fstype="$3"
+	custom_build_label="$4"
+	custom_build_test_source="$5"
+	custom_build_dir="$custom_build_root/CUSTOM_BUILD"
+	[ -d "$custom_build_dir" ] && [ ! -L "$custom_build_dir" ] || return 0
+
+	find "$custom_build_dir" -xdev -maxdepth 1 -type f -name '*.img.gz' -print \
+		2>/dev/null | LC_ALL=C sort > "$CUSTOM_BUILD_SCAN_LIST" || true
+	while IFS= read -r custom_build_found; do
+		if [ ! -f "$custom_build_found" ] || [ -L "$custom_build_found" ]; then
+			continue
+		fi
+		custom_build_relative="${custom_build_found#"$custom_build_root"/}"
+		custom_build_safe_relative_path "$custom_build_relative" || continue
+		custom_build_count="$(wc -l < "$CUSTOM_BUILD_LIST" | tr -d ' ')"
+		[ "$custom_build_count" -lt 64 ] || break
+		custom_build_size="$(stat -c '%s' "$custom_build_found" 2>/dev/null || true)"
+		case "$custom_build_size" in
+			''|*[!0-9]*) custom_build_size=0 ;;
+		esac
+		custom_build_name="$(basename "$custom_build_relative")"
+		custom_build_id=$((custom_build_count + 1))
+		printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \
+			"$custom_build_id" "$custom_build_device" "$custom_build_fstype" \
+			"$custom_build_relative" "$custom_build_label" "$custom_build_test_source" \
+			"$custom_build_name" "$custom_build_size" >> "$CUSTOM_BUILD_LIST"
+	done < "$CUSTOM_BUILD_SCAN_LIST"
+}
+
+custom_build_append_optical_sources() {
+	[ "${OWRT_CUSTOM_BUILD_TEST_MODE:-0}" != "1" ] || return 0
+	for custom_build_sys_path in /sys/class/block/sr*; do
+		[ -e "$custom_build_sys_path" ] || continue
+		custom_build_name="$(basename "$custom_build_sys_path")"
+		custom_build_device="/dev/$custom_build_name"
+		[ -b "$custom_build_device" ] || continue
+		custom_build_fstype="$(blkid -o value -s TYPE "$custom_build_device" 2>/dev/null || true)"
+		[ "$custom_build_fstype" = "iso9660" ] || continue
+		custom_build_size="$(lsblk -bdno SIZE "$custom_build_device" 2>/dev/null | head -n 1 || true)"
+		custom_build_label="$(blkid -o value -s LABEL "$custom_build_device" 2>/dev/null || true)"
+		custom_build_label="$(config_import_sanitize_field "$custom_build_label")"
+		printf '%s|%s|%s|%s|\n' "$custom_build_device" "$custom_build_fstype" \
+			"${custom_build_size:-unknown}" "${custom_build_label:-optical}" \
+			>> "$CUSTOM_BUILD_PARTITION_LIST"
+	done
+}
+
+custom_build_discover() {
+	CUSTOM_BUILD_ERROR=""
+	: > "$CUSTOM_BUILD_LIST"
+	: > "$CUSTOM_BUILD_PARTITION_LIST"
+	custom_build_local_root="${OWRT_CUSTOM_BUILD_LOCAL_ROOT:-/}"
+	custom_build_add_directory "$custom_build_local_root" "runtime" "directory" \
+		"installer media" "$custom_build_local_root"
+
+	if config_import_enumerate_partitions; then
+		cp "$CONFIG_IMPORT_PARTITION_LIST" "$CUSTOM_BUILD_PARTITION_LIST" || {
+			CUSTOM_BUILD_ERROR="Could not copy the removable-media source list."
+			return 1
+		}
+	fi
+	custom_build_append_optical_sources
+
+	while IFS='|' read -r custom_build_device custom_build_fstype custom_build_size \
+		custom_build_label custom_build_test_source; do
+		[ -n "$custom_build_device" ] || continue
+		if [ "${OWRT_CUSTOM_BUILD_TEST_MODE:-0}" != "1" ]; then
+			case "$custom_build_device" in
+				/dev/sr*) ;;
+				/dev/*)
+					custom_build_parent="$(parent_disk "$custom_build_device")"
+					is_live_boot_disk "$custom_build_parent" && continue
+					;;
+			esac
+		fi
+		if ! config_import_mount_source "$custom_build_device" "$custom_build_fstype" \
+			"$custom_build_test_source"; then
+			append_install_log "WARN: CUSTOM_BUILD source skipped: $CONFIG_IMPORT_ERROR"
+			continue
+		fi
+		custom_build_add_directory "$CONFIG_IMPORT_MOUNTDIR" "$custom_build_device" \
+			"$custom_build_fstype" "${custom_build_label:-unlabeled}" \
+			"$custom_build_test_source"
+		config_import_unmount_source
+	done < "$CUSTOM_BUILD_PARTITION_LIST"
+	config_import_unmount_source
+	[ -s "$CUSTOM_BUILD_LIST" ]
+}
+
+custom_build_select_image() {
+	menu_reset
+	while IFS='|' read -r custom_build_id custom_build_device custom_build_fstype \
+		custom_build_relative custom_build_label custom_build_test_source \
+		custom_build_name custom_build_size; do
+		[ -n "$custom_build_id" ] || continue
+		menu_add "$custom_build_id" "$custom_build_name [$custom_build_device ${custom_build_label:-unlabeled}, $(bytes_as_mib "$custom_build_size")]"
+	done < "$CUSTOM_BUILD_LIST"
+	menu_add "__back" "Back to image source"
+	menu_warning "CUSTOM_BUILD images are user-provided and are not authenticated by the OpenWrt release key."
+	select_from_menu "Select custom OpenWrt build" "custom image"
+	[ "$SELECTED_VALUE" != "__back" ] || return 2
+	CUSTOM_BUILD_SELECTED_LINE="$(sed -n "${SELECTED_VALUE}p" "$CUSTOM_BUILD_LIST")"
+	[ -n "$CUSTOM_BUILD_SELECTED_LINE" ] || {
+		CUSTOM_BUILD_ERROR="The selected custom image entry disappeared."
+		return 1
+	}
+}
+
+custom_build_init_workspace() {
+	custom_build_workspace_limit="$1"
+	custom_build_clear_workspace
+	CUSTOM_BUILD_WORKSPACE_LIMIT_BYTES="$custom_build_workspace_limit"
+	CUSTOM_BUILD_WORKDIR="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/owrt-custom-build.XXXXXX")" || {
+		CUSTOM_BUILD_WORKDIR=""
+		CUSTOM_BUILD_ERROR="Could not create the private custom-build RAM workspace."
+		return 1
+	}
+	chmod 0700 "$CUSTOM_BUILD_WORKDIR" || {
+		CUSTOM_BUILD_ERROR="Could not secure the custom-build RAM workspace."
+		custom_build_clear_workspace
+		return 1
+	}
+	if [ "${OWRT_CUSTOM_BUILD_TEST_MODE:-0}" != "1" ]; then
+		is_positive_integer "$CUSTOM_BUILD_WORKSPACE_LIMIT_BYTES" || {
+			CUSTOM_BUILD_ERROR="The private custom-build tmpfs limit is invalid."
+			custom_build_clear_workspace
+			return 1
+		}
+		if ! mount -t tmpfs \
+			-o "size=$CUSTOM_BUILD_WORKSPACE_LIMIT_BYTES,mode=0700,nosuid,nodev,noexec" \
+			owrt-custom-build "$CUSTOM_BUILD_WORKDIR" >> "$INSTALL_LOG" 2>&1; then
+			CUSTOM_BUILD_ERROR="Could not mount the size-bounded private custom-build tmpfs."
+			custom_build_clear_workspace
+			return 1
+		fi
+		CUSTOM_BUILD_WORKSPACE_MOUNTED=1
+	fi
+}
+
+custom_build_copy_checksum() {
+	custom_build_source="$1"
+	custom_build_source_dir="$2"
+	custom_build_specific="$custom_build_source.sha256"
+	custom_build_sums="$custom_build_source_dir/sha256sums"
+	custom_build_checksum_count=0
+	CUSTOM_BUILD_CHECKSUM_KIND="none"
+	CUSTOM_BUILD_CHECKSUM_FILE=""
+
+	for custom_build_checksum_candidate in "$custom_build_specific" "$custom_build_sums"; do
+		if [ -e "$custom_build_checksum_candidate" ] || [ -L "$custom_build_checksum_candidate" ]; then
+			if [ ! -f "$custom_build_checksum_candidate" ] || [ -L "$custom_build_checksum_candidate" ]; then
+				CUSTOM_BUILD_ERROR="Custom checksum sidecar must be a regular non-symlink file."
+				return 1
+			fi
+			custom_build_checksum_count=$((custom_build_checksum_count + 1))
+			CUSTOM_BUILD_CHECKSUM_SOURCE="$custom_build_checksum_candidate"
+		fi
+	done
+	[ "$custom_build_checksum_count" -le 1 ] || {
+		CUSTOM_BUILD_ERROR="Both image-specific and sha256sums checksum files exist; keep exactly one."
+		return 1
+	}
+	[ "$custom_build_checksum_count" -eq 1 ] || return 0
+
+	custom_build_checksum_size="$(stat -c '%s' "$CUSTOM_BUILD_CHECKSUM_SOURCE" 2>/dev/null || true)"
+	if ! is_positive_integer "$custom_build_checksum_size" ||
+		[ "$custom_build_checksum_size" -gt 1048576 ]; then
+		CUSTOM_BUILD_ERROR="Custom checksum sidecar is empty or exceeds 1 MiB."
+		return 1
+	fi
+	CUSTOM_BUILD_CHECKSUM_FILE="$CUSTOM_BUILD_WORKDIR/checksum.txt"
+	cp "$CUSTOM_BUILD_CHECKSUM_SOURCE" "$CUSTOM_BUILD_CHECKSUM_FILE" || {
+		CUSTOM_BUILD_ERROR="Could not copy the custom checksum sidecar into RAM."
+		return 1
+	}
+	chmod 0600 "$CUSTOM_BUILD_CHECKSUM_FILE" || return 1
+	if [ "$CUSTOM_BUILD_CHECKSUM_SOURCE" = "$custom_build_specific" ]; then
+		CUSTOM_BUILD_CHECKSUM_KIND="specific"
+	else
+		CUSTOM_BUILD_CHECKSUM_KIND="sha256sums"
+	fi
+}
+
+custom_build_copy_to_ram() {
+	custom_build_source="$1"
+	custom_build_source_label="$2"
+	for custom_build_cmd in stat head cp sha256sum gzip wc mkfifo awk grep fdisk dd hexdump sed mount umount; do
+		command -v "$custom_build_cmd" >/dev/null 2>&1 || {
+			CUSTOM_BUILD_ERROR="Required custom-build command is missing: $custom_build_cmd"
+			return 1
+		}
+	done
+	if [ ! -f "$custom_build_source" ] || [ -L "$custom_build_source" ]; then
+		CUSTOM_BUILD_ERROR="The selected custom image is not a regular non-symlink file."
+		return 1
+	fi
+	custom_build_requested_name="$(basename "$custom_build_source")"
+	printf '%s\n' "$custom_build_requested_name" |
+		LC_ALL=C grep -Eq '^[A-Za-z0-9_.@+,:=% -]+\.img\.gz$' || {
+		CUSTOM_BUILD_ERROR="The custom image filename contains unsupported characters or does not end in .img.gz."
+		return 1
+	}
+	custom_build_source_size="$(stat -c '%s' "$custom_build_source" 2>/dev/null || true)"
+	is_positive_integer "$custom_build_source_size" || {
+		CUSTOM_BUILD_ERROR="Could not determine a positive custom image size."
+		return 1
+	}
+	[ "$custom_build_source_size" -le "$CUSTOM_BUILD_MAX_COMPRESSED_BYTES" ] || {
+		CUSTOM_BUILD_ERROR="The custom image exceeds the 1 GiB compressed safety limit."
+		return 1
+	}
+	custom_build_mem_available="$(custom_build_mem_available_bytes || true)"
+	is_positive_integer "$custom_build_mem_available" || {
+		CUSTOM_BUILD_ERROR="Could not read MemAvailable for the custom image RAM gate."
+		return 1
+	}
+	custom_build_ram_required=$((custom_build_source_size + CUSTOM_BUILD_RAM_RESERVE_BYTES + 1048576))
+	[ "$custom_build_mem_available" -ge "$custom_build_ram_required" ] || {
+		CUSTOM_BUILD_ERROR="Insufficient RAM: $(bytes_as_mib "$custom_build_mem_available") available, $(bytes_as_mib "$custom_build_ram_required") required including reserve."
+		return 1
+	}
+	custom_build_workspace_limit=$((custom_build_source_size + 4194304))
+	custom_build_init_workspace "$custom_build_workspace_limit" || return 1
+	custom_build_source_dir="${custom_build_source%/*}"
+	[ "$custom_build_source_dir" != "$custom_build_source" ] || custom_build_source_dir="."
+	custom_build_copy_checksum "$custom_build_source" "$custom_build_source_dir" || return 1
+
+	CUSTOM_BUILD_RAM_PAYLOAD="$CUSTOM_BUILD_WORKDIR/target.img.gz"
+	if ! head -c "$custom_build_source_size" "$custom_build_source" > "$CUSTOM_BUILD_RAM_PAYLOAD"; then
+		CUSTOM_BUILD_ERROR="The bounded custom image copy failed."
+		return 1
+	fi
+	chmod 0600 "$CUSTOM_BUILD_RAM_PAYLOAD" || return 1
+	custom_build_copied_size="$(stat -c '%s' "$CUSTOM_BUILD_RAM_PAYLOAD" 2>/dev/null || true)"
+	custom_build_post_size="$(stat -c '%s' "$custom_build_source" 2>/dev/null || true)"
+	if [ "$custom_build_copied_size" != "$custom_build_source_size" ] ||
+		[ "$custom_build_post_size" != "$custom_build_source_size" ]; then
+		CUSTOM_BUILD_ERROR="The custom image changed or was truncated during the bounded RAM copy."
+		return 1
+	fi
+	CUSTOM_BUILD_SOURCE_LABEL="$custom_build_source_label"
+	CUSTOM_BUILD_SOURCE_FILENAME="$custom_build_requested_name"
+	PAYLOAD_RAM_AVAILABLE="$custom_build_mem_available"
+	PAYLOAD_RAM_REQUIRED="$custom_build_ram_required"
+}
+
+custom_build_expected_sha256() {
+	custom_build_checksum_file="$1"
+	custom_build_checksum_kind="$2"
+	custom_build_checksum_name="$3"
+	LC_ALL=C awk -v kind="$custom_build_checksum_kind" -v wanted="$custom_build_checksum_name" '
+		{
+			line = $0
+			sub(/\r$/, "", line)
+			if (length(line) < 64) next
+			hash = tolower(substr(line, 1, 64))
+			if (length(hash) != 64 || hash ~ /[^0-9a-f]/) next
+			rest = substr(line, 65)
+			sub(/^[[:space:]]+\*/, "", rest)
+			sub(/^[[:space:]]+/, "", rest)
+			if ((kind == "specific" && rest == "") || rest == wanted) {
+				print hash
+				found++
+			}
+		}
+		END { if (found != 1) exit 1 }
+	' "$custom_build_checksum_file"
+}
+
+custom_build_true_uncompressed_size() {
+	custom_build_payload="$1"
+	custom_build_fifo="$CUSTOM_BUILD_WORKDIR/decompress.fifo"
+	custom_build_count_file="$CUSTOM_BUILD_WORKDIR/uncompressed-size"
+	rm -f "$custom_build_fifo" "$custom_build_count_file"
+	mkfifo "$custom_build_fifo" || {
+		CUSTOM_BUILD_ERROR="Could not create the bounded decompression FIFO."
+		return 1
+	}
+	gzip -dc "$custom_build_payload" > "$custom_build_fifo" 2>> "$INSTALL_LOG" &
+	CUSTOM_BUILD_GZIP_PID=$!
+	custom_build_limit_plus_one=$((CUSTOM_BUILD_MAX_UNCOMPRESSED_BYTES + 1))
+	if ! head -c "$custom_build_limit_plus_one" < "$custom_build_fifo" |
+		wc -c > "$custom_build_count_file"; then
+		kill "$CUSTOM_BUILD_GZIP_PID" >/dev/null 2>&1 || true
+		wait "$CUSTOM_BUILD_GZIP_PID" >/dev/null 2>&1 || true
+		CUSTOM_BUILD_GZIP_PID=""
+		rm -f "$custom_build_fifo"
+		CUSTOM_BUILD_ERROR="Could not count the custom image decompressed size."
+		return 1
+	fi
+	custom_build_true_size="$(tr -d '[:space:]' < "$custom_build_count_file")"
+	if ! is_positive_integer "$custom_build_true_size" ||
+		[ "$custom_build_true_size" -gt "$CUSTOM_BUILD_MAX_UNCOMPRESSED_BYTES" ]; then
+		kill "$CUSTOM_BUILD_GZIP_PID" >/dev/null 2>&1 || true
+		wait "$CUSTOM_BUILD_GZIP_PID" >/dev/null 2>&1 || true
+		CUSTOM_BUILD_GZIP_PID=""
+		rm -f "$custom_build_fifo"
+		CUSTOM_BUILD_ERROR="The custom image exceeds the 4 GiB decompressed safety limit."
+		return 1
+	fi
+	if ! wait "$CUSTOM_BUILD_GZIP_PID"; then
+		CUSTOM_BUILD_GZIP_PID=""
+		rm -f "$custom_build_fifo"
+		CUSTOM_BUILD_ERROR="The custom image decompression stream failed."
+		return 1
+	fi
+	CUSTOM_BUILD_GZIP_PID=""
+	rm -f "$custom_build_fifo"
+	[ "$((custom_build_true_size % 512))" -eq 0 ] || {
+		CUSTOM_BUILD_ERROR="The custom image decompressed size is not 512-byte aligned."
+		return 1
+	}
+	CUSTOM_BUILD_TRUE_SIZE="$custom_build_true_size"
+}
+
+custom_build_filename_version() {
+	custom_build_version="$(printf '%s\n' "$1" |
+		sed -n 's/^openwrt-\([A-Za-z0-9._+-][A-Za-z0-9._+-]*\)-x86-64-generic-.*\.img\.gz$/\1/p' |
+		sed -n '1p')"
+	if [ -n "$custom_build_version" ] && [ "${#custom_build_version}" -le 24 ]; then
+		printf 'custom-%s\n' "$custom_build_version"
+	else
+		printf '%s\n' "custom-unsigned"
+	fi
+}
+
+custom_build_validate_ram_image() {
+	CUSTOM_BUILD_ERROR=""
+	if ! gzip -t "$CUSTOM_BUILD_RAM_PAYLOAD" >> "$INSTALL_LOG" 2>&1; then
+		CUSTOM_BUILD_ERROR="The custom image has an invalid or truncated gzip stream."
+		return 1
+	fi
+	custom_build_actual_sha="$(sha256sum "$CUSTOM_BUILD_RAM_PAYLOAD" | awk '{ print $1 }')"
+	if [ "$CUSTOM_BUILD_CHECKSUM_KIND" != "none" ]; then
+		custom_build_expected_sha="$(custom_build_expected_sha256 \
+			"$CUSTOM_BUILD_CHECKSUM_FILE" "$CUSTOM_BUILD_CHECKSUM_KIND" \
+			"$CUSTOM_BUILD_SOURCE_FILENAME" 2>/dev/null || true)"
+		[ -n "$custom_build_expected_sha" ] || {
+			CUSTOM_BUILD_ERROR="The custom checksum file does not contain exactly one valid entry for the selected image."
+			return 1
+		}
+		[ "$custom_build_actual_sha" = "$custom_build_expected_sha" ] || {
+			CUSTOM_BUILD_ERROR="The custom image SHA-256 does not match its checksum sidecar."
+			return 1
+		}
+		PAYLOAD_CUSTOM_CHECKSUM_STATUS="sidecar-verified-unsigned"
+	else
+		PAYLOAD_CUSTOM_CHECKSUM_STATUS="locally-computed-unsigned"
+	fi
+
+	ui_install_stage "Inspect custom build" "Counting and validating the complete custom OpenWrt disk image." "$INSTALL_LOG"
+	custom_build_true_uncompressed_size "$CUSTOM_BUILD_RAM_PAYLOAD" || return 1
+	if [ "${OWRT_CUSTOM_BUILD_TEST_MODE:-0}" = "1" ] &&
+		[ -n "${OWRT_CUSTOM_BUILD_TEST_BOOT_MODE:-}" ]; then
+		custom_build_boot_mode="$OWRT_CUSTOM_BUILD_TEST_BOOT_MODE"
+	else
+		custom_build_boot_mode="$(netinstall_boot_mode || true)"
+	fi
+	case "$custom_build_boot_mode" in
+		bios)
+			custom_build_image_type="ext4-combined"
+			custom_build_boot_label="BIOS"
+			;;
+		uefi)
+			custom_build_image_type="ext4-combined-efi"
+			custom_build_boot_label="UEFI"
+			;;
+		*)
+			CUSTOM_BUILD_ERROR="Could not determine the current BIOS or UEFI boot mode."
+			return 1
+			;;
+	esac
+	if ! storage_inspect_payload_layout "$CUSTOM_BUILD_RAM_PAYLOAD" \
+		"$CUSTOM_BUILD_TRUE_SIZE" "$custom_build_boot_mode"; then
+		CUSTOM_BUILD_ERROR="Custom image rejected: $STORAGE_ERROR"
+		return 1
+	fi
+
+	custom_build_manifest="$CUSTOM_BUILD_WORKDIR/manifest.json"
+	custom_build_version="$(custom_build_filename_version "$CUSTOM_BUILD_SOURCE_FILENAME")"
+	cat > "$custom_build_manifest" <<EOF_CUSTOM_BUILD_MANIFEST
+{
+  "installer_version": "$INSTALLER_VERSION",
+  "openwrt_version": "$custom_build_version",
+  "target_arch": "x86_64",
+  "target_profile": "generic",
+  "image_type": "$custom_build_image_type",
+  "payload_source": "custom-build",
+  "payload_filename": "$CUSTOM_BUILD_SOURCE_FILENAME",
+  "payload_sha256": "$custom_build_actual_sha",
+  "payload_uncompressed_size": "$CUSTOM_BUILD_TRUE_SIZE",
+  "payload_checksum_status": "$PAYLOAD_CUSTOM_CHECKSUM_STATUS"
+}
+EOF_CUSTOM_BUILD_MANIFEST
+
+	PAYLOAD="$CUSTOM_BUILD_RAM_PAYLOAD"
+	MANIFEST="$custom_build_manifest"
+	PAYLOAD_SOURCE_ID="custom-build"
+	PAYLOAD_SOURCE_LABEL="Custom build: $CUSTOM_BUILD_SOURCE_LABEL"
+	PAYLOAD_VERSION="$custom_build_version"
+	PAYLOAD_FILENAME="$CUSTOM_BUILD_SOURCE_FILENAME"
+	PAYLOAD_IMAGE_TYPE="$custom_build_image_type"
+	PAYLOAD_BOOT_MODE="$custom_build_boot_label"
+	PAYLOAD_URL="local CUSTOM_BUILD media"
+	PAYLOAD_COMPRESSED_SIZE="$(stat -c '%s' "$CUSTOM_BUILD_RAM_PAYLOAD")"
+	autostart_serial_marker "OWRT_INSTALLER_CUSTOM_BUILD_IMAGE=$PAYLOAD_FILENAME"
+	autostart_serial_marker "OWRT_INSTALLER_CUSTOM_BUILD_CHECKSUM=$PAYLOAD_CUSTOM_CHECKSUM_STATUS"
+	autostart_serial_marker "OWRT_INSTALLER_CUSTOM_BUILD_VERIFIED=1"
+}
+
+custom_build_prepare_path() {
+	custom_build_source="$1"
+	custom_build_label="$2"
+	CUSTOM_BUILD_ERROR=""
+	custom_build_copy_to_ram "$custom_build_source" "$custom_build_label" || return 1
+	custom_build_validate_ram_image || return 1
+}
+
+custom_build_prepare_selected() {
+	IFS='|' read -r custom_build_id custom_build_device custom_build_fstype \
+		custom_build_relative custom_build_label custom_build_test_source \
+		custom_build_name custom_build_size <<EOF_CUSTOM_BUILD_SELECTED
+$CUSTOM_BUILD_SELECTED_LINE
+EOF_CUSTOM_BUILD_SELECTED
+	if [ "$custom_build_fstype" = "directory" ]; then
+		custom_build_root="$custom_build_test_source"
+		custom_build_mounted=0
+	else
+		config_import_mount_source "$custom_build_device" "$custom_build_fstype" \
+			"$custom_build_test_source" || {
+			CUSTOM_BUILD_ERROR="$CONFIG_IMPORT_ERROR"
+			return 1
+		}
+		custom_build_root="$CONFIG_IMPORT_MOUNTDIR"
+		custom_build_mounted=1
+	fi
+	custom_build_source="$custom_build_root/$custom_build_relative"
+	custom_build_source_label="$custom_build_device ($custom_build_fstype ${custom_build_label:-unlabeled}) :: /$custom_build_relative"
+	custom_build_status=0
+	custom_build_copy_to_ram "$custom_build_source" "$custom_build_source_label" || custom_build_status=$?
+	[ "$custom_build_mounted" = "0" ] || config_import_unmount_source
+	[ "$custom_build_status" -eq 0 ] || return "$custom_build_status"
+	custom_build_validate_ram_image || custom_build_status=$?
+	return "$custom_build_status"
+}
+
+custom_build_confirm_interactive() {
+	menu_reset
+	if [ "$PAYLOAD_CUSTOM_CHECKSUM_STATUS" = "sidecar-verified-unsigned" ]; then
+		menu_warning "SHA-256 matches the local sidecar, but that sidecar is not authenticated by the OpenWrt release key. Trust only an image you built or independently verified."
+	else
+		menu_warning "No checksum sidecar was found. SHA-256 was computed after the RAM copy, but the image remains unauthenticated. Trust only an image you built."
+	fi
+	menu_add "use" "Use this custom image"
+	menu_add "__back" "Back to custom image list"
+	select_from_menu "Custom build warning" "custom build action"
+	[ "$SELECTED_VALUE" = "use" ]
+}
+
+custom_build_prepare_interactive() {
+	while :; do
+		custom_build_select_status=0
+		custom_build_select_image || custom_build_select_status=$?
+		[ "$custom_build_select_status" -eq 0 ] || return "$custom_build_select_status"
+		if ! custom_build_prepare_selected; then
+			ui_notice "Custom build rejected" "$CUSTOM_BUILD_ERROR"
+			custom_build_clear_workspace
+			reset_to_embedded_payload
+			continue
+		fi
+		if ! custom_build_confirm_interactive; then
+			custom_build_clear_workspace
+			reset_to_embedded_payload
+			continue
+		fi
+		ui_notice "Custom build ready" "$PAYLOAD_FILENAME was copied to RAM and validated for $PAYLOAD_BOOT_MODE. SHA-256: $(json_value payload_sha256)."
+		return 0
+	done
+}

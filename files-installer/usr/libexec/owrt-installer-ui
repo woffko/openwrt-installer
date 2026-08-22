@@ -18,6 +18,11 @@ MENU_NOTE_KIND=""
 UI_BACKTITLE_BASE="OpenWrt Hellforge Installer"
 UI_BACKTITLE="$UI_BACKTITLE_BASE"
 UI_PAYLOAD_VERSION=""
+UI_LOGO_TEXT=' _______                     ________
+|       |.-----.-----.-----.|  |  |  |.----.|  |_
+|   -   ||  _  |  -__|     ||  |  |  ||   _||   _|
+|_______||   __|_____|__|__||________||__|  |____|
+         |__|'
 
 ui_repeat() {
 	repeat_char="$1"
@@ -37,17 +42,32 @@ ui_set_payload_version() {
 	case "$ui_title_version" in
 		""|*[![:alnum:]._+-]*)
 			UI_PAYLOAD_VERSION=""
-			UI_BACKTITLE="$UI_BACKTITLE_BASE"
+			ui_refresh_branding
 			return 0
 			;;
 	esac
 	if [ "$(ui_text_len "$ui_title_version")" -gt 32 ]; then
 		UI_PAYLOAD_VERSION=""
-		UI_BACKTITLE="$UI_BACKTITLE_BASE"
+		ui_refresh_branding
 		return 0
 	fi
 	UI_PAYLOAD_VERSION="$ui_title_version"
-	UI_BACKTITLE="$UI_BACKTITLE_BASE | OpenWrt $UI_PAYLOAD_VERSION"
+	ui_refresh_branding
+}
+
+ui_refresh_branding() {
+	ui_branding_title="$UI_BACKTITLE_BASE"
+	if [ -n "$UI_PAYLOAD_VERSION" ]; then
+		ui_branding_title="$ui_branding_title | OpenWrt $UI_PAYLOAD_VERSION"
+	fi
+	if [ "${OWRT_UI_NO_LOGO:-0}" != "1" ] &&
+		[ "$UI_MODE_ACTUAL" = "whiptail" ] &&
+		[ "$UI_TERM_COLS" -ge 80 ] && [ "$UI_HEIGHT" -ge 24 ]; then
+		UI_BACKTITLE="$UI_LOGO_TEXT
+$ui_branding_title"
+	else
+		UI_BACKTITLE="$ui_branding_title"
+	fi
 }
 
 ui_trunc() {
@@ -114,6 +134,11 @@ ui_ready_marker() {
 		"Download PPPoE password") ui_ready_name="online-pppoe-password" ;;
 		"Online image ready") ui_ready_name="online-ready" ;;
 		"Offline fallback") ui_ready_name="online-fallback" ;;
+		"Select OpenWrt image source") ui_ready_name="image-source" ;;
+		"Select custom OpenWrt build") ui_ready_name="custom-build-select" ;;
+		"Custom build warning") ui_ready_name="custom-build-warning" ;;
+		"Custom build ready") ui_ready_name="custom-build-ready" ;;
+		"Custom build rejected") ui_ready_name="custom-build-rejected" ;;
 		"Select target disk") ui_ready_name="target-disk" ;;
 		"Select installation type") ui_ready_name="install-type" ;;
 		"Select installation action") ui_ready_name="existing-system-action" ;;
@@ -255,6 +280,7 @@ setup_ui() {
 			UI_MODE_ACTUAL="line"
 			;;
 	esac
+	ui_refresh_branding
 }
 
 ui_ansi_active() {
@@ -452,9 +478,25 @@ ui_header() {
 	if [ -n "$UI_PAYLOAD_VERSION" ]; then
 		header_title="$header_title | OpenWrt $UI_PAYLOAD_VERSION"
 	fi
+	ui_render_logo
 	ui_rule
 	ui_line "$header_title | $version"
 	ui_rule
+}
+
+ui_render_logo() {
+	[ "${OWRT_UI_NO_LOGO:-0}" != "1" ] || return 0
+	ui_ansi_active || return 0
+	[ "$UI_TERM_COLS" -ge 90 ] && [ "$UI_HEIGHT" -ge 30 ] || return 0
+	printf '%s\n' "$UI_LOGO_TEXT" | while IFS= read -r ui_logo_line; do
+		ui_logo_len="$(ui_text_len "$ui_logo_line")"
+		ui_logo_pad=0
+		if [ "$ui_logo_len" -lt "$UI_WIDTH" ]; then
+			ui_logo_pad=$(((UI_WIDTH - ui_logo_len) / 2))
+		fi
+		ui_repeat ' ' "$ui_logo_pad"
+		printf '%s%s%s%s\n' "$C_BLUE" "$C_BOLD" "$ui_logo_line" "$C_RESET"
+	done
 }
 
 ui_screen_begin() {
@@ -1259,6 +1301,10 @@ Existing root: $(((STORAGE_EXISTING_ROOT_SECTORS + 2047) / 2048)) MiB on $STORAG
 		if [ "$PAYLOAD_SOURCE_ID" = "downloaded-official" ]; then
 			body="$body
 RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
+		elif [ "$PAYLOAD_SOURCE_ID" = "custom-build" ]; then
+			body="$body
+CUSTOM IMAGE: $PAYLOAD_CUSTOM_CHECKSUM_STATUS; not authenticated by the OpenWrt release key
+RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
 		fi
 		case "${INSTALL_MODE:-clean}" in
 		import|rescue|safe-upgrade)
@@ -1347,6 +1393,9 @@ ALL DATA ON $TARGET WILL BE ERASED."
 		ui_line "Existing root: $(((STORAGE_EXISTING_ROOT_SECTORS + 2047) / 2048)) MiB on $STORAGE_EXISTING_ROOT_PART"
 	fi
 	if [ "$PAYLOAD_SOURCE_ID" = "downloaded-official" ]; then
+		ui_line "RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
+	elif [ "$PAYLOAD_SOURCE_ID" = "custom-build" ]; then
+		ui_line_warning "CUSTOM IMAGE: $PAYLOAD_CUSTOM_CHECKSUM_STATUS; not authenticated by OpenWrt."
 		ui_line "RAM: $(bytes_as_mib "$PAYLOAD_COMPRESSED_SIZE") image; $(bytes_as_mib "$PAYLOAD_RAM_AVAILABLE") available; $(bytes_as_mib "$PAYLOAD_RAM_REQUIRED") required"
 	fi
 	case "${INSTALL_MODE:-clean}" in

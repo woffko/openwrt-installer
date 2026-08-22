@@ -110,11 +110,15 @@ assert_contains "$GPM_PATCH" "thisevent.value ? (state->buttons | GPM_B_LEFT)"
 	fail "Custom GPM EV_ABS decoder must be removed"
 assert_contains "$PROJECT_DIR/packages/gpm-daemon/Makefile" "PKG_RELEASE:=5"
 assert_contains "$PROJECT_DIR/packages/gpm-daemon/Makefile" "DEPENDS:=+libc +libgcc"
-assert_contains "$PROJECT_DIR/packages/newt-gpm/Makefile" "PKG_RELEASE:=3"
+assert_contains "$PROJECT_DIR/packages/newt-gpm/Makefile" "PKG_RELEASE:=4"
 assert_contains "$NEWT_POINTER_PATCH" "GPM_MOVE | GPM_DRAG | GPM_DOWN | GPM_UP"
 assert_contains "$NEWT_POINTER_PATCH" "ioctl(STDIN_FILENO, TIOCLINUX, &selection)"
 assert_contains "$NEWT_POINTER_PATCH" "newtGpmSetPointer(&event, 3)"
 assert_contains "$NEWT_POINTER_PATCH" "newtGpmSetPointer(NULL, 4)"
+assert_contains "$PROJECT_DIR/packages/newt-gpm/patches/030-multiline-backtitle.patch" \
+	"drawBacktitle(backtitleText)"
+assert_contains "$PROJECT_DIR/packages/newt-gpm/patches/030-multiline-backtitle.patch" \
+	"SLtt_Screen_Rows - backtitleRows"
 assert_contains "$MOUSEDEV_PACKAGE" "PKG_VERSION:=6.12.94"
 assert_contains "$MOUSEDEV_PACKAGE" "mousedev.ko"
 # shellcheck disable=SC2016 # Assert literal OpenWrt make syntax.
