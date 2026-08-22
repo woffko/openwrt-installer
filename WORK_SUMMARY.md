@@ -5,7 +5,9 @@
 ## Beta.3-dev Graphics И Single-Owner Serial
 
 - Classic OpenWrt logo исправлен на block alignment: все строки используют
-  одну X-coordinate, рассчитанную по максимальной ширине ASCII-art.
+  одну X-coordinate, рассчитанную по максимальной ширине ASCII-art. Сам block
+  теперь посимвольно совпадает со штатным OpenWrt `25.12.5` banner после одного
+  общего левого сдвига; над последней `t` остается ровно `__`.
 - GRUB включает ASCII PF2 font и BIOS VBE/UEFI GOP modules; normal entry
   предпочитает `1024x768`, затем `800x600`, `auto` и console fallback. QEMU
   BIOS и UEFI фактически выбрали `1280x800`, что выше минимального gate.
@@ -16,8 +18,15 @@
 - Serial owner всегда использует line UI без GPM. Отдельный serial entry
   немедленно назначает `ttyS0`; второй installer после crash/respawn запрещён.
 - Fast broker fixtures, BIOS/UEFI graphics QEMU, headless serial dry-run с
-  whole-disk hash и forced serial GRUB-entry tests прошли. Release не
-  публиковался.
+  whole-disk hash, forced serial GRUB entry, BIOS/UEFI CUSTOM_BUILD и mouse
+  matrix прошли на clean artifact commit `0db5282`. Полный ISO regression с
+  install/layout/Safe Upgrade/two-cycle sysupgrade/rescue/import также прошел
+  перед финальной двухсимвольной branding-only правкой.
+- VMware BIOS VM подтвердила исправленный logo и безопасный Cancel до записи
+  на диск. Она не предоставляет `fb0` и использует корректный `720x400` text
+  fallback; QEMU BIOS VBE и UEFI GOP фактически выбрали `1280x800`.
+- Финальный development ISO SHA-256: `dec9e1234cddb397a026d3d95171e9bff78d2413b1411284505f1b03760c0576`.
+  Release не публиковался.
 
 ## Beta.2-dev CUSTOM_BUILD И Classic OpenWrt Banner
 

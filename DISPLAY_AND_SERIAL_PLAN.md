@@ -63,3 +63,20 @@
 7. Full mouse and ISO regression matrices pass.
 8. VMware screenshot confirms corrected logo alignment and negotiated display
    size; no target write is performed.
+
+## Результат
+
+План выполнен на `v1.0-beta.3-dev`, commit `0db5282`.
+
+- Logo посимвольно сверен со штатным OpenWrt `25.12.5` banner; общий X origin
+  и multiline backtitle проверены fast fixture и реальным QEMU framebuffer.
+- BIOS VBE и UEFI GOP QEMU выбрали `1280x800`; backend `whiptail`, owner
+  `tty1`. Focused graphics, serial, CUSTOM_BUILD, mouse и fast smoke job
+  `067b03be65604a0289b427c739eded7b` завершился с exit `0`.
+- Полный ISO regression job `e7f98c18bffc4b1ca145d0cdffe4d1df`
+  завершился с exit `0` до финальной двухсимвольной branding-only правки.
+- VMware BIOS VM `10.0.77.3:5900` не создает `fb0` и корректно использует
+  `90x25`/`720x400` text fallback. Свежий ISO загружен, canonical logo
+  подтвержден, установка отменена до любой записи на `/dev/sda`.
+- Финальный clean ISO SHA-256:
+  `dec9e1234cddb397a026d3d95171e9bff78d2413b1411284505f1b03760c0576`.

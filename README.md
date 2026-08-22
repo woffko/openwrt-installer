@@ -369,9 +369,14 @@ BMC/IPMI video, and DRM connector status cannot reliably distinguish a
 headless server from a connected console. First-input arbitration plus the
 forced serial entry is deterministic across those systems.
 
-Development preview from the VMware `90x25` console:
+The normal GRUB entry requests `1024x768`, then `800x600`, then `auto`, while
+retaining a text fallback. The BIOS VBE and UEFI GOP QEMU gates both negotiated
+`1280x800`. The legacy-BIOS VMware test machine exposes no Linux framebuffer,
+so it correctly remains on its `90x25` (`720x400`) text console.
 
-![Classic OpenWrt banner above target selection](docs/screenshots/v1.0-beta.2-dev/logo-target-disk.png)
+`v1.0-beta.3-dev` preview from that VMware console:
+
+![Canonical OpenWrt banner above target selection](docs/screenshots/v1.0-beta.3-dev/logo-target-disk.png)
 
 | Boot menu with detected local OpenWrt | Existing-install actions |
 | --- | --- |
