@@ -13,7 +13,7 @@
 
 - Current published prerelease: `v1.0-beta.1`.
 - Current published release runtime: `v1.0-beta.1`. It is VM/QEMU validated, but the physical SATA/NVMe compatible-layout, two-cycle standard sysupgrade, Safe Upgrade, rescue, and pre-ERASE power-cycle schema 4 gate remains pending and must not be represented as passed.
-- Current development runtime: `v1.0-beta.2-dev`, adding adaptive classic OpenWrt ASCII branding and guarded `CUSTOM_BUILD` local-image selection. It is not published.
+- Current development runtime: `v1.0-beta.3-dev`, adding corrected block-aligned OpenWrt branding, negotiated GRUB graphics modes, and single-owner VGA/serial console arbitration on top of guarded `CUSTOM_BUILD`. It is not published.
 - Current hybrid ISO: `output/openwrt-x86-64-installer-hybrid.iso`.
 - Read the current ISO checksum from `output/sha256sums.txt`; verify the published GitHub asset digest separately after upload.
 - Historical `v1.0-alpha.9` candidate metadata remains under `release/`; do not move it.

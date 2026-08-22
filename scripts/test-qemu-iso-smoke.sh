@@ -310,9 +310,25 @@ assert_common_boot_markers() {
 	log_file="$1"
 	assert_log_contains "$log_file" "GNU GRUB"
 	assert_log_contains "$log_file" "Linux version"
-	assert_log_contains "$log_file" "Please press Enter to activate this console."
+	assert_log_contains "$log_file" "OWRT_INSTALLER_BROKER_OWNER=tty1"
 	assert_log_contains "$log_file" "OpenWrt disk installer is managed by /etc/inittab on tty1."
 	assert_log_contains "$log_file" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+}
+
+assert_framebuffer_at_least() {
+	framebuffer_log="$1"
+	framebuffer_min_width="$2"
+	framebuffer_min_height="$3"
+	framebuffer_value="$(sed -n 's/.*OWRT_INSTALLER_FRAMEBUFFER=\([0-9][0-9]*,[0-9][0-9]*\).*/\1/p' \
+		"$framebuffer_log" | tail -n 1)"
+	[ -n "$framebuffer_value" ] ||
+		die "No graphical framebuffer marker was recorded in $framebuffer_log"
+	framebuffer_width="${framebuffer_value%,*}"
+	framebuffer_height="${framebuffer_value#*,}"
+	if [ "$framebuffer_width" -lt "$framebuffer_min_width" ] ||
+		[ "$framebuffer_height" -lt "$framebuffer_min_height" ]; then
+		die "Framebuffer $framebuffer_value is below ${framebuffer_min_width}x${framebuffer_min_height}"
+	fi
 }
 
 run_hardware_flag_smoke() {
@@ -442,9 +458,49 @@ run_vga_smoke() {
 	wait "$qemu_pid" || true
 
 	assert_nonblank_ppm "$screenshot"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_BROKER_OWNER=tty1"
+	assert_framebuffer_at_least "$serial_log" 800 600
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
 	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk"
 	log "VGA curses UI smoke passed: $screenshot"
+}
+
+run_uefi_vga_smoke() {
+	serial_log="$SMOKE_DIR/uefi-vga-iso.log"
+	qemu_log="$SMOKE_DIR/uefi-vga-qemu.log"
+	monitor_log="$SMOKE_DIR/uefi-vga-monitor.log"
+	screenshot="$SMOKE_DIR/uefi-vga-installer.ppm"
+	monitor_socket="$SMOKE_DIR/uefi-vga-monitor.sock"
+	target_disk="$SMOKE_DIR/target-uefi-vga.qcow2"
+	vars_copy="$SMOKE_DIR/OVMF_VARS_4M-uefi-vga.fd"
+	find_ovmf
+	ensure_qcow2 "$target_disk"
+	cp "$QEMU_OVMF_VARS" "$vars_copy"
+	rm -f "$serial_log" "$qemu_log" "$monitor_log" "$screenshot" "$monitor_socket"
+
+	set -- \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none -vga std -serial "file:$serial_log" \
+		-monitor "unix:$monitor_socket,server=on,wait=off" \
+		-drive "if=pflash,format=raw,readonly=on,file=$QEMU_OVMF_CODE" \
+		-drive "if=pflash,format=raw,file=$vars_copy" \
+		-cdrom "$ISO_IMAGE" -boot d \
+		-drive "file=$target_disk,format=qcow2,if=virtio" \
+		-nic user,model=e1000 -nic user,model=e1000
+	log "Starting UEFI GOP graphics and branded UI smoke test"
+	start_qemu_background "$QEMU_TIMEOUT" "$qemu_log" "$@"
+	qemu_pid="$QEMU_STARTED_PID"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" \
+		"$qemu_pid" "$QEMU_VGA_WAIT"
+	hmp_command "$monitor_socket" "screendump $screenshot"
+	hmp_command "$monitor_socket" quit
+	wait "$qemu_pid" || true
+	assert_nonblank_ppm "$screenshot"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_BROKER_OWNER=tty1"
+	assert_framebuffer_at_least "$serial_log" 800 600
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk"
+	log "UEFI GOP graphics and branded UI smoke passed: $screenshot"
 }
 
 run_install_smoke() {
@@ -2151,6 +2207,88 @@ run_custom_build_smoke() {
 	log "$custom_boot_label CUSTOM_BUILD USB install/boot smoke passed"
 }
 
+serial_send_line() {
+	serial_socket="$1"
+	serial_text="$2"
+	{ printf '%s\r' "$serial_text"; sleep 0.2; } |
+		nc -N -U "$serial_socket" >/dev/null 2>&1 ||
+		die "Could not send input to the serial installer"
+}
+
+run_serial_console_smoke() {
+	serial_log="$SMOKE_DIR/serial-console.log"
+	qemu_log="$SMOKE_DIR/serial-console-qemu.log"
+	serial_socket="$SMOKE_DIR/serial-console.sock"
+	monitor_socket="$SMOKE_DIR/serial-console-monitor.sock"
+	target_disk="$SMOKE_DIR/serial-console-target.raw"
+	rm -f "$serial_log" "$qemu_log" "$serial_socket" "$monitor_socket" "$target_disk"
+	truncate -s 1G "$target_disk"
+	serial_before_hash="$(sha256sum "$target_disk" | awk '{ print $1 }')"
+
+	set -- \
+		-machine "q35,accel=$QEMU_ACCEL" -m "$QEMU_MEMORY" -smp "$QEMU_SMP" \
+		-display none -vga none \
+		-kernel "$ISO_STAGED_KERNEL" -initrd "$ISO_STAGED_INITRAMFS" \
+		-append "console=tty1 console=ttyS0,115200n8 rdinit=/init owrt.console=dual owrt.hardware-test=1" \
+		-chardev "socket,id=serial0,path=$serial_socket,server=on,wait=off,logfile=$serial_log" \
+		-serial chardev:serial0 \
+		-monitor "unix:$monitor_socket,server=on,wait=off" \
+		-drive "file=$target_disk,format=raw,if=virtio" \
+		-nic user,model=e1000 -nic user,model=e1000
+	log "Starting headless dual-console arbitration and serial dry-run smoke test"
+	start_qemu_background "$QEMU_INSTALL_TIMEOUT" "$qemu_log" "$@"
+	serial_pid="$QEMU_STARTED_PID"
+	wait_for_log_marker "$serial_log" "Press Enter or type INSTALL to run the installer on ttyS0." \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" ""
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_BROKER_OWNER=ttyS0" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_FRAMEBUFFER=text" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=target-disk" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" 1
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=install-type" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" 1
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=storage-profile" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" 1
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-interface" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" 1
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=lan-ip" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" ""
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan-mode" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" 1
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=wan6-mode" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" 1
+	wait_for_ui_marker "$serial_log" "OWRT_INSTALLER_UI_READY=review-action" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" 1
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_UI_READY=exact-erase" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	serial_send_line "$serial_socket" "ERASE /dev/vda"
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_DRY_RUN_COMPLETE=1" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	wait_for_log_marker "$serial_log" "OWRT_INSTALLER_BROKER_FINISHED=ttyS0:0" \
+		"$serial_pid" "$QEMU_HARDWARE_WAIT"
+	hmp_command "$monitor_socket" quit
+	wait "$serial_pid" || true
+	serial_after_hash="$(sha256sum "$target_disk" | awk '{ print $1 }')"
+	[ "$serial_before_hash" = "$serial_after_hash" ] ||
+		die "Serial hardware dry-run changed the target disk"
+	[ "$(grep -F -c 'OWRT_INSTALLER_BROKER_OWNER=' "$serial_log")" -eq 1 ] ||
+		die "Serial arbitration emitted more than one owner"
+	assert_log_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=line"
+	assert_log_not_contains "$serial_log" "OWRT_INSTALLER_UI_BACKEND=whiptail"
+	assert_log_not_contains "$serial_log" "Installation failed"
+	log "Headless serial ownership, line wizard, and disk immutability passed"
+}
+
 run_bios_smoke() {
 	log_file="$SMOKE_DIR/bios-iso.log"
 	target_disk="$SMOKE_DIR/target-bios.qcow2"
@@ -2220,8 +2358,8 @@ run_uefi_smoke() {
 }
 
 case "$MODE" in
-	all|bios|uefi|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing) ;;
-	*) die "Usage: $0 [all|bios|uefi|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing]" ;;
+	all|bios|uefi|hardware|vga|uefi-vga|graphics|serial-console|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing) ;;
+	*) die "Usage: $0 [all|bios|uefi|hardware|vga|uefi-vga|graphics|serial-console|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing]" ;;
 esac
 
 [ -s "$ISO_IMAGE" ] || die "Hybrid ISO is missing. Run: make iso"
@@ -2229,14 +2367,20 @@ require_cmd timeout
 require_cmd grep
 require_cmd tail
 case "$MODE" in
-	all|hardware|vga|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing)
+	all|hardware|vga|uefi-vga|graphics|serial-console|install|storage|storage-bounded|storage-image|storage-custom|safe-upgrade|standard-upgrade|rescue|config-import|custom-build|custom-build-bios|custom-build-uefi|online|online-bios|online-uefi|local-disk|local-disk-bios|local-disk-uefi|local-disk-missing)
 		require_cmd nc
 		;;
 esac
 case "$MODE" in
-	all|hardware|safe-upgrade|rescue|online|online-bios|online-uefi)
+	all|hardware|serial-console|safe-upgrade|rescue|online|online-bios|online-uefi)
 		[ -s "$ISO_STAGED_KERNEL" ] || die "Staged ISO kernel is missing. Run: make iso"
 		[ -s "$ISO_STAGED_INITRAMFS" ] || die "Staged ISO initramfs is missing. Run: make iso"
+		;;
+esac
+case "$MODE" in
+	all|serial-console)
+		require_cmd sha256sum
+		require_cmd truncate
 		;;
 esac
 case "$MODE" in
@@ -2249,7 +2393,7 @@ case "$MODE" in
 		;;
 esac
 case "$MODE" in
-	all|vga|install|storage|storage-bounded|storage-image|storage-custom|custom-build|custom-build-bios|custom-build-uefi)
+	all|vga|uefi-vga|graphics|install|storage|storage-bounded|storage-image|storage-custom|custom-build|custom-build-bios|custom-build-uefi)
 		require_cmd od
 		;;
 esac
@@ -2283,6 +2427,8 @@ case "$MODE" in
 		run_local_disk_missing_smoke
 		run_hardware_flag_smoke
 		run_vga_smoke
+		run_uefi_vga_smoke
+		run_serial_console_smoke
 		run_install_smoke
 		run_storage_layout_smoke bounded
 		run_storage_layout_smoke image
@@ -2305,6 +2451,16 @@ case "$MODE" in
 		;;
 	vga)
 		run_vga_smoke
+		;;
+	uefi-vga)
+		run_uefi_vga_smoke
+		;;
+	graphics)
+		run_vga_smoke
+		run_uefi_vga_smoke
+		;;
+	serial-console)
+		run_serial_console_smoke
 		;;
 	install)
 		run_install_smoke

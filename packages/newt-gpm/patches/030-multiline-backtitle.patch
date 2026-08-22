@@ -1,6 +1,6 @@
 --- a/whiptail.c
 +++ b/whiptail.c
-@@ -144,6 +144,49 @@
+@@ -144,6 +144,61 @@
      *q = '\0';
  }
  
@@ -20,10 +20,24 @@
 +    return height;
 +}
 +
++static int backtitleWidth(const char *text)
++{
++    int width = 0;
++
++    while (text != NULL && *text != '\0') {
++        const char *next = strchr(text, '\n');
++        int lineWidth = _newt_wstrlen(text, next ? next - text : -1);
++
++        width = max(width, lineWidth);
++        text = next ? next + 1 : NULL;
++    }
++    return width;
++}
++
 +static void drawBacktitle(const char *text)
 +{
 +    char *copy, *line, *next;
-+    int row = 0;
++    int row = 0, column;
 +
 +    if (text == NULL || *text == '\0')
 +        return;
@@ -32,15 +46,13 @@
 +    if (copy == NULL)
 +        return;
 +
++    column = max(0, (SLtt_Screen_Cols - backtitleWidth(text)) / 2);
++
 +    line = copy;
 +    while (line != NULL) {
-+        int width, column;
-+
 +        next = strchr(line, '\n');
 +        if (next != NULL)
 +            *next++ = '\0';
-+        width = _newt_wstrlen(line, -1);
-+        column = max(0, (SLtt_Screen_Cols - width) / 2);
 +        newtDrawRootText(column, row++, line);
 +        line = next;
 +    }
@@ -50,7 +62,7 @@
  /*
   * The height of a text string is added to height, and width is increased
   * if it is not big enough to store the text string.
-@@ -364,6 +407,8 @@
+@@ -364,6 +419,8 @@
      char * ok_button = NULL;
      char * cancel_button = NULL;
      int help = 0, version = 0;
@@ -59,7 +71,7 @@
      struct poptOption optionsTable[] = {
  	    { "backtitle", '\0', POPT_ARG_STRING, &backtitle, 0 },
  	    { "checklist", '\0', 0, 0, OPT_CHECKLIST },
-@@ -541,6 +586,16 @@
+@@ -541,6 +598,16 @@
  
      cleanNewlines(text);
  
@@ -76,7 +88,7 @@
      if (height <= 0 || width <= 0 || listHeight <= 0) {
  	guessSize(&height, &width, &listHeight, mode, &flags, fullButtons,
  		 title, text, optCon);
-@@ -551,14 +606,23 @@
+@@ -551,14 +618,23 @@
  	    listHeight -= 1;
  	}
      }
@@ -103,7 +115,7 @@
  
      if (ok_button)
  	setButtonText(ok_button, BUTTON_OK);
-@@ -651,6 +715,7 @@
+@@ -651,6 +727,7 @@
      newtFinished();
  
      free(text);

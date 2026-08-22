@@ -100,8 +100,11 @@ gzip -dc output/openwrt-x86-64-installer.img.gz |
   sudo dd of=/dev/sdX bs=16M conv=fsync status=progress
 ```
 
-Boot that USB device. The disk installer starts automatically on `tty1` after
-boot messages and device discovery settle. It can also be started manually:
+Boot that USB device. The console broker gives VGA, `ttyS0`, and `hvc0` one
+shared installer owner. In normal mode, Enter on any console claims ownership;
+without input, `tty1` starts automatically after 10 seconds. Boot messages and
+device discovery still settle before the wizard opens. It can also be started
+manually:
 
 ```sh
 owrt-install
@@ -123,11 +126,17 @@ The `.iso` and `.img.gz` variants contain the same target payload. Prefer the
 hybrid ISO for convenient boot media and the raw `.img.gz` image as a simple
 fallback.
 
-The GRUB menu has exactly three entries: **OpenWrt x86 Installer**, **Boot
-installed OpenWrt from local disk**, and **OpenWrt x86 Installer (failsafe)**.
+The GRUB menu has four entries: **OpenWrt x86 Installer**, **Boot installed
+OpenWrt from local disk**, **OpenWrt x86 Installer (serial 115200 8N1)**, and
+**OpenWrt x86 Installer (failsafe)**.
 No OpenWrt release number is embedded in the menu labels. GRUB searches for an
 installed OpenWrt `kernel` partition before showing the menu; when found, local
 disk boot becomes the default. Otherwise the unified installer is the default.
+
+The normal BIOS/UEFI entry prefers `1024x768`, then `800x600`, firmware
+`auto`, and finally the text console. The bundled ASCII-only GRUB font enables
+`gfxterm` without external files. Failsafe and forced serial entries return to
+text-oriented output.
 
 ### Online install
 
@@ -336,6 +345,28 @@ rows before positioning dialogs. It displays the classic OpenWrt ASCII banner
 above Hellforge windows on `80x24` and larger Linux consoles without changing
 GPM mouse targets. ANSI terminals show the same full banner when enough rows
 are available; narrow, serial, and line fallbacks keep a compact title.
+
+### VGA and serial ownership
+
+Kernel messages remain available on both `tty1` and `ttyS0`. The installer is
+intentionally single-owner: an atomic boot-lifetime lock prevents VGA, serial,
+or hypervisor consoles from opening competing disk-write sessions.
+
+In the normal entry, press Enter on VGA, `ttyS0`, or `hvc0` to choose that
+console. If nobody responds within 10 seconds, VGA becomes the owner. Serial
+and hypervisor owners use the plain numbered line UI with mouse support
+disabled. The dedicated serial GRUB entry assigns `ttyS0` immediately at
+`115200 8N1`.
+
+The losing console shows the selected owner and mirrors new lines from
+`/tmp/owrt-installer.log`; it never accepts destructive input. When the owner
+finishes or fails, the lock is retained until reboot, so an `inittab` respawn
+cannot silently start a second installer.
+
+Automatic physical monitor detection is deliberately not used. Legacy VGA,
+BMC/IPMI video, and DRM connector status cannot reliably distinguish a
+headless server from a connected console. First-input arbitration plus the
+forced serial entry is deterministic across those systems.
 
 Development preview from the VMware `90x25` console:
 

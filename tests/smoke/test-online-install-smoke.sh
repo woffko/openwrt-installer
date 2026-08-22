@@ -378,8 +378,8 @@ run_acquire_case() {
 
 assert_contains "$GRUB_CONFIG" 'menuentry "OpenWrt x86 Installer"'
 assert_contains "$GRUB_CONFIG" 'owrt.check-latest=1'
-assert_contains "$AUTOSTART" 'exec /usr/sbin/owrt-install --autostart --check-latest'
-assert_contains "$AUTOSTART" 'exec /usr/sbin/owrt-install --autostart --download-latest'
+assert_contains "$AUTOSTART" 'set -- "$@" --check-latest'
+assert_contains "$AUTOSTART" 'set -- "$@" --download-latest'
 assert_contains "$UI_LIB" '"New OpenWrt release available") ui_ready_name="online-update"'
 assert_contains "$PROJECT_DIR/profiles/packages-installer.txt" 'curl'
 assert_contains "$PROJECT_DIR/profiles/packages-installer.txt" 'usign'

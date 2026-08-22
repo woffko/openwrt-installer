@@ -118,6 +118,10 @@ assert_contains "$NEWT_POINTER_PATCH" "newtGpmSetPointer(NULL, 4)"
 assert_contains "$PROJECT_DIR/packages/newt-gpm/patches/030-multiline-backtitle.patch" \
 	"drawBacktitle(backtitleText)"
 assert_contains "$PROJECT_DIR/packages/newt-gpm/patches/030-multiline-backtitle.patch" \
+	"backtitleWidth(text)"
+assert_contains "$PROJECT_DIR/packages/newt-gpm/patches/030-multiline-backtitle.patch" \
+	"newtDrawRootText(column, row++, line)"
+assert_contains "$PROJECT_DIR/packages/newt-gpm/patches/030-multiline-backtitle.patch" \
 	"SLtt_Screen_Rows - backtitleRows"
 assert_contains "$MOUSEDEV_PACKAGE" "PKG_VERSION:=6.12.94"
 assert_contains "$MOUSEDEV_PACKAGE" "mousedev.ko"

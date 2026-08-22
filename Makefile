@@ -1,6 +1,6 @@
 SHELLCHECK ?= $(if $(wildcard build/host-tools/usr/bin/shellcheck),build/host-tools/usr/bin/shellcheck,shellcheck)
 
-.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke build-env-smoke release-base-smoke ui-smoke custom-build-smoke config-import-smoke storage-rescue-smoke storage-profile-smoke storage-qemu-smoke storage-device-qemu-smoke safe-upgrade-qemu-smoke standard-upgrade-qemu-smoke rescue-qemu-smoke config-import-qemu-smoke custom-build-qemu-smoke local-mouse-smoke hardware-report-smoke online-install-smoke online-install-qemu-smoke local-disk-boot-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke freeze-candidate release-gate release-gate-smoke shellcheck syntax-check
+.PHONY: all download target installer iso iso-host-tools mouse-packages clean test smoke build-env-smoke release-base-smoke ui-smoke console-broker-smoke custom-build-smoke config-import-smoke storage-rescue-smoke storage-profile-smoke storage-qemu-smoke storage-device-qemu-smoke safe-upgrade-qemu-smoke standard-upgrade-qemu-smoke rescue-qemu-smoke config-import-qemu-smoke custom-build-qemu-smoke serial-qemu-smoke graphics-qemu-smoke local-mouse-smoke hardware-report-smoke online-install-smoke online-install-qemu-smoke local-disk-boot-smoke mouse-qemu-smoke install-flow-smoke iso-smoke vga-smoke install-smoke freeze-candidate release-gate release-gate-smoke shellcheck syntax-check
 
 all: target installer
 
@@ -32,6 +32,7 @@ smoke:
 	$(MAKE) build-env-smoke
 	$(MAKE) release-base-smoke
 	$(MAKE) ui-smoke
+	$(MAKE) console-broker-smoke
 	$(MAKE) custom-build-smoke
 	$(MAKE) config-import-smoke
 	$(MAKE) storage-rescue-smoke
@@ -50,6 +51,9 @@ release-base-smoke:
 
 ui-smoke:
 	./tests/smoke/test-ui-smoke.sh
+
+console-broker-smoke:
+	./tests/smoke/test-console-broker-smoke.sh
 
 custom-build-smoke:
 	./tests/smoke/test-custom-build-smoke.sh
@@ -83,6 +87,12 @@ config-import-qemu-smoke:
 
 custom-build-qemu-smoke:
 	./scripts/test-qemu-iso-smoke.sh custom-build
+
+serial-qemu-smoke:
+	./scripts/test-qemu-iso-smoke.sh serial-console
+
+graphics-qemu-smoke:
+	./scripts/test-qemu-iso-smoke.sh graphics
 
 local-mouse-smoke:
 	./tests/smoke/test-local-mouse-smoke.sh

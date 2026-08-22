@@ -79,7 +79,7 @@ run_xorrisofs() {
 }
 
 rm -rf "$work_dir"
-mkdir -p "$iso_root/boot/grub" "$iso_root/efi/boot" \
+mkdir -p "$iso_root/boot/grub/fonts" "$iso_root/efi/boot" \
 	"$iso_root/CUSTOM_BUILD" "$initramfs_root"
 
 log "Creating RAM-root initramfs"
@@ -124,17 +124,25 @@ fakeroot sh -eu -c '
 
 cp "$kernel" "$iso_root/boot/vmlinuz"
 cp "$PROJECT_DIR/iso/boot/grub/grub.cfg" "$iso_root/boot/grub/grub.cfg"
+cp -a "$PROJECT_DIR/iso/boot/grub/fonts/." "$iso_root/boot/grub/fonts/"
 cp "$OUTPUT_DIR/manifest.json" "$iso_root/manifest.json"
 
-printf '%s\n' 'configfile (hd0,msdos1)/boot/grub/grub.cfg' > "$grub_bios_early_config"
-printf '%s\n' 'configfile (cd0)/boot/grub/grub.cfg' > "$grub_efi_early_config"
+# shellcheck disable=SC2016 # Expanded later by GRUB, not by the host shell.
+printf '%s\n' \
+	'search --no-floppy --label OWRT_INSTALL --set=owrt_media' \
+	'configfile ($owrt_media)/boot/grub/grub.cfg' > "$grub_bios_early_config"
+# shellcheck disable=SC2016 # Expanded later by GRUB, not by the host shell.
+printf '%s\n' \
+	'search --no-floppy --label OWRT_INSTALL --set=owrt_media' \
+	'configfile ($owrt_media)/boot/grub/grub.cfg' > "$grub_efi_early_config"
 
 # OpenWrt's minimal ISO GRUB cannot inspect another GPT/FAT disk. Build both
 # boot images with OpenWrt's layout and the modules needed by the local-disk
 # menu entry.
-set -- at_keyboard biosdisk boot chain configfile fat iso9660 linux ls \
-	part_gpt part_msdos reboot search search_fs_file search_label serial test \
-	vga echo sleep normal
+set -- all_video at_keyboard biosdisk boot chain configfile fat font gfxterm \
+	iso9660 linux ls part_gpt part_msdos reboot search search_fs_file \
+	search_label serial test vbe vga video video_bochs video_cirrus \
+	video_colors video_fb videoinfo echo sleep normal
 "$grub_mkimage" \
 	-d "$grub_pc_dir" \
 	-O i386-pc \
@@ -144,8 +152,9 @@ set -- at_keyboard biosdisk boot chain configfile fat iso9660 linux ls \
 	"$@"
 cat "$grub_pc_dir/cdboot.img" "$grub_bios_core" > "$iso_root/boot/grub/eltorito.img"
 
-set -- at_keyboard boot chain configfile fat iso9660 linux ls part_gpt \
-	part_msdos reboot search search_fs_file search_label serial test \
+set -- all_video at_keyboard boot chain configfile fat font gfxterm iso9660 \
+	linux ls part_gpt part_msdos reboot search search_fs_file search_label \
+	serial test video video_bochs video_cirrus video_colors video_fb videoinfo \
 	efi_gop efi_uga echo sleep normal
 "$grub_mkimage" \
 	-d "$grub_efi_dir" \

@@ -1,23 +1,76 @@
 #!/bin/sh
 
-set_console_defaults() {
-	if [ -z "${TERM:-}" ] || [ "${TERM:-}" = "dumb" ]; then
-		TERM=linux
-		export TERM
+set -u
+
+BROKER_DIR="${OWRT_INSTALL_BROKER_DIR:-/tmp/owrt-installer-owner.lock}"
+INSTALL_LOG="${OWRT_INSTALL_LOG:-/tmp/owrt-installer.log}"
+BROKER_TIMEOUT="${OWRT_INSTALL_BROKER_TIMEOUT:-10}"
+BROKER_TEST_MODE="${OWRT_INSTALL_BROKER_TEST_MODE:-0}"
+BROKER_TTY_HINT="${OWRT_INSTALL_BROKER_TTY:-}"
+if [ "${OWRT_INSTALL_BROKER_SOURCE_ONLY:-0}" != 1 ] && [ "$#" -gt 0 ]; then
+	BROKER_TTY_HINT="$1"
+fi
+
+broker_console_name() {
+	if [ -n "$BROKER_TTY_HINT" ]; then
+		broker_console="$BROKER_TTY_HINT"
+	else
+		broker_console="$(tty 2>/dev/null || true)"
 	fi
+	case "$broker_console" in
+		/dev/tty1|tty1) printf '%s\n' tty1 ;;
+		/dev/ttyS0|ttyS0) printf '%s\n' ttyS0 ;;
+		/dev/hvc0|hvc0) printf '%s\n' hvc0 ;;
+		*) return 1 ;;
+	esac
 }
 
-clear_console() {
-	[ -t 1 ] && printf '\033[2J\033[H'
+broker_cmdline() {
+	if [ -n "${OWRT_INSTALL_BROKER_CMDLINE:-}" ]; then
+		printf '%s\n' "$OWRT_INSTALL_BROKER_CMDLINE"
+	elif [ -r /proc/cmdline ]; then
+		cat /proc/cmdline
+	fi
 }
 
 kernel_arg_enabled() {
 	needle="$1"
-	[ -r /proc/cmdline ] || return 1
-	case " $(cat /proc/cmdline) " in
+	case " $(broker_cmdline) " in
 		*" $needle "*) return 0 ;;
 	esac
 	return 1
+}
+
+kernel_arg_value() {
+	key="$1"
+	for broker_arg in $(broker_cmdline); do
+		case "$broker_arg" in
+			"$key"=*) printf '%s\n' "${broker_arg#*=}"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+broker_forced_console() {
+	broker_requested="$(kernel_arg_value owrt.console 2>/dev/null || true)"
+	case "$broker_requested" in
+		tty1|ttyS0|hvc0) printf '%s\n' "$broker_requested" ;;
+		serial) printf '%s\n' ttyS0 ;;
+		*) return 1 ;;
+	esac
+}
+
+set_console_defaults() {
+	case "$BROKER_CONSOLE" in
+		tty1) TERM=linux ;;
+		*) TERM=dumb ;;
+	esac
+	export TERM
+}
+
+clear_console() {
+	[ "$BROKER_CONSOLE" = tty1 ] || return 0
+	[ -t 1 ] && printf '\033[2J\033[H'
 }
 
 serial_marker() {
@@ -38,31 +91,24 @@ device_snapshot() {
 	for path in /sys/block/*; do
 		[ -e "$path" ] || continue
 		name="${path##*/}"
-		case "$name" in
-			loop*|ram*) continue ;;
-		esac
+		case "$name" in loop*|ram*) continue ;; esac
 		snapshot="${snapshot}block:${name} "
 	done
-
 	for path in /sys/class/net/*; do
 		[ -e "$path" ] || continue
 		name="${path##*/}"
-		[ "$name" = "lo" ] && continue
+		[ "$name" = lo ] && continue
 		snapshot="${snapshot}net:${name} "
 	done
-
 	printf '%s' "$snapshot"
 }
 
 wait_for_devices_to_settle() {
 	timeout="${OWRT_INSTALL_AUTOSTART_SETTLE_TIMEOUT:-12}"
-	case "$timeout" in
-		''|*[!0-9]*) timeout=12 ;;
-	esac
+	case "$timeout" in ''|*[!0-9]*) timeout=12 ;; esac
 	elapsed=0
 	previous=
 	stable=0
-
 	while [ "$elapsed" -lt "$timeout" ]; do
 		current="$(device_snapshot)"
 		if [ -n "$current" ] && [ "$current" = "$previous" ]; then
@@ -71,19 +117,134 @@ wait_for_devices_to_settle() {
 		else
 			stable=0
 		fi
-
 		previous="$current"
 		sleep 1
 		elapsed=$((elapsed + 1))
 	done
 }
 
+broker_framebuffer_value() {
+	for broker_fb_size in /sys/class/graphics/fb*/virtual_size; do
+		[ -r "$broker_fb_size" ] || continue
+		broker_fb_value="$(cat "$broker_fb_size" 2>/dev/null || true)"
+		case "$broker_fb_value" in
+			[0-9]*,[0-9]*) printf '%s\n' "$broker_fb_value"; return 0 ;;
+		esac
+	done
+	printf '%s\n' text
+}
+
+broker_set_state() {
+	broker_state="$1"
+	printf '%s\n' "$broker_state" > "$BROKER_DIR/state" 2>/dev/null || true
+	chmod 0600 "$BROKER_DIR/state" 2>/dev/null || true
+}
+
+broker_owner_value() {
+	broker_owner="$(cat "$BROKER_DIR/tty" 2>/dev/null || true)"
+	case "$broker_owner" in tty1|ttyS0|hvc0) printf '%s\n' "$broker_owner" ;; esac
+}
+
+broker_owner_pid() {
+	broker_pid="$(cat "$BROKER_DIR/pid" 2>/dev/null || true)"
+	case "$broker_pid" in ''|*[!0-9]*) return 1 ;; esac
+	printf '%s\n' "$broker_pid"
+}
+
+broker_claim() {
+	if ! mkdir "$BROKER_DIR" 2>/dev/null; then
+		return 1
+	fi
+	chmod 0700 "$BROKER_DIR" 2>/dev/null || true
+	printf '%s\n' "$BROKER_CONSOLE" > "$BROKER_DIR/tty"
+	printf '%s\n' "$$" > "$BROKER_DIR/pid"
+	chmod 0600 "$BROKER_DIR/tty" "$BROKER_DIR/pid" 2>/dev/null || true
+	broker_set_state claiming
+	return 0
+}
+
+broker_read_line() {
+	BROKER_INPUT=
+	if [ "$BROKER_TEST_MODE" = 1 ]; then
+		broker_event_file="${OWRT_INSTALL_BROKER_EVENT_FILE:-}"
+		[ -n "$broker_event_file" ] && [ -s "$broker_event_file" ] || return 1
+		BROKER_INPUT="$(sed -n '1p' "$broker_event_file")"
+		rm -f "$broker_event_file"
+		return 0
+	fi
+	# BusyBox ash provides the bounded read used on installer TTYs.
+	# shellcheck disable=SC3045
+	IFS= read -r -t 1 BROKER_INPUT
+}
+
+broker_input_requests_install() {
+	case "$BROKER_INPUT" in
+		''|INSTALL|install) return 0 ;;
+	esac
+	return 1
+}
+
+broker_mirror_new_log() {
+	[ -r "$INSTALL_LOG" ] || return 0
+	broker_log_lines="$(wc -l < "$INSTALL_LOG" 2>/dev/null | tr -d ' ' || true)"
+	case "$broker_log_lines" in ''|*[!0-9]*) return 0 ;; esac
+	if [ "$broker_log_lines" -lt "$BROKER_MIRROR_LINE" ]; then
+		BROKER_MIRROR_LINE=0
+	fi
+	if [ "$broker_log_lines" -gt "$BROKER_MIRROR_LINE" ]; then
+		broker_log_start=$((BROKER_MIRROR_LINE + 1))
+		sed -n "${broker_log_start},${broker_log_lines}p" "$INSTALL_LOG"
+		BROKER_MIRROR_LINE="$broker_log_lines"
+	fi
+}
+
+broker_login() {
+	if [ "$BROKER_TEST_MODE" = 1 ]; then
+		printf 'OWRT_INSTALLER_BROKER_LOGIN=%s\n' "$BROKER_CONSOLE"
+		return 0
+	fi
+	exec /usr/libexec/login.sh
+}
+
+broker_mirror_owner() {
+	broker_wait=0
+	broker_owner=
+	while [ "$broker_wait" -lt 20 ]; do
+		broker_owner="$(broker_owner_value)"
+		[ -n "$broker_owner" ] && break
+		[ "$BROKER_TEST_MODE" = 1 ] || sleep 1
+		broker_wait=$((broker_wait + 1))
+	done
+	[ -n "$broker_owner" ] || {
+		printf 'Installer owner lock is incomplete; refusing a second installer.\n'
+		broker_login
+		return 0
+	}
+	printf 'Installer is active on %s. This console is read-only.\n' "$broker_owner"
+	printf 'Installation status follows; destructive input is accepted only on %s.\n\n' "$broker_owner"
+	BROKER_MIRROR_LINE=0
+	while :; do
+		broker_mirror_new_log
+		broker_state="$(cat "$BROKER_DIR/state" 2>/dev/null || true)"
+		case "$broker_state" in finished) break ;; esac
+		broker_pid="$(broker_owner_pid 2>/dev/null || true)"
+		if [ -n "$broker_pid" ] && ! kill -0 "$broker_pid" 2>/dev/null; then
+			printf '\nInstaller owner exited unexpectedly; a second installer will not be started.\n'
+			break
+		fi
+		if [ "$BROKER_TEST_MODE" = 1 ]; then
+			break
+		fi
+		sleep 1
+	done
+	broker_mirror_new_log
+	printf '\nInstaller session finished.\n'
+	broker_login
+}
+
 prepare_for_installer() {
 	delay="${OWRT_INSTALL_AUTOSTART_DELAY:-2}"
-	case "$delay" in
-		''|*[!0-9]*) delay=2 ;;
-	esac
-
+	case "$delay" in ''|*[!0-9]*) delay=2 ;; esac
 	set_console_defaults
 	quiet_kernel_console
 	clear_console
@@ -93,25 +254,113 @@ prepare_for_installer() {
 	clear_console
 }
 
-if [ "${OWRT_INSTALL_NO_AUTOSTART:-0}" = "1" ]; then
-	exec /usr/libexec/login.sh
-fi
-
-if mkdir /tmp/owrt-installer-autostart.lock 2>/dev/null; then
-	prepare_for_installer
+broker_installer_command() {
+	set -- --autostart
 	if kernel_arg_enabled owrt.hardware-test=1 || kernel_arg_enabled owrt.dryrun=1; then
 		serial_marker "OWRT_INSTALLER_HARDWARE_TEST=active"
-		exec /usr/sbin/owrt-install --autostart --dry-run
-	fi
-	if kernel_arg_enabled owrt.netinstall=1; then
+		set -- "$@" --dry-run
+	elif kernel_arg_enabled owrt.netinstall=1; then
 		serial_marker "OWRT_INSTALLER_NETINSTALL=active"
-		exec /usr/sbin/owrt-install --autostart --download-latest
-	fi
-	if kernel_arg_enabled owrt.check-latest=1; then
+		set -- "$@" --download-latest
+	elif kernel_arg_enabled owrt.check-latest=1; then
 		serial_marker "OWRT_INSTALLER_LATEST_CHECK=active"
-		exec /usr/sbin/owrt-install --autostart --check-latest
+		set -- "$@" --check-latest
 	fi
-	exec /usr/sbin/owrt-install --autostart
+	if [ "$BROKER_CONSOLE" = tty1 ]; then
+		/usr/sbin/owrt-install "$@"
+	else
+		OWRT_UI_MODE=line OWRT_UI_NO_MOUSE=1 /usr/sbin/owrt-install "$@"
+	fi
+}
+
+broker_run_owner() {
+	broker_set_state settling
+	prepare_for_installer
+	broker_framebuffer="$(broker_framebuffer_value)"
+	serial_marker "OWRT_INSTALLER_FRAMEBUFFER=$broker_framebuffer"
+	serial_marker "OWRT_INSTALLER_BROKER_OWNER=$BROKER_CONSOLE"
+	broker_set_state running
+	broker_status=0
+	broker_installer_command || broker_status=$?
+	printf '%s\n' "$broker_status" > "$BROKER_DIR/exit-status" 2>/dev/null || true
+	chmod 0600 "$BROKER_DIR/exit-status" 2>/dev/null || true
+	broker_set_state finished
+	serial_marker "OWRT_INSTALLER_BROKER_FINISHED=$BROKER_CONSOLE:$broker_status"
+	broker_login
+}
+
+broker_wait_for_forced_owner() {
+	broker_wait=0
+	while [ ! -d "$BROKER_DIR" ] && [ "$broker_wait" -lt 30 ]; do
+		[ "$BROKER_TEST_MODE" = 1 ] || sleep 1
+		broker_wait=$((broker_wait + 1))
+	done
+	if [ -d "$BROKER_DIR" ]; then
+		broker_mirror_owner
+	else
+		printf 'Forced installer console did not appear; refusing fallback ownership.\n'
+		broker_login
+	fi
+}
+
+broker_arbitrate() {
+	if [ "$BROKER_CONSOLE" = tty1 ]; then
+		case "$BROKER_TIMEOUT" in ''|*[!0-9]*) BROKER_TIMEOUT=10 ;; esac
+		printf 'Press Enter to start the installer on VGA.\n'
+		printf 'Serial or hypervisor console may claim ownership during the next %s seconds.\n' "$BROKER_TIMEOUT"
+		broker_elapsed=0
+		while [ "$broker_elapsed" -lt "$BROKER_TIMEOUT" ]; do
+			[ ! -d "$BROKER_DIR" ] || { broker_mirror_owner; return 0; }
+			if broker_read_line && broker_input_requests_install; then
+				broker_claim && { broker_run_owner; return 0; }
+				broker_mirror_owner
+				return 0
+			fi
+			broker_elapsed=$((broker_elapsed + 1))
+		done
+		broker_claim && { broker_run_owner; return 0; }
+		broker_mirror_owner
+		return 0
+	fi
+
+	printf 'Press Enter or type INSTALL to run the installer on %s.\n' "$BROKER_CONSOLE"
+	printf 'If no console claims ownership, VGA starts automatically after %s seconds.\n' "$BROKER_TIMEOUT"
+	while [ ! -d "$BROKER_DIR" ]; do
+		if broker_read_line; then
+			if broker_input_requests_install; then
+				broker_claim && { broker_run_owner; return 0; }
+			else
+				printf 'Ignored input; press Enter or type INSTALL exactly.\n'
+			fi
+		fi
+	done
+	broker_mirror_owner
+}
+
+if [ "${OWRT_INSTALL_BROKER_SOURCE_ONLY:-0}" = 1 ]; then
+	if (return 0 2>/dev/null); then return 0; fi
+	exit 0
 fi
 
-exec /usr/libexec/login.sh
+BROKER_CONSOLE="$(broker_console_name || true)"
+[ -n "$BROKER_CONSOLE" ] || exec /usr/libexec/login.sh
+
+if [ "${OWRT_INSTALL_NO_AUTOSTART:-0}" = 1 ]; then
+	broker_login
+	exit 0
+fi
+
+set_console_defaults
+quiet_kernel_console
+BROKER_FORCED_CONSOLE="$(broker_forced_console || true)"
+if [ -n "$BROKER_FORCED_CONSOLE" ]; then
+	if [ "$BROKER_CONSOLE" = "$BROKER_FORCED_CONSOLE" ]; then
+		broker_claim && broker_run_owner
+		[ -d "$BROKER_DIR" ] && broker_mirror_owner
+	else
+		broker_wait_for_forced_owner
+	fi
+	exit 0
+fi
+
+broker_arbitrate
