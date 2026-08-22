@@ -5,6 +5,12 @@
 База: опубликованный `v1.0-beta.1`. Новая работа идет как следующая
 development-итерация и не изменяет существующий tag или release assets.
 
+Статус: реализовано в runtime commit `ff4fbdbe94bcb3ac8f95c334f1fc5bdd041323ef`;
+mouse-test calibration завершена в `db1bd08`. Clean development ISO собран и
+прошел fast smoke, полный QEMU ISO gate, отдельные BIOS/UEFI CUSTOM_BUILD
+install/boot, полную mouse matrix и VMware `90x25` visual acceptance. Новый
+GitHub release не публиковался.
+
 ## Цель
 
 1. Добавить классический OpenWrt ASCII banner над Hellforge dialog UI без
@@ -68,16 +74,16 @@ development-итерация и не изменяет существующий t
 
 ## Этапы
 
-1. Добавить plan и bump development version.
-2. Реализовать/протестировать multiline `whiptail` backtitle и ANSI banner.
-3. Реализовать custom-build library, source selection и CLI parity
+1. [x] Добавить plan и bump development version.
+2. [x] Реализовать/протестировать multiline `whiptail` backtitle и ANSI banner.
+3. [x] Реализовать custom-build library, source selection и CLI parity
    `--custom-build FILE`.
-4. Добавить media folder, build wiring, cleanup и checksum provenance.
-5. Добавить deterministic fast tests: discovery, bounded copy, sidecar,
+4. [x] Добавить media folder, build wiring, cleanup и checksum provenance.
+5. [x] Добавить deterministic fast tests: discovery, bounded copy, sidecar,
    gzip/size/layout/boot mode, unsigned confirmation, source cleanup и UI.
-6. Пройти syntax, ShellCheck и полный `make smoke`.
-7. Собрать новые mouse packages и clean hybrid ISO.
-8. Пройти BIOS/UEFI custom-image QEMU install/boot, mouse QEMU и VMware VNC
+6. [x] Пройти syntax, ShellCheck и полный `make smoke`.
+7. [x] Собрать новые mouse packages и clean hybrid ISO.
+8. [x] Пройти BIOS/UEFI custom-image QEMU install/boot, mouse QEMU и VMware VNC
    visual acceptance без записи физического disk.
 
 ## Не Входит В Эту Итерацию

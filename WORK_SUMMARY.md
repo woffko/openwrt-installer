@@ -1,6 +1,21 @@
 # Краткий итог работ
 
-Дата фиксации: 2026-08-16.
+Дата фиксации: 2026-08-22.
+
+## Beta.2-dev CUSTOM_BUILD И Classic OpenWrt Banner
+
+- Runtime `v1.0-beta.2-dev` добавляет `/CUSTOM_BUILD` в raw installer и hybrid
+  ISO, а также поиск direct `.img.gz` на removable USB/Ventoy и remastered ISO.
+- Custom image полностью и bounded копируется в private size-limited tmpfs;
+  source unmount выполняется до checksum/gzip/layout validation.
+- Проверяются optional sidecar SHA-256, полный gzip stream, bounded true
+  decompressed size, exact BIOS/UEFI MBR/GPT mode и ext4 combined geometry.
+  Custom source всегда остается unauthenticated и требует отдельного warning.
+- Локальный `whiptail 0.52.24-r4` поддерживает multiline backtitle, резервирует
+  logo rows и показывает классический OpenWrt ASCII banner с `WIRELESS FREEDOM`.
+- Пройдены fast smoke, полный ISO QEMU gate, отдельные BIOS/UEFI CUSTOM_BUILD
+  install/boot, mouse matrix и VMware `90x25` visual check. GitHub release для
+  этой development-итерации не публиковался.
 
 ## Beta.1 Storage Profiles And Upgrade Safety
 

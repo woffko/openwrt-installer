@@ -337,6 +337,10 @@ above Hellforge windows on `80x24` and larger Linux consoles without changing
 GPM mouse targets. ANSI terminals show the same full banner when enough rows
 are available; narrow, serial, and line fallbacks keep a compact title.
 
+Development preview from the VMware `90x25` console:
+
+![Classic OpenWrt banner above target selection](docs/screenshots/v1.0-beta.2-dev/logo-target-disk.png)
+
 | Boot menu with detected local OpenWrt | Existing-install actions |
 | --- | --- |
 | ![GRUB boot menu](docs/screenshots/v1.0-beta.1/boot-menu.png) | ![Existing OpenWrt installation actions](docs/screenshots/v1.0-beta.1/install-action.png) |
