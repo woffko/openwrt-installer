@@ -2076,12 +2076,16 @@ run_local_disk_missing_smoke() {
 prepare_custom_build_usb() {
 	custom_mode="$1"
 	case "$custom_mode" in
-		bios) custom_image_type="ext4-combined" ;;
-		uefi) custom_image_type="ext4-combined-efi" ;;
+		bios)
+			custom_image_type="ext4-combined"
+			custom_source="$OUTPUT_DIR/openwrt-x86-64-target-bios.img.gz"
+			;;
+		uefi)
+			custom_image_type="ext4-combined-efi"
+			custom_source="$OUTPUT_DIR/openwrt-x86-64-target.img.gz"
+			;;
 		*) die "Unsupported custom-build QEMU mode: $custom_mode" ;;
 	esac
-	custom_source="$(find "$IMAGEBUILDER_DIR/bin/targets/x86/64" -maxdepth 1 -type f \
-		-name "*-${PROFILE}-${custom_image_type}.img.gz" | head -n 1)"
 	[ -s "$custom_source" ] || die "Custom-build $custom_image_type source image is missing"
 	CUSTOM_BUILD_QEMU_USB="$SMOKE_DIR/custom-build-$custom_mode-usb.img"
 	CUSTOM_BUILD_QEMU_FILENAME="openwrt-${OPENWRT_VERSION}-x86-64-generic-${custom_image_type}.img.gz"

@@ -174,6 +174,7 @@ update_output_checksums() {
 		cd "$OUTPUT_DIR"
 		for file in \
 			openwrt-x86-64-target.img.gz \
+			openwrt-x86-64-target-bios.img.gz \
 			openwrt-x86-64-installer.img.gz \
 			openwrt-x86-64-installer-hybrid.iso \
 			manifest.json

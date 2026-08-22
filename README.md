@@ -80,6 +80,7 @@ Generated artifacts:
 
 ```text
 output/openwrt-x86-64-target.img.gz
+output/openwrt-x86-64-target-bios.img.gz
 output/openwrt-x86-64-installer.img.gz
 output/openwrt-x86-64-installer-hybrid.iso
 output/manifest.json
